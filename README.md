@@ -2,7 +2,7 @@
 
 
 > Nebula is fast.
-> <img src="assets/favicon.ico" align="right"/>
+> <img width="100" height="100" src="assets/favicon.ico" align="right"/>
 
 
 Nebula is a code editor that combines speed, lightness, and security.
