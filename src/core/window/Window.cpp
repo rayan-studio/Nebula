@@ -1,0 +1,1893 @@
+#include "core/window/Window.h"
+#include "ui/graphics/Skia.h"
+#include "utils/logger/Logger.h"
+#include <stdexcept>
+#include <windows.h>
+#include <windowsx.h>
+#include <commdlg.h>
+#include <shlobj.h>
+#include <shobjidl.h>
+#include <vector>
+#include <uxtheme.h>
+#include <vssym32.h>
+#include "helpers/window_helpers.h"
+#include "ui/components/titlebar/TitleBar.h"
+#include "ui/components/popups/CustomPopup.h"
+#include "ui/components/footer/Footer.h"
+#include "utils/ggwave/ggwave_integration.h"
+#include "core/explorer/Explorer.h"
+#include "ui/components/sidebar/Sidebar.h"
+#include "ui/components/input/InputTypeFixed.h"
+#include "ui/panels/PanelInit.h"
+#include "ui/panels/PanelManager.h"
+#include "ui/panels/search/SearchPanel.h"
+#include "ui/panels/terminal/TerminalPanel.h"
+#include "ui/panels/ggwave/GGWavePanel.h"
+#include "utils/logger/Logger.h"
+
+static void EnableMicaIfAvailable(HWND hwnd)
+{
+    HMODULE hDwm = LoadLibraryW(L"dwmapi.dll");
+    if (!hDwm)
+        return;
+
+    using DwmSetWindowAttribute_t = HRESULT(WINAPI *)(HWND, DWORD, LPCVOID, DWORD);
+    auto pDwmSetWindowAttribute = reinterpret_cast<DwmSetWindowAttribute_t>(GetProcAddress(hDwm, "DwmSetWindowAttribute"));
+    if (!pDwmSetWindowAttribute)
+    {
+        FreeLibrary(hDwm);
+        return;
+    }
+
+    BOOL useDark = TRUE;
+    pDwmSetWindowAttribute(hwnd, 20, &useDark, sizeof(useDark));
+    pDwmSetWindowAttribute(hwnd, 19, &useDark, sizeof(useDark));
+    const DWORD DWMWA_SYSTEMBACKDROP_TYPE = 38;
+    const int DWMSBT_MAINWINDOW = 2;
+    pDwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &DWMSBT_MAINWINDOW, sizeof(DWMSBT_MAINWINDOW));
+
+    FreeLibrary(hDwm);
+}
+
+static const wchar_t *WINDOW_CLASS_NAME = L"NebulaTextWindowClass";
+
+// Throttled invalidate to avoid excessive redraws on high-frequency events
+static DWORD g_lastInvalidateTime = 0;
+static void ThrottledInvalidateRect(HWND hwnd, const RECT *rect, BOOL erase)
+{
+    DWORD now = GetTickCount();
+    const DWORD MIN_INTERVAL_MS = 16; // ~60 FPS
+    if (now - g_lastInvalidateTime >= MIN_INTERVAL_MS)
+    {
+        InvalidateRect(hwnd, rect, erase);
+        g_lastInvalidateTime = now;
+    }
+}
+
+Window::Window(HINSTANCE hInstance)
+    : hInstance_(hInstance), hwnd_(nullptr), skia_(nullptr)
+{
+}
+
+void Window::ClearAllHoverStates()
+{
+    // Clear hovered state in titlebar/menu
+    hoveredButton_ = Hovered_None;
+    for (int i = 0; i < 8; ++i)
+        SetMenuItemHovered(i, false);
+    HideMenuDropdown(hwnd_);
+
+    // Clear tab hover
+    tabBar_.ClearHover();
+
+    // Clear explorer hover
+    GetExplorerManager().ClearHover(hwnd_);
+
+    // Clear panel resize hover
+    GetPanelManager().ClearResizeHover(hwnd_);
+
+    // Clear footer hover
+    Footer_ClearHover(hwnd_);
+
+    // Throttle full-window invalidation to avoid redraw storms from frequent mouse moves
+    ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+Window::~Window()
+{
+    if (skia_)
+        delete skia_;
+
+    for (auto &pair : editors_)
+    {
+        delete pair.second;
+    }
+    editors_.clear();
+}
+
+Orion::Editor *Window::GetEditor()
+{
+    int activeTab = tabBar_.GetActiveTabIndex();
+    if (activeTab >= 0 && editors_.count(activeTab) > 0)
+    {
+        return editors_[activeTab];
+    }
+    return nullptr;
+}
+
+Orion::Editor *Window::GetEditorForTab(int tabIndex)
+{
+    if (editors_.count(tabIndex) > 0)
+    {
+        return editors_[tabIndex];
+    }
+    return nullptr;
+}
+
+void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber)
+{
+    size_t lastSlash = filePath.find_last_of(L"\\/");
+    std::wstring fileName = (lastSlash != std::wstring::npos) ? filePath.substr(lastSlash + 1) : filePath;
+
+    int tabIndex = tabBar_.AddTab(filePath, fileName);
+
+    // If there's already an editor for this tab, don't create a new one.
+    if (editors_.count(tabIndex) == 0)
+    {
+        Orion::Editor *newEditor = new Orion::Editor();
+        // Load custom font for the editor if available
+        if (!customFontPath_.empty() && skia_)
+        {
+            newEditor->LoadCustomFont(skia_->GetDWriteFactory(), customFontPath_);
+        }
+        newEditor->LoadFile(filePath);
+        editors_[tabIndex] = newEditor;
+    }
+
+    // Position caret at specified line if provided
+    if (lineNumber >= 0 && editors_.count(tabIndex) > 0)
+    {
+        editors_[tabIndex]->SetCaret(lineNumber, 0);
+    }
+
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+bool Window::Create(int nCmdShow)
+{
+    WNDCLASSEXW wcex = {};
+    wcex.cbSize = sizeof(wcex);
+    // Enable double-click messages for this window class
+    wcex.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
+    wcex.lpfnWndProc = Window::WndProc;
+    wcex.hInstance = hInstance_;
+    wcex.lpszClassName = WINDOW_CLASS_NAME;
+    wcex.hCursor = LoadCursor(nullptr, IDC_ARROW);
+
+    HICON hAppIcon = reinterpret_cast<HICON>(LoadImageW(nullptr, L"assets\\favicon.ico", IMAGE_ICON, 32, 32, LR_LOADFROMFILE | LR_DEFAULTSIZE));
+    HICON hAppIconSmall = reinterpret_cast<HICON>(LoadImageW(nullptr, L"assets\\favicon.ico", IMAGE_ICON, 16, 16, LR_LOADFROMFILE | LR_DEFAULTSIZE));
+    if (hAppIcon)
+        wcex.hIcon = hAppIcon;
+    if (hAppIconSmall)
+        wcex.hIconSm = hAppIconSmall;
+
+    if (!RegisterClassExW(&wcex))
+    {
+        return false;
+    }
+
+    int window_style = WS_THICKFRAME | WS_SYSMENU | WS_MAXIMIZEBOX | WS_MINIMIZEBOX | WS_VISIBLE;
+
+    int desired_logical_w = 1200;
+    int desired_logical_h = 800;
+
+    UINT systemDpi = 96;
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (user32)
+    {
+        typedef UINT(WINAPI * GetDpiForSystem_t)();
+        auto pGetDpiForSystem = reinterpret_cast<GetDpiForSystem_t>(GetProcAddress(user32, "GetDpiForSystem"));
+        if (pGetDpiForSystem)
+            systemDpi = pGetDpiForSystem();
+    }
+
+    int width_px = MulDiv(desired_logical_w, (int)systemDpi, 96);
+    int height_px = MulDiv(desired_logical_h, (int)systemDpi, 96);
+
+    RECT workArea = {};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+    int work_w = workArea.right - workArea.left;
+    int work_h = workArea.bottom - workArea.top;
+    if (width_px > work_w)
+        width_px = work_w;
+    if (height_px > work_h)
+        height_px = work_h;
+
+    int left = workArea.left + (work_w - width_px) / 2;
+    int top = workArea.top + (work_h - height_px) / 2;
+
+    hwnd_ = CreateWindowExW(
+        WS_EX_APPWINDOW,
+        WINDOW_CLASS_NAME,
+        L"Nebula",
+        window_style,
+        left,
+        top,
+        width_px,
+        height_px,
+        nullptr,
+        nullptr,
+        hInstance_,
+        this);
+
+    if (!hwnd_)
+        return false;
+
+    ShowWindow(hwnd_, nCmdShow);
+    UpdateWindow(hwnd_);
+
+    SetWindowPos(hwnd_, NULL, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+    EnableMicaIfAvailable(hwnd_);
+
+    return true;
+}
+
+int Window::Run()
+{
+    MSG msg;
+    while (GetMessageW(&msg, nullptr, 0, 0))
+    {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    return static_cast<int>(msg.wParam);
+}
+
+void Window::SetText(const std::wstring &text)
+{
+    text_ = text;
+    if (skia_)
+    {
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+}
+
+LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+    Window *self = nullptr;
+
+    if (uMsg == WM_NCCREATE)
+    {
+        CREATESTRUCTW *cs = reinterpret_cast<CREATESTRUCTW *>(lParam);
+        self = reinterpret_cast<Window *>(cs->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+        self->hwnd_ = hwnd;
+    }
+    else
+    {
+        self = reinterpret_cast<Window *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    }
+
+    if (self)
+        return self->HandleMessage(uMsg, wParam, lParam);
+
+    return DefWindowProcW(hwnd, uMsg, wParam, lParam);
+}
+
+Orion::Editor *GetOrionEditor(HWND hwnd)
+{
+    Window *self = reinterpret_cast<Window *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    return self ? self->GetEditor() : nullptr;
+}
+
+Window *GetWindowFromHwnd(HWND hwnd)
+{
+    return reinterpret_cast<Window *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+}
+
+LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+    switch (uMsg)
+    {
+    case WM_NCCALCSIZE:
+    {
+        if (!wParam)
+            return DefWindowProc(hwnd_, uMsg, wParam, lParam);
+
+        UINT dpi = GetDpiForWindow(hwnd_);
+        int frame_x = GetSystemMetricsForDpi(SM_CXFRAME, dpi);
+        int frame_y = GetSystemMetricsForDpi(SM_CYFRAME, dpi);
+        int padding = GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+
+        NCCALCSIZE_PARAMS *params = (NCCALCSIZE_PARAMS *)lParam;
+        RECT *requested_client_rect = params->rgrc;
+
+        requested_client_rect->right -= frame_x + padding;
+        requested_client_rect->left += frame_x + padding;
+        requested_client_rect->bottom -= frame_y + padding;
+
+        if (win32_window_is_maximized(hwnd_))
+        {
+            requested_client_rect->top += frame_y + padding;
+        }
+
+        return 0;
+    }
+    case WM_CREATE:
+    {
+        skia_ = new Skia();
+        if (!skia_->Init(hwnd_))
+        {
+            delete skia_;
+            skia_ = nullptr;
+            return -1;
+        }
+        // Load custom font for all future editors
+        {
+            wchar_t modulePath[MAX_PATH] = {0};
+            if (GetModuleFileNameW(NULL, modulePath, MAX_PATH) > 0)
+            {
+                std::wstring dir(modulePath);
+                size_t pos = dir.find_last_of(L"\\/");
+                if (pos != std::wstring::npos)
+                    dir = dir.substr(0, pos);
+
+                std::vector<std::wstring> candidates;
+                candidates.push_back(dir + L"\\assets\\font\\static\\JetBrainsMono-Regular.ttf");
+                candidates.push_back(dir + L"\\..\\assets\\font\\static\\JetBrainsMono-Regular.ttf");
+                candidates.push_back(dir + L"\\..\\..\\assets\\font\\static\\JetBrainsMono-Regular.ttf");
+
+                for (const auto &cand : candidates)
+                {
+                    wchar_t full[MAX_PATH] = {0};
+                    if (GetFullPathNameW(cand.c_str(), MAX_PATH, full, NULL) > 0)
+                    {
+                        DWORD attr = GetFileAttributesW(full);
+                        if (attr != INVALID_FILE_ATTRIBUTES)
+                        {
+                            customFontPath_ = full;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        SetText(L"Bonjour — texte rendu via GPU (Direct2D)");
+
+        // Initialize ggwave wrapper (will fallback to SAPI if not enabled)
+        CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+        ggwave::Initialize();
+
+        // Initialize the panel system
+        InitializePanelSystem();
+
+        RECT clientRect;
+        GetClientRect(hwnd_, &clientRect);
+        UINT dpiInit = GetDpiForWindow(hwnd_);
+        UINT initW = MulDiv(clientRect.right - clientRect.left, dpiInit, 96);
+        UINT initH = MulDiv(clientRect.bottom - clientRect.top, dpiInit, 96);
+        skia_->Resize(initW, initH);
+
+        SetWindowPos(hwnd_, NULL, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+        return 0;
+    }
+    case WM_ACTIVATE:
+    {
+        RECT title_bar_rect = win32_titlebar_rect(hwnd_);
+        // Clear hovered state when window activation changes
+        hoveredButton_ = Hovered_None;
+        for (int i = 0; i < 8; ++i)
+            SetMenuItemHovered(i, false);
+        HideMenuDropdown(hwnd_);
+        InvalidateRect(hwnd_, &title_bar_rect, FALSE);
+        return DefWindowProc(hwnd_, uMsg, wParam, lParam);
+    }
+    case WM_NCHITTEST:
+    {
+        LRESULT hit = DefWindowProc(hwnd_, uMsg, wParam, lParam);
+        switch (hit)
+        {
+        case HTNOWHERE:
+        case HTRIGHT:
+        case HTLEFT:
+        case HTTOPLEFT:
+        case HTTOP:
+        case HTTOPRIGHT:
+        case HTBOTTOMRIGHT:
+        case HTBOTTOM:
+        case HTBOTTOMLEFT:
+            return hit;
+        }
+
+        auto title_bar_hovered_button = hoveredButton_;
+
+        if (title_bar_hovered_button == Window::Hovered_Maximize)
+        {
+            return HTMAXBUTTON;
+        }
+
+        POINT cursor_point = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        ScreenToClient(hwnd_, &cursor_point);
+
+        int hoveredMenu = GetHoveredMenuItem(hwnd_, cursor_point);
+        if (hoveredMenu >= 0)
+        {
+            return HTCLIENT;
+        }
+
+        if (cursor_point.y < win32_titlebar_rect(hwnd_).bottom)
+        {
+            return HTCAPTION;
+        }
+
+        return HTCLIENT;
+    }
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        BeginPaint(hwnd_, &ps);
+
+        bool has_focus = !!GetFocus();
+        int hovered = static_cast<int>(hoveredButton_);
+        wchar_t title_text_buffer[255] = {0};
+        GetWindowTextW(hwnd_, title_text_buffer, (int)std::size(title_text_buffer));
+
+        if (skia_)
+        {
+            skia_->Render(text_, hwnd_, hovered, has_focus, std::wstring(title_text_buffer), ps.hdc);
+        }
+
+        // Inline input is drawn by Explorer::DrawItems when visible; no global overlay drawing here.
+
+        EndPaint(hwnd_, &ps);
+        return 0;
+    }
+    case WM_SIZE:
+    {
+        if (skia_)
+        {
+            RECT clientRect;
+            GetClientRect(hwnd_, &clientRect);
+            UINT dpi = GetDpiForWindow(hwnd_);
+            UINT w = MulDiv(clientRect.right - clientRect.left, dpi, 96);
+            UINT h = MulDiv(clientRect.bottom - clientRect.top, dpi, 96);
+            skia_->Resize(w, h);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+        return 0;
+    }
+    case WM_NCMOUSEMOVE:
+    {
+        POINT cursor_point;
+        GetCursorPos(&cursor_point);
+        ScreenToClient(hwnd_, &cursor_point);
+
+        RECT title_bar_rect = win32_titlebar_rect(hwnd_);
+
+        int hoveredMenu = GetHoveredMenuItem(hwnd_, cursor_point);
+        for (int i = 0; i < 8; i++)
+        {
+            SetMenuItemHovered(i, i == hoveredMenu);
+        }
+
+        CustomTitleBarButtonRects button_rects = win32_get_title_bar_button_rects(hwnd_, &title_bar_rect);
+
+        Window::CustomTitleBarHoveredButton new_hovered_button = Window::Hovered_None;
+        if (PtInRect(&button_rects.close, cursor_point))
+        {
+            new_hovered_button = Window::Hovered_Close;
+        }
+        else if (PtInRect(&button_rects.minimize, cursor_point))
+        {
+            new_hovered_button = Window::Hovered_Minimize;
+        }
+        else if (PtInRect(&button_rects.maximize, cursor_point))
+        {
+            new_hovered_button = Window::Hovered_Maximize;
+        }
+        auto current = hoveredButton_;
+        if (new_hovered_button != current)
+        {
+            InvalidateRect(hwnd_, &button_rects.close, FALSE);
+            InvalidateRect(hwnd_, &button_rects.minimize, FALSE);
+            InvalidateRect(hwnd_, &button_rects.maximize, FALSE);
+            hoveredButton_ = new_hovered_button;
+        }
+        return DefWindowProc(hwnd_, uMsg, wParam, lParam);
+    }
+    case WM_USER + 100:
+    {
+        const wchar_t *filePath = (const wchar_t *)lParam;
+        int lineNumber = (int)wParam; // Line number (0-based), -1 if not specified
+        if (filePath)
+        {
+            OpenFileInNewTab(filePath, lineNumber > 0 ? lineNumber : -1);
+        }
+        return 0;
+    }
+    case WM_USER + 201:
+    {
+        // Posted from TerminalPanel::ReadThread - lParam is heap buffer, wParam is length
+        char *buf = reinterpret_cast<char *>(lParam);
+        size_t len = (size_t)wParam;
+        if (buf && len > 0)
+        {
+            TerminalPanel &terminal = GetTerminalPanel();
+            terminal.HandleConPTYOutput(buf, len);
+        }
+        return 0;
+    }
+    case WM_LBUTTONDOWN:
+    {
+        POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+
+        // If a titlebar menu dropdown is visible, let it handle clicks first
+        if (IsMenuDropdownVisible())
+        {
+            int itemIndex = GetDropdownHoveredItem(pt);
+            if (itemIndex >= 0)
+            {
+                int baseId = GetActiveDropdown().baseId;
+                if (baseId >= 5000 && baseId < 6000)
+                {
+                    int commandId = baseId + itemIndex;
+                    GetExplorerManager().HandleContextCommand(commandId);
+                }
+                else if (baseId >= 7000 && baseId < 8000)
+                {
+                    int commandId = baseId + itemIndex;
+                    PostMessageW(hwnd_, WM_COMMAND, commandId, 0);
+                }
+                else
+                {
+                    int menuIndex = GetActiveDropdown().menuIndex;
+                    int commandId = 3000 + menuIndex * 100 + itemIndex;
+                    PostMessageW(hwnd_, WM_COMMAND, commandId, 0);
+                }
+                HideMenuDropdown(hwnd_);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+
+            if (!IsPointInDropdown(pt))
+            {
+                HideMenuDropdown(hwnd_);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+            else
+            {
+                return 0;
+            }
+        }
+
+        // Global Input overlay removed; clicks always propagate to Explorer/editor.
+
+        // If click is inside Explorer, forward it first
+        if (GetExplorerManager().IsVisible() && GetExplorerManager().IsPointInExplorer(pt))
+        {
+            GetExplorerManager().OnLeftButtonDown(hwnd_, pt);
+            return 0;
+        }
+
+        // Sidebar icon clicks (toggle explorer)
+        if (HandleSidebarLeftClick(hwnd_, pt))
+        {
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+
+        RECT tbRect = win32_titlebar_rect(hwnd_);
+        if (pt.y >= tbRect.bottom && pt.y < tbRect.bottom + tabBar_.GetHeight())
+        {
+            int clickedTab = tabBar_.OnLeftButtonDown(pt);
+            if (clickedTab >= 0)
+            {
+                // Ensure any editor mouse interactions are cancelled and release capture
+                ReleaseCapture();
+                Orion::Editor *editor = GetEditor();
+                if (editor)
+                    editor->CancelInteraction();
+
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+        }
+
+        
+
+        int hoveredMenu = GetHoveredMenuItem(hwnd_, pt);
+        if (hoveredMenu >= 0)
+        {
+            if (IsMenuDropdownVisible() && GetActiveDropdown().menuIndex == hoveredMenu)
+            {
+                HideMenuDropdown(hwnd_);
+            }
+            else
+            {
+                D2D1_RECT_F menuRect = GetMenuItems()[hoveredMenu].rect;
+                ShowMenuDropdown(hwnd_, hoveredMenu, menuRect);
+            }
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+
+        // Check if click is in active panel area
+        Panel *activePanel = GetPanelManager().GetActivePanel();
+        bool inPanel = false;
+        bool inResizeZone = false;
+
+        if (activePanel && activePanel->IsVisible())
+        {
+            inPanel = activePanel->IsPointInPanel(pt);
+            inResizeZone = activePanel->IsPointInResizeZone(pt);
+        }
+
+        if (inPanel || inResizeZone)
+        {
+            // Cancel editor interactions before panel takes capture (resize/scroll)
+            ReleaseCapture();
+            Orion::Editor *editor = GetEditor();
+            if (editor)
+                editor->CancelInteraction();
+
+            GetPanelManager().OnLeftButtonDown(hwnd_, pt);
+            return 0;
+        }
+
+        // Check if click is on GGWave button
+        GGWavePanel &ggwave = GetGGWavePanel();
+        if (ggwave.IsPointOnButton(pt))
+        {
+            ggwave.OnLeftButtonDown(hwnd_, pt);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+
+        // Check if click is in terminal area
+        TerminalPanel &terminal = GetTerminalPanel();
+        if (terminal.IsVisible())
+        {
+            bool inTerminal = terminal.IsPointInPanel(pt);
+            bool inTerminalResize = terminal.IsPointInResizeZone(pt);
+
+            if (inTerminal || inTerminalResize)
+            {
+                ReleaseCapture();
+                Orion::Editor *editor = GetEditor();
+                if (editor)
+                    editor->CancelInteraction();
+
+                terminal.OnLeftButtonDown(hwnd_, pt);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+            else
+            {
+                // Click outside terminal - unfocus it
+                terminal.Unfocus();
+            }
+        }
+
+        Orion::Editor *editor = GetEditor();
+        if (editor)
+        {
+            // Clicking in editor area - unfocus SearchPanel input if it was focused
+            if (GetPanelManager().IsPanelActive(PanelId::Search))
+            {
+                SearchPanel *searchPanel = GetPanelManager().GetPanelAs<SearchPanel>(PanelId::Search);
+                if (searchPanel && searchPanel->IsInputFocused())
+                {
+                    searchPanel->UnfocusInput();
+                }
+            }
+
+            // Unfocus terminal when clicking in editor
+            GetTerminalPanel().Unfocus();
+
+            editor->OnLeftButtonDown(hwnd_, pt);
+            // Capture the mouse so we continue receiving mouse events
+            // even when the cursor leaves the window while dragging.
+            SetCapture(hwnd_);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+
+        return DefWindowProc(hwnd_, uMsg, wParam, lParam);
+    }
+    case WM_LBUTTONDBLCLK:
+    {
+        POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        RECT tbRect = win32_titlebar_rect(hwnd_);
+        RECT clientRect;
+        GetClientRect(hwnd_, &clientRect);
+        // If double-click occurred inside the editor area (not in panel/sidebar)
+        // and there is no active tab, create a new empty untitled tab.
+        UINT dpi = GetDpiForWindow(hwnd_);
+        int sidebarWidth = win32_dpi_scale(50, dpi);
+
+        // Get panel width from active panel
+        Panel *panelDblClick = GetPanelManager().GetActivePanel();
+        int panelWidth = (panelDblClick && panelDblClick->IsVisible()) ? panelDblClick->GetPhysicalWidth() : 0;
+        int editorLeftX = sidebarWidth + panelWidth;
+
+        bool inPanelDbl = panelDblClick && panelDblClick->IsVisible() &&
+                          (panelDblClick->IsPointInPanel(pt) || panelDblClick->IsPointInResizeZone(pt));
+
+        if (tabBar_.GetActiveTabIndex() < 0 &&
+            pt.y >= tbRect.bottom + tabBar_.GetHeight() && pt.y <= clientRect.bottom &&
+            pt.x >= editorLeftX && pt.x <= clientRect.right &&
+            !inPanelDbl)
+        {
+            // create unique untitled placeholder path
+            wchar_t placeholder[64];
+            swprintf_s(placeholder, L"__untitled__#%d", untitledCounter_++);
+            std::wstring displayName = L"Untitled";
+            int tabIndex = tabBar_.AddTab(placeholder, displayName);
+
+            if (editors_.count(tabIndex) == 0)
+            {
+                Orion::Editor *newEditor = new Orion::Editor();
+                if (!customFontPath_.empty() && skia_)
+                {
+                    newEditor->LoadCustomFont(skia_->GetDWriteFactory(), customFontPath_);
+                }
+                newEditor->CreateEmpty();
+                editors_[tabIndex] = newEditor;
+            }
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+        return DefWindowProc(hwnd_, uMsg, wParam, lParam);
+    }
+    case WM_CHAR:
+    {
+        // PRIORITÉ 0: Si l'Explorer a un inline input actif, lui donner les caractères
+        if (GetExplorerManager().IsInlineInputVisible())
+        {
+            GetExplorerManager().OnCharInline((wchar_t)wParam);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+
+        // PRIORITÉ 0.5: Si l'Explorer est en mode Search, lui donner les caractères
+        if (GetExplorerManager().IsSearchMode())
+        {
+            GetExplorerManager().OnCharSearch((wchar_t)wParam);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+
+        // PRIORITÉ 1: Si le SearchPanel est actif et son input est focalisé
+        if (GetPanelManager().IsPanelActive(PanelId::Search))
+        {
+            SearchPanel *searchPanel = GetPanelManager().GetPanelAs<SearchPanel>(PanelId::Search);
+            if (searchPanel && searchPanel->IsInputFocused())
+            {
+                searchPanel->OnChar((wchar_t)wParam);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+        }
+
+        // PRIORITÉ 1.5: Si le terminal est visible, initialisé ET focalisé
+        {
+            TerminalPanel &terminal = GetTerminalPanel();
+            if (terminal.IsVisible() && terminal.IsInitialized() && terminal.IsFocused())
+            {
+                terminal.OnChar((wchar_t)wParam);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+        }
+
+        // No global input overlay — inline Explorer input handled separately.
+
+        // PRIORITÉ 2: Sinon, envoyer à l'éditeur
+        Orion::Editor *editor = GetEditor();
+        if (editor)
+        {
+            editor->OnChar((wchar_t)wParam);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+        return 0;
+    }
+    case WM_KEYDOWN:
+    {
+        // 🔍 DEBUG : Log Ctrl+Key pour tracer le problème
+        {
+            bool ctrlPressed = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+            if (ctrlPressed)
+            {
+                wchar_t buf[128];
+                swprintf_s(buf, L"WM_KEYDOWN: Ctrl pressed - wParam=%d (char='%c')",
+                           (int)wParam, (wParam >= 'A' && wParam <= 'Z') ? (char)wParam : '?');
+                Logger::Instance().Log(std::wstring(buf));
+            }
+        }
+        // PRIORITÉ -1: Toggle terminal avec Ctrl+` (backtick)
+        bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        if (ctrl && wParam == VK_OEM_3) // VK_OEM_3 is the backtick key
+        {
+            TerminalPanel &terminal = GetTerminalPanel();
+            Logger::Instance().Log(L"Window::WM_KEYDOWN - toggle terminal requested");
+            if (!terminal.IsVisible())
+            {
+                Logger::Instance().Log(L"Window::WM_KEYDOWN - calling TerminalPanel::Initialize");
+                terminal.Initialize();
+                Logger::Instance().Log(L"Window::WM_KEYDOWN - returned from TerminalPanel::Initialize");
+            }
+            terminal.ToggleVisible();
+
+            // **AJOUT : Auto-focus le terminal quand il devient visible**
+            if (terminal.IsVisible())
+            {
+                terminal.SetFocused(true);
+                Logger::Instance().Log(L"Window::WM_KEYDOWN - terminal focused");
+            }
+
+            Logger::Instance().Log(L"Window::WM_KEYDOWN - terminal.ToggleVisible() done");
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+
+        // ✨ Zoom shortcuts: Ctrl + Plus / Minus / 0
+        if (ctrl && (wParam == VK_ADD || wParam == VK_OEM_PLUS || wParam == 187))
+        {
+            Orion::Editor *editor = GetEditor();
+            if (editor)
+            {
+                editor->ZoomIn();
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+        }
+
+        if (ctrl && (wParam == VK_SUBTRACT || wParam == VK_OEM_MINUS || wParam == 189))
+        {
+            Orion::Editor *editor = GetEditor();
+            if (editor)
+            {
+                editor->ZoomOut();
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+        }
+
+        if (ctrl && (wParam == VK_NUMPAD0 || wParam == '0'))
+        {
+            Orion::Editor *editor = GetEditor();
+            if (editor)
+            {
+                editor->ResetZoom();
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+        }
+
+        // PRIORITÉ 0: Explorer inline input
+        if (GetExplorerManager().IsInlineInputVisible())
+        {
+            GetExplorerManager().OnKeyDownInline(wParam);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+
+        // PRIORITÉ 0.5: Explorer search mode keyboard handling
+        if (GetExplorerManager().IsSearchMode())
+        {
+            GetExplorerManager().OnKeyDownSearch(wParam);
+            // If user pressed Enter, open first search result (if any)
+            if (wParam == VK_RETURN)
+            {
+                const auto &results = GetExplorerManager().GetSearchResults();
+                if (!results.empty())
+                {
+                    // Send the same open-file message used by mouse-open
+                    SendMessageW(hwnd_, WM_USER + 100, 0, (LPARAM)results[0].filePath.c_str());
+                    // exit search mode after opening
+                    GetExplorerManager().ExitSearchMode();
+                }
+            }
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+
+        // PRIORITÉ 1: Si le SearchPanel est actif et son input est focalisé
+        if (GetPanelManager().IsPanelActive(PanelId::Search))
+        {
+            SearchPanel *searchPanel = GetPanelManager().GetPanelAs<SearchPanel>(PanelId::Search);
+            if (searchPanel && searchPanel->IsInputFocused())
+            {
+                searchPanel->OnKeyDown(wParam);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+        }
+
+        // PRIORITÉ 1.5: Si le terminal est visible, initialisé ET focalisé
+        {
+            TerminalPanel &terminal = GetTerminalPanel();
+            if (terminal.IsVisible() && terminal.IsInitialized() && terminal.IsFocused())
+            {
+                terminal.OnKeyDown(wParam);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+        }
+
+        // No global input overlay — inline Explorer input handled separately.
+
+        // Ctrl+N -> Nouveau fichier
+        // Note: ctrl already declared above for terminal toggle
+        if (ctrl && (wParam == 'N' || wParam == 'n'))
+        {
+            Logger::Instance().Log(L"Shortcut: Ctrl+N pressed - showing new-file input");
+            // Ensure explorer visible then show inline input
+            if (!GetExplorerManager().IsVisible())
+                GetExplorerManager().SetVisible(true);
+            GetExplorerManager().ShowInlineInput(Input::Type::File);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+
+        // Ctrl+Shift+N -> Nouveau dossier
+        bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+        if (ctrl && shift && (wParam == 'N' || wParam == 'n'))
+        {
+            Logger::Instance().Log(L"Shortcut: Ctrl+Shift+N pressed - showing new-folder input");
+            if (!GetExplorerManager().IsVisible())
+                GetExplorerManager().SetVisible(true);
+            GetExplorerManager().ShowInlineInput(Input::Type::Folder);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+
+        // Ctrl+O -> Open file dialog
+        if (ctrl && !shift && (wParam == 'O' || wParam == 'o'))
+        {
+            wchar_t fileName[MAX_PATH] = {0};
+            OPENFILENAMEW ofn = {};
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner = hwnd_;
+            ofn.lpstrFile = fileName;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.lpstrFilter = L"All Files\0*.*\0Text Files\0*.txt\0\0";
+            ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+            if (GetOpenFileNameW(&ofn))
+            {
+                OpenFileInNewTab(std::wstring(fileName), -1);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+            return 0;
+        }
+
+        // Ctrl+Shift+O -> Open Project (pick folder)
+        if (ctrl && shift && (wParam == 'O' || wParam == 'o'))
+        {
+            IFileOpenDialog *pFileOpen = nullptr;
+            HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFileOpen));
+            if (SUCCEEDED(hr) && pFileOpen)
+            {
+                DWORD options = 0;
+                if (SUCCEEDED(pFileOpen->GetOptions(&options)))
+                {
+                    pFileOpen->SetOptions(options | FOS_PICKFOLDERS);
+                }
+                if (SUCCEEDED(pFileOpen->Show(hwnd_)))
+                {
+                    IShellItem *pItem = nullptr;
+                    if (SUCCEEDED(pFileOpen->GetResult(&pItem)) && pItem)
+                    {
+                        PWSTR pszPath = nullptr;
+                        if (SUCCEEDED(pItem->GetDisplayName(SIGDN_FILESYSPATH, &pszPath)) && pszPath)
+                        {
+                            std::wstring selectedFolder = pszPath;
+                            CoTaskMemFree(pszPath);
+                            GetExplorerManager().Initialize(selectedFolder);
+                            GetExplorerManager().SetVisible(true);
+                            InvalidateRect(hwnd_, nullptr, FALSE);
+                        }
+                        pItem->Release();
+                    }
+                }
+                pFileOpen->Release();
+            }
+            return 0;
+        }
+
+        // Handle global shortcuts (Ctrl+W to close tab)
+        if (ctrl && (wParam == 'W' || wParam == 'w'))
+        {
+            int active = tabBar_.GetActiveTabIndex();
+            if (active >= 0)
+            {
+                // Close tab in tab bar
+                tabBar_.CloseTab(active);
+
+                // Delete and remove editor for this tab if exists
+                auto it = editors_.find(active);
+                if (it != editors_.end())
+                {
+                    delete it->second;
+                    editors_.erase(it);
+                }
+
+                // Reindex editors with keys greater than the removed index
+                if (!editors_.empty())
+                {
+                    std::map<int, Orion::Editor *> newEditors;
+                    for (auto &p : editors_)
+                    {
+                        int key = p.first;
+                        Orion::Editor *ed = p.second;
+                        if (key > active)
+                            newEditors[key - 1] = ed;
+                        else
+                            newEditors[key] = ed;
+                    }
+                    editors_.swap(newEditors);
+                }
+
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+            return 0;
+        }
+
+        // Ctrl+S -> save (or Save As if untitled)
+        if (ctrl && (wParam == 'S' || wParam == 's'))
+        {
+            int active = tabBar_.GetActiveTabIndex();
+            if (active >= 0)
+            {
+                Orion::Editor *editor = GetEditorForTab(active);
+                if (editor)
+                {
+                    std::wstring currentPath = editor->GetFilePath();
+                    if (currentPath.empty() || currentPath.rfind(L"__untitled__", 0) == 0)
+                    {
+                        // Prompt Save As
+                        wchar_t fileName[MAX_PATH] = {0};
+                        OPENFILENAMEW ofn = {};
+                        ofn.lStructSize = sizeof(ofn);
+                        ofn.hwndOwner = hwnd_;
+                        ofn.lpstrFile = fileName;
+                        ofn.nMaxFile = MAX_PATH;
+                        ofn.lpstrFilter = L"All Files\0*.*\0Text Files\0*.txt\0\0";
+                        ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+                        ofn.lpstrDefExt = L"txt";
+                        if (GetSaveFileNameW(&ofn))
+                        {
+                            std::wstring chosen = fileName;
+                            if (editor->SaveToFile(chosen))
+                            {
+                                // update tab path/display name
+                                size_t lastSlash = chosen.find_last_of(L"\\/");
+                                std::wstring fileDisplay = (lastSlash != std::wstring::npos) ? chosen.substr(lastSlash + 1) : chosen;
+                                tabBar_.UpdateTabPath(active, chosen, fileDisplay);
+                                InvalidateRect(hwnd_, nullptr, FALSE);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Normal save overwrite
+                        editor->SaveToFile(currentPath);
+                        InvalidateRect(hwnd_, nullptr, FALSE);
+                    }
+                }
+            }
+            return 0;
+        }
+
+        // ✨ NOUVEAU : Gestion prioritaire de Ctrl+F pour ouvrir la recherche
+        {
+            bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+            if (ctrl && (wParam == 'F' || wParam == 'f'))
+            {
+                // Si un éditeur est actif, ouvrir son SearchBox
+                Orion::Editor* editor = GetEditor();
+                if (editor)
+                {
+                    editor->ShowSearch();
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                }
+            }
+        }
+
+        Orion::Editor *editor = GetEditor();
+        if (editor)
+        {
+            {
+                wchar_t buf[128];
+                bool ctrl2 = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+                swprintf_s(buf, L"Window::WM_KEYDOWN - forwarding to Editor: wParam=%d ctrl=%d", (int)wParam, ctrl2 ? 1 : 0);
+                Logger::Instance().Log(std::wstring(buf));
+            }
+            try {
+                editor->OnKeyDown(wParam);
+            } catch (...) {
+                wchar_t buf[256];
+                swprintf_s(buf, L"Window::WM_KEYDOWN - C++ exception in Editor::OnKeyDown wParam=%d", (int)wParam);
+                Logger::Instance().Log(std::wstring(buf));
+            }
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+        return 0;
+    }
+    case WM_MOUSEWHEEL:
+    {
+        POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        ScreenToClient(hwnd_, &pt);
+
+        // If wheel is over Explorer, let it handle the scroll
+        if (GetExplorerManager().IsVisible() && GetExplorerManager().IsPointInExplorer(pt))
+        {
+            int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            GetExplorerManager().OnMouseWheel(hwnd_, delta);
+            return 0;
+        }
+
+        // Check if wheel is over active panel
+        Panel *panelWheel = GetPanelManager().GetActivePanel();
+        if (panelWheel && panelWheel->IsVisible() && panelWheel->IsPointInPanel(pt))
+        {
+            int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            GetPanelManager().OnMouseWheel(hwnd_, delta);
+            return 0;
+        }
+
+        // Check if wheel is over terminal
+        TerminalPanel &terminalWheel = GetTerminalPanel();
+        if (terminalWheel.IsVisible() && terminalWheel.IsPointInPanel(pt))
+        {
+            int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            terminalWheel.OnMouseWheel(hwnd_, delta);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+
+        // Route wheel to editor when not over panel (pass Ctrl state for zoom)
+        {
+            int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            // ✨ Détecter si Ctrl est pressé
+            bool ctrlPressed = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+
+            Orion::Editor *editor = GetEditor();
+            if (editor)
+            {
+                editor->OnMouseWheel(hwnd_, delta, ctrlPressed);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+        }
+
+        return DefWindowProc(hwnd_, uMsg, wParam, lParam);
+    }
+    case WM_MOUSEHWHEEL:
+    {
+        POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        ScreenToClient(hwnd_, &pt);
+
+        // Route horizontal wheel to editor (do not forward to Explorer - explorer is vertical list)
+        {
+            int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            Orion::Editor *editor = GetEditor();
+            if (editor)
+            {
+                editor->OnHorizontalWheel(hwnd_, delta);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+        }
+
+        return DefWindowProc(hwnd_, uMsg, wParam, lParam);
+    }
+    case WM_MOUSEMOVE:
+    {
+        POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        bool needsRedraw = false;
+
+        // Ensure we get WM_MOUSELEAVE when the cursor exits the window
+        TRACKMOUSEEVENT tme = {};
+        tme.cbSize = sizeof(tme);
+        tme.dwFlags = TME_LEAVE;
+        tme.hwndTrack = hwnd_;
+        TrackMouseEvent(&tme);
+
+        // Check if active panel is resizing
+        Panel *activePanel = GetPanelManager().GetActivePanel();
+        bool panelResizing = activePanel && activePanel->IsResizing();
+
+        if (panelResizing)
+        {
+            GetPanelManager().OnMouseMove(hwnd_, pt);
+            return 0;
+        }
+
+        bool lmbDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+
+        // ===== TERMINAL HANDLING - Optimisé pour éviter les redraws =====
+        TerminalPanel &terminal = GetTerminalPanel();
+
+        if (terminal.IsVisible())
+        {
+            // Priority 1: Currently resizing - seulement si on drag vraiment
+            if (terminal.IsResizing())
+            {
+                bool changed = terminal.OnMouseMove(hwnd_, pt);
+                if (changed)
+                {
+                    const auto &st = terminal.GetState();
+                    RECT tr = {(LONG)st.leftEdge, (LONG)st.topEdge, (LONG)st.rightEdge, (LONG)st.bottomEdge};
+                    ThrottledInvalidateRect(hwnd_, &tr, FALSE);
+                }
+                return 0;
+            }
+
+            // Priority 2: In resize zone (hover) - SEULEMENT changer le curseur
+            if (terminal.IsPointInResizeZone(pt))
+            {
+                // OnMouseMove change le curseur mais ne force pas de redraw si pas de changement
+                terminal.OnMouseMove(hwnd_, pt);
+                return 0;
+            }
+
+            // Priority 3: Selection in progress - SEULEMENT si bouton gauche enfoncé
+            if (lmbDown && terminal.IsPointInPanel(pt))
+            {
+                bool changed = terminal.OnMouseMove(hwnd_, pt);
+                if (changed)
+                {
+                    const auto &st = terminal.GetState();
+                    RECT tr = {(LONG)st.leftEdge, (LONG)st.topEdge, (LONG)st.rightEdge, (LONG)st.bottomEdge};
+                    ThrottledInvalidateRect(hwnd_, &tr, FALSE);
+                }
+                return 0;
+            }
+
+            // Si on passe juste la souris au-dessus sans rien faire, NE RIEN FAIRE
+        }
+        // ===== END TERMINAL HANDLING =====
+
+        // GGWave button hover (handles its own state)
+        GetGGWavePanel().OnMouseMove(hwnd_, pt);
+
+        // If left button is down (dragging selection), prioritize editor handling
+        if (lmbDown)
+        {
+            Orion::Editor *editor = GetEditor();
+            if (editor)
+            {
+                editor->OnMouseMove(hwnd_, pt);
+                ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+        }
+
+        // Tab bar hover
+        RECT tbRect = win32_titlebar_rect(hwnd_);
+        if (pt.y >= tbRect.bottom && pt.y < tbRect.bottom + tabBar_.GetHeight())
+        {
+            int result = tabBar_.OnMouseMove(pt);
+            if (result != -2)
+            {
+                GetExplorerManager().ClearHover(hwnd_);
+                needsRedraw = true;
+            }
+        }
+
+        // Menu dropdown handling
+        if (IsMenuDropdownVisible())
+        {
+            int hoveredItem = GetDropdownHoveredItem(pt);
+            if (hoveredItem != GetActiveDropdown().hoveredItem)
+            {
+                SetDropdownHoveredItem(hoveredItem);
+                needsRedraw = true;
+            }
+
+            int originMenu = GetActiveDropdown().menuIndex;
+            for (size_t i = 0; i < GetMenuItems().size(); ++i)
+            {
+                SetMenuItemHovered((int)i, (int)i == originMenu);
+            }
+
+            if (needsRedraw)
+            {
+                ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
+            }
+            return 0;
+        }
+
+        // Title bar menu hover
+        RECT title_bar_rect = win32_titlebar_rect(hwnd_);
+        if (pt.y < title_bar_rect.bottom)
+        {
+            GetPanelManager().ClearResizeHover(hwnd_);
+
+            int hoveredMenu = GetHoveredMenuItem(hwnd_, pt);
+            static int lastHoveredMenu = -1;
+            if (hoveredMenu != lastHoveredMenu)
+            {
+                for (int i = 0; i < 8; ++i)
+                {
+                    SetMenuItemHovered(i, i == hoveredMenu);
+                }
+                needsRedraw = true;
+                lastHoveredMenu = hoveredMenu;
+            }
+        }
+        else
+        {
+            Panel *activePnl = GetPanelManager().GetActivePanel();
+            bool inPanelArea = false;
+            bool inPanelResize = false;
+
+            if (activePnl && activePnl->IsVisible())
+            {
+                inPanelArea = activePnl->IsPointInPanel(pt);
+                inPanelResize = activePnl->IsPointInResizeZone(pt);
+            }
+
+            if (inPanelArea || inPanelResize)
+            {
+                GetPanelManager().OnMouseMove(hwnd_, pt);
+            }
+            else
+            {
+                RECT client;
+                GetClientRect(hwnd_, &client);
+                UINT dpi = GetDpiForWindow(hwnd_);
+                int footerLogicalH = 28;
+                int footerH = win32_dpi_scale(footerLogicalH, dpi);
+
+                if (pt.y >= client.bottom - footerH)
+                {
+                    Footer_OnMouseMove(hwnd_, pt);
+                    return 0;
+                }
+
+                ClearAllHoverStates();
+
+                // If mouse is over Explorer, let it handle hover/drag first
+                if (GetExplorerManager().IsVisible() && GetExplorerManager().IsPointInExplorer(pt))
+                {
+                    GetExplorerManager().OnMouseMove(hwnd_, pt);
+                }
+                else
+                {
+                    Orion::Editor *editor = GetEditor();
+                    if (editor)
+                    {
+                        editor->OnMouseMove(hwnd_, pt);
+                    }
+                }
+            }
+        }
+
+        if (needsRedraw)
+        {
+            ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
+        }
+
+        return DefWindowProc(hwnd_, uMsg, wParam, lParam);
+    }
+    case WM_LBUTTONUP:
+    {
+        POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+
+        // Check if any panel is resizing
+        Panel *activePanelUp = GetPanelManager().GetActivePanel();
+        bool panelWasResizing = activePanelUp && activePanelUp->IsResizing();
+
+        if (panelWasResizing)
+        {
+            GetPanelManager().OnLeftButtonUp(hwnd_);
+            return 0;
+        }
+
+        // Check if terminal was resizing
+        TerminalPanel &terminalUp = GetTerminalPanel();
+        if (terminalUp.IsVisible() && terminalUp.IsResizing())
+        {
+            terminalUp.OnLeftButtonUp(hwnd_);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+
+        // If terminal had captured the mouse (selection/drag), ensure it gets the mouse-up
+        // This ends selection properly; otherwise selection_.selecting can remain true
+        // and cause continuous redraws on mouse move.
+        if (terminalUp.IsVisible() && GetCapture() == hwnd_)
+        {
+            terminalUp.OnLeftButtonUp(hwnd_);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+
+        // GGWave button release
+        GGWavePanel &ggwaveUp = GetGGWavePanel();
+        ggwaveUp.OnLeftButtonUp(hwnd_);
+
+        int hoveredMenu = GetHoveredMenuItem(hwnd_, pt);
+
+        if (hoveredMenu >= 0)
+        {
+            {
+                std::wstringstream ss;
+                ss << L"Window::WM_LBUTTONUP - hoveredMenu=" << hoveredMenu << L" (client pt=" << pt.x << L"," << pt.y << L")";
+                Logger::Instance().Log(ss.str());
+            }
+            POINT screenPt = pt;
+            ClientToScreen(hwnd_, &screenPt);
+
+            std::vector<std::wstring> popupItems;
+            switch (hoveredMenu)
+            {
+            case 0:
+                popupItems = {L"New", L"Open", L"Save", L"Close"};
+                break;
+            case 1:
+                popupItems = {L"Undo", L"Redo", L"Cut", L"Copy", L"Paste"};
+                break;
+            case 6:
+                popupItems = {L"New Terminal", L"Split Terminal", L"Kill Terminal"};
+                break;
+            default:
+                popupItems = {L"Item 1", L"Item 2", L"Item 3"};
+                break;
+            }
+
+            RECT title_bar_rect = win32_titlebar_rect(hwnd_);
+            screenPt.y += (title_bar_rect.bottom - title_bar_rect.top);
+
+            ShowCustomPopup(hwnd_, popupItems, screenPt, 3000 + hoveredMenu * 100);
+            return 0;
+        }
+
+        // If click wasn't on a menu popup, forward to Explorer or editor to handle mouse-up
+        if (GetExplorerManager().IsVisible() && GetExplorerManager().IsPointInExplorer(pt))
+        {
+            GetExplorerManager().OnLeftButtonUp(hwnd_);
+            return 0;
+        }
+        else
+        {
+            Orion::Editor *editor = GetEditor();
+            if (editor)
+            {
+                // Release mouse capture when mouse button is released
+                ReleaseCapture();
+                editor->OnLeftButtonUp(hwnd_, pt);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+        }
+
+        return DefWindowProc(hwnd_, uMsg, wParam, lParam);
+    }
+    case WM_MOUSELEAVE:
+    {
+        // Clear all hover states when mouse leaves the window entirely
+        ClearAllHoverStates();
+        return 0;
+    }
+    case WM_COMMAND:
+    {
+        int id = LOWORD(wParam);
+
+        // Editor context menu commands (7000..7999)
+        if (id >= 7000 && id < 8000)
+        {
+            int rel = id - 7000;
+            int cmdIndex = rel; // single-menu
+            Orion::Editor *editor = GetEditor();
+            if (editor)
+            {
+                // 0: Couper, 1: Copier, 2: Coller, 3: Envoyer avec ggwave
+                switch (cmdIndex)
+                {
+                case 0: // Couper
+                    editor->CutSelectionToClipboard();
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                case 1: // Copier
+                    editor->CopySelectionToClipboard();
+                    return 0;
+                case 2: // Coller
+                    editor->PasteFromClipboard();
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                case 3: // Envoyer avec ggwave
+                {
+                    std::wstring sel = editor->GetSelectionText();
+                    if (!sel.empty())
+                    {
+                        ggwave::SpeakText(sel);
+                        return 0;
+                    }
+                }
+                break;
+                }
+            }
+        }
+
+        if (id >= 5000 && id < 6000)
+        {
+            GetExplorerManager().HandleContextCommand(id);
+            return 0;
+        }
+
+        if (id >= 3000 && id < 4000)
+        {
+            int rel = id - 3000;
+            int menu = rel / 100;
+            int index = rel % 100;
+            // Menu handling: implement core File menu actions and keep existing stubs for others.
+            if (menu == 0)
+            {
+                // File menu simplified: New, New Window, Open..., Close
+                switch (index)
+                {
+                case 0: // New -> create untitled tab
+                {
+                    wchar_t placeholder[64];
+                    swprintf_s(placeholder, L"__untitled__#%d", untitledCounter_++);
+                    std::wstring displayName = L"Untitled";
+                    int tabIndex = tabBar_.AddTab(placeholder, displayName);
+
+                    if (editors_.count(tabIndex) == 0)
+                    {
+                        Orion::Editor *newEditor = new Orion::Editor();
+                        if (!customFontPath_.empty() && skia_)
+                        {
+                            newEditor->LoadCustomFont(skia_->GetDWriteFactory(), customFontPath_);
+                        }
+                        newEditor->CreateEmpty();
+                        editors_[tabIndex] = newEditor;
+                    }
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                }
+                case 1: // New Window -> spawn new process
+                {
+                    wchar_t exePath[MAX_PATH] = {0};
+                    GetModuleFileNameW(NULL, exePath, MAX_PATH);
+                    STARTUPINFOW si = {sizeof(si)};
+                    PROCESS_INFORMATION pi = {};
+                    if (CreateProcessW(exePath, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
+                    {
+                        CloseHandle(pi.hThread);
+                        CloseHandle(pi.hProcess);
+                    }
+                    return 0;
+                }
+                case 2: // Open... -> file open dialog
+                {
+                    wchar_t fileName[MAX_PATH] = {0};
+                    OPENFILENAMEW ofn = {};
+                    ofn.lStructSize = sizeof(ofn);
+                    ofn.hwndOwner = hwnd_;
+                    ofn.lpstrFile = fileName;
+                    ofn.nMaxFile = MAX_PATH;
+                    ofn.lpstrFilter = L"All Files\0*.*\0Text Files\0*.txt\0\0";
+                    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+                    if (GetOpenFileNameW(&ofn))
+                    {
+                        OpenFileInNewTab(std::wstring(fileName), -1);
+                    }
+                    return 0;
+                }
+                case 3: // Open Project -> pick folder and initialize Explorer
+                {
+                    IFileOpenDialog *pFileOpen = nullptr;
+                    HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFileOpen));
+                    if (SUCCEEDED(hr) && pFileOpen)
+                    {
+                        DWORD options = 0;
+                        if (SUCCEEDED(pFileOpen->GetOptions(&options)))
+                        {
+                            pFileOpen->SetOptions(options | FOS_PICKFOLDERS);
+                        }
+                        if (SUCCEEDED(pFileOpen->Show(hwnd_)))
+                        {
+                            IShellItem *pItem = nullptr;
+                            if (SUCCEEDED(pFileOpen->GetResult(&pItem)) && pItem)
+                            {
+                                PWSTR pszPath = nullptr;
+                                if (SUCCEEDED(pItem->GetDisplayName(SIGDN_FILESYSPATH, &pszPath)) && pszPath)
+                                {
+                                    std::wstring selectedFolder = pszPath;
+                                    CoTaskMemFree(pszPath);
+                                    // Initialize Explorer to this folder (open project)
+                                    GetExplorerManager().Initialize(selectedFolder);
+                                    GetExplorerManager().SetVisible(true);
+                                    InvalidateRect(hwnd_, nullptr, FALSE);
+                                }
+                                pItem->Release();
+                            }
+                        }
+                        pFileOpen->Release();
+                    }
+                    return 0;
+                }
+                case 4: // Close -> close active tab
+                {
+                    int active = tabBar_.GetActiveTabIndex();
+                    if (active >= 0)
+                    {
+                        tabBar_.CloseTab(active);
+                        auto it = editors_.find(active);
+                        if (it != editors_.end())
+                        {
+                            delete it->second;
+                            editors_.erase(it);
+                        }
+
+                        if (!editors_.empty())
+                        {
+                            std::map<int, Orion::Editor *> newEditors;
+                            for (auto &p : editors_)
+                            {
+                                int key = p.first;
+                                Orion::Editor *ed = p.second;
+                                if (key > active)
+                                    newEditors[key - 1] = ed;
+                                else
+                                    newEditors[key] = ed;
+                            }
+                            editors_.swap(newEditors);
+                        }
+                        InvalidateRect(hwnd_, nullptr, FALSE);
+                    }
+                    return 0;
+                }
+                default:
+                    break;
+                }
+            }
+
+            // Dynamic Edit menu wired to Orion::Editor where possible
+            if (menu == 1)
+            {
+                Orion::Editor *editor = GetEditor();
+                if (!editor)
+                {
+                    MessageBoxW(hwnd_, L"No active editor", L"Edit", MB_OK);
+                    return 0;
+                }
+
+                switch (index)
+                {
+                case 0: // Undo
+                    editor->Undo();
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                case 1: // Redo (not implemented)
+                    MessageBoxW(hwnd_, L"Redo not implemented", L"Edit", MB_OK);
+                    return 0;
+                case 2: // Cut
+                    editor->CutSelectionToClipboard();
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                case 3: // Copy
+                    editor->CopySelectionToClipboard();
+                    return 0;
+                case 4: // Paste
+                    editor->PasteFromClipboard();
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                case 5: // Paste Without Formatting -> fallback to Paste
+                    editor->PasteFromClipboard();
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                case 6: // Delete
+                    editor->DeleteSelectionPublic();
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                case 7: // Select All
+                    editor->SelectAll();
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                case 8: // Find
+                    editor->ShowSearch();
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                case 9: // Replace
+                    MessageBoxW(hwnd_, L"Replace not implemented", L"Edit", MB_OK);
+                    return 0;
+                case 10: // Find in Files
+                    MessageBoxW(hwnd_, L"Find in Files not implemented", L"Edit", MB_OK);
+                    return 0;
+                case 11: // Replace in Files
+                    MessageBoxW(hwnd_, L"Replace in Files not implemented", L"Edit", MB_OK);
+                    return 0;
+                case 12: // Toggle Comment
+                    MessageBoxW(hwnd_, L"Toggle Comment not implemented", L"Edit", MB_OK);
+                    return 0;
+                case 13: // Format Document
+                    MessageBoxW(hwnd_, L"Format Document not implemented", L"Edit", MB_OK);
+                    return 0;
+                default:
+                    break;
+                }
+            }
+
+            wchar_t buf[256];
+            swprintf_s(buf, sizeof(buf) / sizeof(buf[0]), L"Menu %d item %d selected", menu, index);
+            MessageBoxW(hwnd_, buf, L"Menu", MB_OK);
+            return 0;
+        }
+        break;
+    }
+    case WM_NCLBUTTONDOWN:
+    {
+        auto current = hoveredButton_;
+        if (current != Window::Hovered_None)
+        {
+            return 0;
+        }
+        return DefWindowProc(hwnd_, uMsg, wParam, lParam);
+    }
+    case WM_NCLBUTTONUP:
+    {
+        auto current = hoveredButton_;
+        if (current == Window::Hovered_Close)
+        {
+            PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+            return 0;
+        }
+        else if (current == Window::Hovered_Minimize)
+        {
+            ShowWindow(hwnd_, SW_MINIMIZE);
+            return 0;
+        }
+        else if (current == Window::Hovered_Maximize)
+        {
+            int mode = win32_window_is_maximized(hwnd_) ? SW_NORMAL : SW_MAXIMIZE;
+            ShowWindow(hwnd_, mode);
+            return 0;
+        }
+        return DefWindowProc(hwnd_, uMsg, wParam, lParam);
+    }
+    case WM_RBUTTONUP:
+    {
+        POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+
+        // Check if right-click is in active panel
+        Panel *panelRClick = GetPanelManager().GetActivePanel();
+        if (panelRClick && panelRClick->IsVisible() && panelRClick->IsPointInPanel(pt))
+        {
+            GetPanelManager().OnRightButtonUp(hwnd_, pt);
+            return 0;
+        }
+
+        // If click is not in panel, check editor selection and show context menu
+        Orion::Editor *editor = GetEditor();
+        if (editor)
+        {
+            // Build context menu in French: Couper, Copier, Coller, Envoyer avec ggwave
+            std::vector<std::wstring> items = {L"Couper", L"Copier", L"Coller", L"Envoyer avec ggwave"};
+            D2D1_POINT_2F pos = D2D1::Point2F((float)pt.x, (float)pt.y);
+            ShowContextMenuDropdown(hwnd_, items, pos, 7000);
+
+            // Set enabled flags: Cut/Copy enabled only if selection exists; Paste enabled only if clipboard has text
+            std::vector<bool> enabled(items.size(), true);
+            std::wstring sel = editor->GetSelectionText();
+            bool hasSelection = !sel.empty();
+            enabled[0] = hasSelection; // Couper
+            enabled[1] = hasSelection; // Copier
+
+            // Check clipboard for Unicode text
+            bool canPaste = false;
+            if (OpenClipboard(NULL))
+            {
+                HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+                if (hData)
+                {
+                    wchar_t *clip = static_cast<wchar_t *>(GlobalLock(hData));
+                    if (clip)
+                    {
+                        std::wstring txt(clip);
+                        if (!txt.empty())
+                            canPaste = true;
+                        GlobalUnlock(hData);
+                    }
+                }
+                CloseClipboard();
+            }
+            enabled[2] = canPaste;     // Coller
+            enabled[3] = hasSelection; // Envoyer avec ggwave
+
+            // Apply to active dropdown
+            MenuDropdown &dd = GetActiveDropdown();
+            dd.enabled.clear();
+            dd.enabled = enabled;
+
+            return 0;
+        }
+
+        return DefWindowProc(hwnd_, uMsg, wParam, lParam);
+    }
+    case WM_NCRBUTTONUP:
+    {
+        if (wParam == HTCAPTION)
+        {
+            BOOL const isMaximized = IsZoomed(hwnd_);
+            MENUITEMINFO menu_item_info = {};
+            menu_item_info.cbSize = sizeof(menu_item_info);
+            menu_item_info.fMask = MIIM_STATE;
+            HMENU const sys_menu = GetSystemMenu(hwnd_, false);
+            set_menu_item_state(sys_menu, &menu_item_info, SC_RESTORE, isMaximized);
+            set_menu_item_state(sys_menu, &menu_item_info, SC_MOVE, !isMaximized);
+            set_menu_item_state(sys_menu, &menu_item_info, SC_SIZE, !isMaximized);
+            set_menu_item_state(sys_menu, &menu_item_info, SC_MINIMIZE, true);
+            set_menu_item_state(sys_menu, &menu_item_info, SC_MAXIMIZE, !isMaximized);
+            set_menu_item_state(sys_menu, &menu_item_info, SC_CLOSE, true);
+            BOOL const result = TrackPopupMenu(sys_menu, TPM_RETURNCMD, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), 0, hwnd_, NULL);
+            if (result != 0)
+            {
+                PostMessage(hwnd_, WM_SYSCOMMAND, result, 0);
+            }
+        }
+        return DefWindowProc(hwnd_, uMsg, wParam, lParam);
+    }
+    case WM_SETCURSOR:
+    {
+        if (LOWORD(lParam) == HTCLIENT)
+        {
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd_, &pt);
+
+            // Check active panel for cursor
+            Panel *panelCursor = GetPanelManager().GetActivePanel();
+            if (panelCursor && panelCursor->IsVisible())
+            {
+                // Zone de redimensionnement du panel
+                if (panelCursor->IsPointInResizeZone(pt))
+                {
+                    SetCursor(LoadCursor(NULL, IDC_SIZEWE));
+                    return TRUE;
+                }
+
+                // Zone du panel
+                if (panelCursor->IsPointInPanel(pt))
+                {
+                    SetCursor(LoadCursor(NULL, IDC_ARROW));
+                    return TRUE;
+                }
+            }
+
+            // Zone de l'éditeur : curseur texte
+            Orion::Editor *editor = GetEditor();
+            if (editor)
+            {
+                RECT tbRect = win32_titlebar_rect(hwnd_);
+                RECT clientRect;
+                GetClientRect(hwnd_, &clientRect);
+
+                // Si on est en dessous de la barre de titre + tabs, probablement dans l'éditeur
+                if (pt.y >= tbRect.bottom + tabBar_.GetHeight())
+                {
+                    SetCursor(LoadCursor(NULL, IDC_IBEAM));
+                    return TRUE;
+                }
+            }
+
+            // Défaut : flèche
+            SetCursor(LoadCursor(NULL, IDC_ARROW));
+            return TRUE;
+        }
+        return DefWindowProc(hwnd_, uMsg, wParam, lParam);
+    }
+    case WM_DESTROY:
+        // Shutdown ggwave wrapper
+        ggwave::Shutdown();
+        CoUninitialize();
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(hwnd_, uMsg, wParam, lParam);
+}

@@ -1,0 +1,37 @@
+#pragma once
+#include "Panel.h"
+#include "PanelManager.h"
+#include "explorer/ExplorerPanel.h"
+#include "search/SearchPanel.h"
+
+// ============================================================================
+// Panel System Initialization
+// ============================================================================
+
+// Initialize all panels and register them with PanelManager
+void InitializePanelSystem()
+{
+    auto& manager = GetPanelManager();
+    
+    // Register Explorer panel
+    auto explorerPanel = std::make_unique<ExplorerPanel>();
+    manager.RegisterPanel(std::move(explorerPanel));
+    
+    // Register Search panel
+    auto searchPanel = std::make_unique<SearchPanel>();
+    manager.RegisterPanel(std::move(searchPanel));
+    
+    // Set Explorer as the default active panel
+    manager.SetActivePanel(PanelId::Explorer);
+}
+
+// Convenience functions
+inline ExplorerPanel* GetExplorerPanelPtr()
+{
+    return GetPanelManager().GetPanelAs<ExplorerPanel>(PanelId::Explorer);
+}
+
+inline SearchPanel* GetSearchPanelPtr()
+{
+    return GetPanelManager().GetPanelAs<SearchPanel>(PanelId::Search);
+}
