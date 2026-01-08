@@ -1,6 +1,7 @@
 #include "CustomPopup.h"
 #include "utils/logger/Logger.h"
 #include <windowsx.h>
+#include <sstream>
 
 static const wchar_t* POPUP_CLASS = L"NebulaCustomPopup";
 

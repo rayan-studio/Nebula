@@ -4,12 +4,16 @@
 #include <dwrite.h>
 #include <string>
 #include <vector>
+#include <memory>
 #include <windows.h>
 #include "ui/components/scrollbar/Scrollbar.h"
 #include "orion/font/CustomFontLoader.h"
 #include "orion/SearchBox.h"
 #include "syntax/Highlighter.h"
-
+#include "orion/completion/CompletionService.h"
+// New helpers
+#include "geometry/IndentationHelper.h"
+#include "rendering/GuideRenderer.h"
 
 namespace Orion
 {
@@ -37,14 +41,15 @@ namespace Orion
         D2D1_COLOR_F activeLineBackground = D2D1::ColorF(0.14f, 0.14f, 0.14f, 1.0f);
         D2D1_COLOR_F selection = D2D1::ColorF(0.2f, 0.4f, 0.8f, 0.5f);
     };
+
     struct EditorMetrics
     {
-        float lineHeight = 17.5f;
-        float characterWidth = 7.6f;
-        float gutterWidth = 60.0f;
-        float leftPadding = 12.0f;
-        float topPadding = 1.0f;
-        float caretWidth = 2.0f;
+        float lineHeight = 20.0f;    // correspond à font-size 14px
+        float characterWidth = 8.4f; // largeur approximative d'un caractère
+        float gutterWidth = 60.0f;   // garde tes 60 px
+        float leftPadding = 12.0f;   // ça peut rester pareil
+        float topPadding = 1.0f;     // idem
+        float caretWidth = 2.0f;     // idem
     };
 
     struct EditorState
@@ -99,7 +104,7 @@ namespace Orion
         void ShowSearch();
         void HideSearch();
         bool IsSearchVisible() const { return searchBox_.IsVisible(); }
-        SearchBox* GetSearchBox() { return &searchBox_; }
+        SearchBox *GetSearchBox() { return &searchBox_; }
         // Create an empty buffer for a new untitled tab
         void CreateEmpty();
         // Save buffer to file (UTF-8). Returns true on success.
@@ -151,7 +156,7 @@ namespace Orion
         EditorMetrics metrics_;
 
         // Zoom
-        float zoomLevel_ = 1.0f;  // 1.0 = 100%, 1.5 = 150%, etc.
+        float zoomLevel_ = 1.0f; // 1.0 = 100%, 1.5 = 150%, etc.
         const float MIN_ZOOM = 0.5f;
         const float MAX_ZOOM = 3.0f;
         const float ZOOM_STEP = 0.1f;
@@ -175,22 +180,38 @@ namespace Orion
         SearchBox searchBox_;
         // Completion popup for simple suggestions (includes)
         CompletionPopup *completionPopup_ = nullptr;
-        std::vector<std::wstring> headerIndex_;
+        std::unique_ptr<Completion::CompletionService> completionService_;
+        // Pending completion template (used for triggers like '!')
+        bool pendingCompletionShow_ = false;
+        std::wstring pendingCompletionLabel_;
+        std::wstring pendingCompletionTemplate_;
 
         // When a key combo like Ctrl+Space is handled in OnKeyDown, Windows still
         // generates a WM_CHAR for the space. Use this flag to suppress the
         // following OnChar space insertion.
         bool suppressNextChar_ = false;
 
-        void BuildHeaderIndex();
-        std::vector<std::wstring> GetIncludeSuggestions(const std::wstring &prefix) const;
+        // Header index and include suggestion responsibilities moved to CppCompletionProvider
         // Helper method pour dessiner les matches de recherche
-        void DrawSearchMatches(ID2D1RenderTarget* ctx);
+        void DrawSearchMatches(ID2D1RenderTarget *ctx);
         // Simple undo stack (stores previous EditorState snapshots)
         std::vector<EditorState> undoStack_;
         size_t maxUndoEntries_ = 200;
         // Color mapping helper for syntax tokens per file extension
         D2D1_COLOR_F GetTokenColor(::Orion::Syntax::TokenType type, const std::wstring &ext) const;
+
+        // ✨ NOUVEAUX MEMBRES
+        std::unique_ptr<Geometry::IndentationHelper> indentHelper_;
+        std::unique_ptr<Rendering::GuideRenderer> guideRenderer_;
+
+        // Configuration d'indentation
+        Geometry::IndentConfig GetIndentConfig() const;
+
+        // Helper pour extraire l'extension du fichier
+        std::wstring GetFileExtension() const;
+
+        // Calculer les profondeurs HTML (garde l'ancienne logique)
+        std::vector<int> CalculateHtmlDepths(int firstLine, int lastLine) const;
     };
 
     class CustomTextRenderer : public IDWriteTextRenderer

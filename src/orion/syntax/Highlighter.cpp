@@ -1,8 +1,14 @@
 #include "Highlighter.h"
 #include <unordered_set>
 #include <cwctype>
+#include "utils/logger/Logger.h"
+#include <sstream>
 
 using namespace Orion::Syntax;
+
+// Forward declare debug helper so TokenizeLine can call it before the
+// implementation appears later in this file.
+static void DebugLogTokens(const std::wstring &line, const std::vector<Token> &tokens);
 
 Highlighter::Highlighter() {}
 
@@ -14,36 +20,30 @@ static const std::unordered_set<std::wstring> cppKeywords = {
     L"break", L"continue", L"goto", L"constexpr", L"const", L"static",
     L"inline", L"virtual", L"override", L"public", L"private", L"protected",
     L"namespace", L"using", L"class", L"struct", L"enum", L"template",
-    L"typename", L"this", L"new", L"delete", L"try", L"catch", L"throw"
-};
+    L"typename", L"this", L"new", L"delete", L"try", L"catch", L"throw"};
 
 static const std::unordered_set<std::wstring> cppTypes = {
     L"int", L"float", L"double", L"char", L"bool", L"void", L"long", L"short",
-    L"size_t", L"std", L"auto"
-};
+    L"size_t", L"std", L"auto"};
 
 static const std::unordered_set<std::wstring> jsKeywords = {
     L"if", L"else", L"for", L"while", L"return", L"switch", L"case",
     L"break", L"continue", L"function", L"var", L"let", L"const",
     L"class", L"extends", L"new", L"delete", L"try", L"catch", L"throw",
     L"async", L"await", L"import", L"from", L"export", L"default",
-    L"typeof", L"instanceof", L"in", L"of"
-};
+    L"typeof", L"instanceof", L"in", L"of"};
 
 static const std::unordered_set<std::wstring> jsTypes = {
-    L"Number", L"String", L"Boolean", L"Object", L"Array", L"Map", L"Set", L"Promise"
-};
+    L"Number", L"String", L"Boolean", L"Object", L"Array", L"Map", L"Set", L"Promise"};
 
 static const std::unordered_set<std::wstring> rustKeywords = {
     L"fn", L"let", L"mut", L"pub", L"impl", L"trait", L"enum", L"struct",
     L"use", L"crate", L"mod", L"self", L"super", L"as", L"where", L"match",
     L"if", L"else", L"loop", L"for", L"while", L"return", L"break", L"continue",
-    L"const", L"static", L"unsafe", L"async", L"await"
-};
+    L"const", L"static", L"unsafe", L"async", L"await"};
 
 static const std::unordered_set<std::wstring> rustTypes = {
-    L"i32", L"i64", L"u32", L"u64", L"usize", L"isize", L"f32", L"f64", L"String", L"Vec"
-};
+    L"i32", L"i64", L"u32", L"u64", L"usize", L"isize", L"f32", L"f64", L"String", L"Vec"};
 
 std::vector<Token> Highlighter::TokenizeLine(const std::wstring &line, const std::wstring &ext)
 {
@@ -53,19 +53,23 @@ std::vector<Token> Highlighter::TokenizeLine(const std::wstring &line, const std
     if (ext == L".md")
     {
         // Code fence start/end
-        if (line.rfind(L"```", 0) == 0) {
+        if (line.rfind(L"```", 0) == 0)
+        {
             mdInCodeBlock_ = !mdInCodeBlock_;
             out.push_back({0, (int)line.size(), TokenType::MarkdownCode});
             return out;
         }
-        if (mdInCodeBlock_) {
+        if (mdInCodeBlock_)
+        {
             out.push_back({0, (int)line.size(), TokenType::MarkdownCode});
             return out;
         }
         // Heading
         size_t pos = 0;
-        while (pos < line.size() && line[pos] == L'#') pos++;
-        if (pos > 0 && pos < line.size() && line[pos] == L' ') {
+        while (pos < line.size() && line[pos] == L'#')
+            pos++;
+        if (pos > 0 && pos < line.size() && line[pos] == L' ')
+        {
             out.push_back({0, (int)line.size(), TokenType::MarkdownHeading});
             return out;
         }
@@ -78,13 +82,116 @@ std::vector<Token> Highlighter::TokenizeLine(const std::wstring &line, const std
     const std::unordered_set<std::wstring> *kwSet = &cppKeywords;
     const std::unordered_set<std::wstring> *typeSet = &cppTypes;
     bool treatBacktickAsString = false;
-    if (ext == L".js" || ext == L".ts") {
+    if (ext == L".js" || ext == L".ts")
+    {
         kwSet = &jsKeywords;
         typeSet = &jsTypes;
         treatBacktickAsString = true;
-    } else if (ext == L".rs") {
+    }
+    else if (ext == L".rs")
+    {
         kwSet = &rustKeywords;
         typeSet = &rustTypes;
+    }
+
+    // Simple HTML tokenization
+    if (ext == L".html" || ext == L".htm")
+    {
+        int i = 0;
+        int n = (int)line.size();
+        while (i < n)
+        {
+            wchar_t c = line[i];
+
+            // Comment <!-- ... -->
+            if (c == L'<' && i + 3 < n && line[i+1] == L'!' && line[i+2] == L'-' && line[i+3] == L'-')
+            {
+                int start = i;
+                i += 4;
+                while (i + 2 < n && !(line[i] == L'-' && line[i+1] == L'-' && line[i+2] == L'>'))
+                    i++;
+                if (i + 2 < n) i += 3; else i = n;
+                out.push_back({start, i - start, TokenType::Comment});
+                continue;
+            }
+
+            // Tag start
+            if (c == L'<')
+            {
+                out.push_back({i, 1, TokenType::Normal});
+                i++;
+
+                // optional '/' for closing tags
+                if (i < n && line[i] == L'/') { out.push_back({i, 1, TokenType::Normal}); i++; }
+
+                // tag name
+                int nameStart = i;
+                while (i < n && (iswalpha(line[i]) || line[i] == L':' || line[i] == L'-' || iswdigit(line[i]))) i++;
+                if (i > nameStart)
+                    out.push_back({nameStart, i - nameStart, TokenType::Keyword});
+
+                // attributes until '>' or '/>'
+                while (i < n)
+                {
+                    // skip whitespace
+                    int ws = i;
+                    while (i < n && iswspace(line[i])) i++;
+                    if (i > ws)
+                        out.push_back({ws, i - ws, TokenType::Normal});
+
+                    if (i >= n || line[i] == L'>' ) break;
+                    if (line[i] == L'/') { out.push_back({i, 1, TokenType::Normal}); i++; continue; }
+
+                    // attr name
+                    int astart = i;
+                    while (i < n && (iswalnum(line[i]) || line[i] == L'-' || line[i] == L':' || line[i] == L'_')) i++;
+                    if (i > astart)
+                        out.push_back({astart, i - astart, TokenType::Type});
+
+                    // skip whitespace
+                    while (i < n && iswspace(line[i])) i++;
+                    // equal sign
+                    if (i < n && line[i] == L'=') { out.push_back({i,1,TokenType::Normal}); i++; }
+                    while (i < n && iswspace(line[i])) i++;
+
+                    // value
+                    if (i < n && (line[i] == L'"' || line[i] == L'\''))
+                    {
+                        wchar_t q = line[i];
+                        int vstart = i;
+                        i++;
+                        while (i < n)
+                        {
+                            if (line[i] == L'\\' && i + 1 < n) { i += 2; continue; }
+                            if (line[i] == q) { i++; break; }
+                            i++;
+                        }
+                        out.push_back({vstart, i - vstart, TokenType::String});
+                    }
+                    else
+                    {
+                        // unquoted value
+                        int vstart = i;
+                        while (i < n && !iswspace(line[i]) && line[i] != L'>') i++;
+                        if (i > vstart)
+                            out.push_back({vstart, i - vstart, TokenType::String});
+                    }
+                }
+
+                // closing '>' if present
+                if (i < n && line[i] == L'>') { out.push_back({i,1,TokenType::Normal}); i++; }
+                continue;
+            }
+
+            // text outside tags
+            int start = i;
+            while (i < n && line[i] != L'<') i++;
+            if (i > start)
+                out.push_back({start, i - start, TokenType::Normal});
+        }
+
+        DebugLogTokens(line, out);
+        return out;
     }
 
     // C/C++ style tokenization (basic)
@@ -95,71 +202,129 @@ std::vector<Token> Highlighter::TokenizeLine(const std::wstring &line, const std
         wchar_t c = line[i];
 
         // whitespace — preserve as Normal tokens so spacing is kept when drawing
-        if (iswspace(c)) {
+        if (iswspace(c))
+        {
             int start = i;
-            while (i < n && iswspace(line[i])) i++;
+            while (i < n && iswspace(line[i]))
+                i++;
             out.push_back({start, i - start, TokenType::Normal});
             continue;
         }
 
         // single-line comment (//)
-        if (c == L'/' && i+1 < n && line[i+1] == L'/') {
+        if (c == L'/' && i + 1 < n && line[i + 1] == L'/')
+        {
             out.push_back({i, n - i, TokenType::Comment});
             break;
         }
 
         // block comment start (/* ... */) - consume to line end or end token
-        if (c == L'/' && i+1 < n && line[i+1] == L'*') {
+        if (c == L'/' && i + 1 < n && line[i + 1] == L'*')
+        {
             int start = i;
             i += 2;
-            while (i+1 < n && !(line[i] == L'*' && line[i+1] == L'/')) i++;
-            if (i+1 < n) i += 2; // skip closing */
-            else i = n;
+            while (i + 1 < n && !(line[i] == L'*' && line[i + 1] == L'/'))
+                i++;
+            if (i + 1 < n)
+                i += 2; // skip closing */
+            else
+                i = n;
             out.push_back({start, i - start, TokenType::Comment});
             continue;
         }
 
         // string literal: handle " ' and (optionally) ` for JS
-        if (c == L'"' || c == L'\'' || (treatBacktickAsString && c == L'`')) {
+        if (c == L'"' || c == L'\'' || (treatBacktickAsString && c == L'`'))
+        {
             int start = i;
             wchar_t quote = c;
             i++;
-            while (i < n) {
-                if (line[i] == L'\\' && i+1 < n) { i += 2; continue; }
-                if (line[i] == quote) { i++; break; }
+            while (i < n)
+            {
+                if (line[i] == L'\\' && i + 1 < n)
+                {
+                    i += 2;
+                    continue;
+                }
+                if (line[i] == quote)
+                {
+                    i++;
+                    break;
+                }
                 i++;
             }
             out.push_back({start, i - start, TokenType::String});
             continue;
         }
 
-        // preprocessor
-        if (c == L'#' && i == 0) {
-            out.push_back({0, n, TokenType::Preprocessor});
-            break;
+        // preprocessor: treat '#' as preprocessor if it's the first non-space (or BOM) char on the line
+        if (c == L'#')
+        {
+            bool onlyBeforeWhitespace = true;
+            int firstNonBOM = 0; // ✅ NOUVEAU : stocker le vrai début
+
+            for (int j = 0; j < i; ++j)
+            {
+                wchar_t pc = line[j];
+                if (pc == 0xFEFF)
+                {
+                    // ✅ Si c'est un BOM, on note qu'il faut commencer après
+                    firstNonBOM = j + 1;
+                    continue;
+                }
+                if (!iswspace(pc))
+                {
+                    onlyBeforeWhitespace = false;
+                    break;
+                }
+            }
+
+            if (onlyBeforeWhitespace)
+            {
+                // Remove any previously-emitted leading whitespace tokens so the
+                // preprocessor token covers the entire line (avoids overlapping tokens
+                // that can confuse drawing logic).
+                while (!out.empty() && out.back().start < i)
+                    out.pop_back();
+
+                // ✅ CORRECTION : commencer APRÈS le BOM s'il existe
+                out.push_back({firstNonBOM, n - firstNonBOM, TokenType::Preprocessor});
+                break;
+            }
         }
 
         // number
-        if (iswdigit(c)) {
+        if (iswdigit(c))
+        {
             int start = i;
-            while (i < n && (iswdigit(line[i]) || line[i] == L'.' || line[i]==L'x' || line[i]==L'X' || iswxdigit(line[i]))) i++;
+            while (i < n && (iswdigit(line[i]) || line[i] == L'.' || line[i] == L'x' || line[i] == L'X' || iswxdigit(line[i])))
+                i++;
             out.push_back({start, i - start, TokenType::Number});
             continue;
         }
 
         // identifier/keyword/type
-        if (IsIdentifierStart(c)) {
+        if (IsIdentifierStart(c))
+        {
             int start = i;
             i++;
-            while (i < n && IsIdentifierPart(line[i])) i++;
+            while (i < n && IsIdentifierPart(line[i]))
+                i++;
             std::wstring word = line.substr(start, i - start);
-            std::wstring low = word; for (auto &ch : low) ch = towlower(ch);
-            if (kwSet->find(low) != kwSet->end()) {
-                out.push_back({start, (int)(i-start), TokenType::Keyword});
-            } else if (typeSet->find(low) != typeSet->end()) {
-                out.push_back({start, (int)(i-start), TokenType::Type});
-            } else {
-                out.push_back({start, (int)(i-start), TokenType::Normal});
+            std::wstring low = word;
+            for (auto &ch : low)
+                ch = towlower(ch);
+            if (kwSet->find(low) != kwSet->end())
+            {
+                out.push_back({start, (int)(i - start), TokenType::Keyword});
+            }
+            else if (typeSet->find(low) != typeSet->end())
+            {
+                out.push_back({start, (int)(i - start), TokenType::Type});
+            }
+            else
+            {
+                out.push_back({start, (int)(i - start), TokenType::Normal});
             }
             continue;
         }
@@ -169,5 +334,55 @@ std::vector<Token> Highlighter::TokenizeLine(const std::wstring &line, const std
         i++;
     }
 
+    // Debug log tokens for include lines (temporary)
+    DebugLogTokens(line, out);
     return out;
+}
+
+// Debug helper: log tokens for lines containing #include (temporary)
+static void DebugLogTokens(const std::wstring &line, const std::vector<Token> &tokens)
+{
+    if (line.find(L"#include") == std::wstring::npos)
+        return;
+    std::wstringstream ss;
+    for (const auto &t : tokens)
+    {
+        std::wstring typeName = L"Normal";
+        switch (t.type)
+        {
+        case TokenType::Normal:
+            typeName = L"Normal";
+            break;
+        case TokenType::Keyword:
+            typeName = L"Keyword";
+            break;
+        case TokenType::Type:
+            typeName = L"Type";
+            break;
+        case TokenType::String:
+            typeName = L"String";
+            break;
+        case TokenType::Comment:
+            typeName = L"Comment";
+            break;
+        case TokenType::Number:
+            typeName = L"Number";
+            break;
+        case TokenType::Preprocessor:
+            typeName = L"Preprocessor";
+            break;
+        case TokenType::MarkdownHeading:
+            typeName = L"MHeading";
+            break;
+        case TokenType::MarkdownCode:
+            typeName = L"MCode";
+            break;
+        case TokenType::MarkdownLink:
+            typeName = L"MLink";
+            break;
+        }
+        std::wstring snippet = line.substr(t.start, (size_t)t.length);
+        ss << L"[" << typeName << L" " << t.start << L":" << t.length << L" '" << snippet << L"'] ";
+    }
+    Logger::Instance().Log(ss.str());
 }

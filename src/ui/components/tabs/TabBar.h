@@ -50,6 +50,7 @@ private:
     std::vector<Tab> tabs_;
     int activeTabIndex_ = -1;
     int hoveredTabIndex_ = -1;
+    int hoveredCloseIndex_ = -1;
     
     float leftEdge_ = 0.0f;
     float topEdge_ = 0.0f;
@@ -60,5 +61,5 @@ private:
     // Helpers for close button
     D2D1_RECT_F CloseRectForTab(int index) const;
     bool IsPointInCloseRect(int index, POINT pt) const;
-    void DrawCloseButton(ID2D1RenderTarget* ctx, const D2D1_RECT_F& rect) const;
+    void DrawCloseButton(ID2D1RenderTarget* ctx, const D2D1_RECT_F& rect, bool hovered) const;
 };

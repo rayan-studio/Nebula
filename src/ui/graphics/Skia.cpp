@@ -158,15 +158,11 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
                 }
 
                 editor->UpdateLayout(hwnd, editorLeft, editorTop, editorRight, editorBottom);
-                Logger::Instance().Log(L"Skia::Render - before editor->Draw");
                 editor->Draw(pRenderTarget_, pDWriteFactory_, hwnd);
-                Logger::Instance().Log(L"Skia::Render - after editor->Draw");
                 
                 // Draw terminal after editor
                 if (terminal.IsVisible()) {
-                    Logger::Instance().Log(L"Skia::Render - before terminal.Draw");
                     terminal.Draw(pRenderTarget_, pDWriteFactory_, hwnd);
-                    Logger::Instance().Log(L"Skia::Render - after terminal.Draw");
                 }
                 
                 // Draw GGWave listener button (positioned from right edge)
@@ -202,9 +198,7 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
             
             // Draw terminal after welcome
             if (terminal.IsVisible()) {
-                Logger::Instance().Log(L"Skia::Render - before terminal.Draw (welcome)");
                 terminal.Draw(pRenderTarget_, pDWriteFactory_, hwnd);
-                Logger::Instance().Log(L"Skia::Render - after terminal.Draw (welcome)");
             }
             
             // Draw GGWave listener button (positioned from right edge)

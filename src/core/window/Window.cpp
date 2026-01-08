@@ -1,6 +1,7 @@
 #include "core/window/Window.h"
 #include "ui/graphics/Skia.h"
 #include "utils/logger/Logger.h"
+#include <sstream>
 #include <stdexcept>
 #include <windows.h>
 #include <windowsx.h>

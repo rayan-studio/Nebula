@@ -3,10 +3,18 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <cmath>
 #include "syntax/Highlighter.h"
 #include "CompletionPopup.h"
+#include "completion/CompletionService.h"
+#include "completion/providers/HtmlCompletionProvider.h"
+#include "completion/providers/CppCompletionProvider.h"
 #include <dwrite_1.h>
 #include <filesystem>
+
+// New rendering/geometry helpers
+#include "geometry/IndentationHelper.h"
+#include "rendering/GuideRenderer.h"
 
 #include "ui/components/scrollbar/Scrollbar.h"
 #include "utils/logger/Logger.h"
@@ -28,7 +36,24 @@ namespace Orion
         highlighter_ = new ::Orion::Syntax::Highlighter();
         cachedTextFormat_ = nullptr;
         completionPopup_ = new CompletionPopup();
-        BuildHeaderIndex();
+        // Initialize completion service and register providers
+        completionService_ = std::make_unique<Completion::CompletionService>();
+        completionService_->RegisterProvider(std::make_unique<Completion::HtmlCompletionProvider>());
+        completionService_->RegisterProvider(std::make_unique<Completion::CppCompletionProvider>());
+        
+        // ✨ NOUVEAU : Initialiser les helpers d'indentation et de rendu
+        Geometry::IndentConfig indentConfig;
+        // Utiliser 4 espaces par tabulation par défaut (comme VSCode)
+        indentConfig.tabSize = 4;
+        indentConfig.characterWidth = 8.0f; // sera mis à jour dans Draw()
+
+        indentHelper_ = std::make_unique<Geometry::IndentationHelper>(indentConfig);
+
+        Rendering::GuideStyle guideStyle;
+        guideStyle.normalColor = D2D1::ColorF(0.3f, 0.3f, 0.35f, 0.5f);
+        guideStyle.activeColor = D2D1::ColorF(0.4f, 0.4f, 0.5f, 0.7f);
+
+        guideRenderer_ = std::make_unique<Rendering::GuideRenderer>(indentConfig, guideStyle);
     }
 
     Editor::~Editor()
@@ -38,8 +63,6 @@ namespace Orion
             customFontCollection_->Release();
             customFontCollection_ = nullptr;
         }
-
-        
 
         if (fontLoader_)
         {
@@ -320,7 +343,7 @@ namespace Orion
                                         Logger::Instance().Log(ss2.str());
 
                                         // Line height SERRÉ comme VSCode
-                                        metrics_.lineHeight = fontAscent_ + fontDescent_ + 5.0f;
+                                        metrics_.lineHeight = fontAscent_ + fontDescent_ + 3.0f;
 
                                         fontFace->Release();
                                     }
@@ -348,7 +371,7 @@ namespace Orion
                     }
 
                     // Use computed font metrics to set a matching line height (consistent)
-                    metrics_.lineHeight = fontAscent_ + fontDescent_ + 5.0f; // unified padding
+                    metrics_.lineHeight = fontAscent_ + fontDescent_;
                     tmpLayout->Release();
                 }
                 tmpFormat->Release();
@@ -440,7 +463,7 @@ namespace Orion
 
         // Draw horizontal scrollbar if needed
         if (hScrollbarVisible_)
-            {
+        {
             // Use the same visual language as the vertical Scrollbar component
             float hLeft = state_.leftEdge + metrics_.gutterWidth;
             float hRight = state_.rightEdge - (scrollbar_.IsVisible() ? 14.0f : 0.0f);
@@ -478,7 +501,7 @@ namespace Orion
                 ctx->FillRoundedRectangle(thumbRect, thumbBrush);
                 thumbBrush->Release();
             }
-            }
+        }
 
         // Pop the full editor clip
         ctx->PopAxisAlignedClip();
@@ -518,15 +541,15 @@ namespace Orion
         if (!searchBox_.IsVisible())
             return;
 
-        const auto& matches = searchBox_.GetMatches();
+        const auto &matches = searchBox_.GetMatches();
         if (matches.empty())
             return;
 
         int currentMatchIdx = searchBox_.GetCurrentMatchIndex();
-        
+
         // Brushes pour les matches
-        ID2D1SolidColorBrush* matchBrush = nullptr;
-        ID2D1SolidColorBrush* currentMatchBrush = nullptr;
+        ID2D1SolidColorBrush *matchBrush = nullptr;
+        ID2D1SolidColorBrush *currentMatchBrush = nullptr;
         ctx->CreateSolidColorBrush(D2D1::ColorF(0.8f, 0.6f, 0.0f, 0.4f), &matchBrush);
         ctx->CreateSolidColorBrush(D2D1::ColorF(0.9f, 0.4f, 0.0f, 0.6f), &currentMatchBrush);
 
@@ -534,8 +557,8 @@ namespace Orion
 
         for (size_t i = 0; i < matches.size(); ++i)
         {
-            const auto& match = matches[i];
-            
+            const auto &match = matches[i];
+
             // Skip if line is not visible
             float lineY = state_.topEdge + (match.line * metrics_.lineHeight) - state_.scrollOffsetY;
             if (lineY + metrics_.lineHeight < state_.topEdge || lineY > state_.bottomEdge)
@@ -547,10 +570,10 @@ namespace Orion
 
             if (pDWriteFactory_ && match.line >= 0 && match.line < (int)state_.lines.size())
             {
-                const std::wstring& line = state_.lines[match.line];
-                
-                IDWriteTextFormat* format = cachedTextFormat_;
-                IDWriteTextFormat* tmpFmt = nullptr;
+                const std::wstring &line = state_.lines[match.line];
+
+                IDWriteTextFormat *format = cachedTextFormat_;
+                IDWriteTextFormat *tmpFmt = nullptr;
                 if (!format)
                 {
                     pDWriteFactory_->CreateTextFormat(
@@ -570,14 +593,15 @@ namespace Orion
                     if (match.startColumn > 0)
                     {
                         std::wstring textBefore = line.substr(0, match.startColumn);
-                        IDWriteTextLayout* layout1 = nullptr;
+                        IDWriteTextLayout *layout1 = nullptr;
                         if (SUCCEEDED(pDWriteFactory_->CreateTextLayout(
                                 textBefore.c_str(),
                                 (UINT32)textBefore.size(),
                                 format,
                                 10000.0f,
                                 metrics_.lineHeight,
-                                &layout1)) && layout1)
+                                &layout1)) &&
+                            layout1)
                         {
                             DWRITE_TEXT_METRICS tm1 = {};
                             layout1->GetMetrics(&tm1);
@@ -590,14 +614,15 @@ namespace Orion
                     if (match.endColumn > 0 && match.endColumn <= (int)line.size())
                     {
                         std::wstring textBeforeEnd = line.substr(0, match.endColumn);
-                        IDWriteTextLayout* layout2 = nullptr;
+                        IDWriteTextLayout *layout2 = nullptr;
                         if (SUCCEEDED(pDWriteFactory_->CreateTextLayout(
                                 textBeforeEnd.c_str(),
                                 (UINT32)textBeforeEnd.size(),
                                 format,
                                 10000.0f,
                                 metrics_.lineHeight,
-                                &layout2)) && layout2)
+                                &layout2)) &&
+                            layout2)
                         {
                             DWRITE_TEXT_METRICS tm2 = {};
                             layout2->GetMetrics(&tm2);
@@ -613,10 +638,10 @@ namespace Orion
 
             // Draw match highlight
             D2D1_RECT_F matchRect = D2D1::RectF(startX, lineY, endX, lineY + metrics_.lineHeight);
-            
+
             bool isCurrent = (currentMatchIdx >= 0 && (int)i == currentMatchIdx);
-            ID2D1SolidColorBrush* brush = isCurrent ? currentMatchBrush : matchBrush;
-            
+            ID2D1SolidColorBrush *brush = isCurrent ? currentMatchBrush : matchBrush;
+
             if (brush)
             {
                 ctx->FillRectangle(matchRect, brush);
@@ -625,7 +650,7 @@ namespace Orion
             // Draw border for current match
             if (isCurrent)
             {
-                ID2D1SolidColorBrush* borderBrush = nullptr;
+                ID2D1SolidColorBrush *borderBrush = nullptr;
                 ctx->CreateSolidColorBrush(D2D1::ColorF(1.0f, 0.5f, 0.0f), &borderBrush);
                 if (borderBrush)
                 {
@@ -635,8 +660,10 @@ namespace Orion
             }
         }
 
-        if (matchBrush) matchBrush->Release();
-        if (currentMatchBrush) currentMatchBrush->Release();
+        if (matchBrush)
+            matchBrush->Release();
+        if (currentMatchBrush)
+            currentMatchBrush->Release();
     }
 
     bool Editor::LoadCustomFont(IDWriteFactory *dwrite, const std::wstring &fontPath)
@@ -650,8 +677,6 @@ namespace Orion
             Logger::Instance().Log(L"❌ IDWriteFactory1 non disponible (besoin de Windows 7 SP1+)");
             return false;
         }
-
-        
 
         // Create and register a font collection loader which will enumerate font files
         fontLoader_ = new CustomFontCollectionLoader();
@@ -793,12 +818,13 @@ namespace Orion
                     if (!fmt)
                     {
                         if (SUCCEEDED(pDWriteFactory_->CreateTextFormat(
-                            L"JetBrains Mono",
-                            customFontCollection_,
-                            DWRITE_FONT_WEIGHT_REGULAR,
-                            DWRITE_FONT_STYLE_NORMAL,
-                            DWRITE_FONT_STRETCH_NORMAL,
-                            14.0f * zoomLevel_, L"en-us", &tmpFmt)) && tmpFmt)
+                                L"JetBrains Mono",
+                                customFontCollection_,
+                                DWRITE_FONT_WEIGHT_REGULAR,
+                                DWRITE_FONT_STYLE_NORMAL,
+                                DWRITE_FONT_STRETCH_NORMAL,
+                                14.0f * zoomLevel_, L"en-us", &tmpFmt)) &&
+                            tmpFmt)
                         {
                             fmt = tmpFmt;
                         }
@@ -834,12 +860,13 @@ namespace Orion
                     if (!fmt)
                     {
                         if (SUCCEEDED(pDWriteFactory_->CreateTextFormat(
-                            L"JetBrains Mono",
-                            customFontCollection_,
-                            DWRITE_FONT_WEIGHT_REGULAR,
-                            DWRITE_FONT_STYLE_NORMAL,
-                            DWRITE_FONT_STRETCH_NORMAL,
-                            14.0f * zoomLevel_, L"en-us", &tmpFmt)) && tmpFmt)
+                                L"JetBrains Mono",
+                                customFontCollection_,
+                                DWRITE_FONT_WEIGHT_REGULAR,
+                                DWRITE_FONT_STYLE_NORMAL,
+                                DWRITE_FONT_STRETCH_NORMAL,
+                                14.0f * zoomLevel_, L"en-us", &tmpFmt)) &&
+                            tmpFmt)
                         {
                             fmt = tmpFmt;
                         }
@@ -878,11 +905,11 @@ namespace Orion
                 {
                     pDWriteFactory_->CreateTextFormat(
                         L"JetBrains Mono", customFontCollection_,
-                                DWRITE_FONT_WEIGHT_REGULAR,
-                                DWRITE_FONT_STYLE_NORMAL,
-                                DWRITE_FONT_STRETCH_NORMAL,
-                                14.0f * zoomLevel_, L"en-us",
-                                &tmpFormat);
+                        DWRITE_FONT_WEIGHT_REGULAR,
+                        DWRITE_FONT_STYLE_NORMAL,
+                        DWRITE_FONT_STRETCH_NORMAL,
+                        14.0f * zoomLevel_, L"en-us",
+                        &tmpFormat);
                     if (tmpFormat)
                         format = tmpFormat;
                 }
@@ -943,7 +970,56 @@ namespace Orion
             }
 
             D2D1_RECT_F rect = D2D1::RectF(x1, lineY, x2, lineY + metrics_.lineHeight);
-            ctx->FillRectangle(rect, brush);
+
+            float width = rect.right - rect.left;
+            if (width <= 0.0f)
+            {
+                // nothing to draw
+            }
+            else
+            {
+                // radius relative to line height (clamped)
+                float radius = std::min(metrics_.lineHeight * 0.25f, 6.0f);
+
+                bool isFirst = (line == start.line);
+                bool isLast = (line == end.line);
+
+                if (isFirst && isLast)
+                {
+                    // single-line selection: round both ends
+                    D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(rect, radius, radius);
+                    ctx->FillRoundedRectangle(&rr, brush);
+                }
+                else if (isFirst)
+                {
+                    // round left corners only: draw rounded rect then cover right side to square it
+                    D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(rect, radius, radius);
+                    ctx->FillRoundedRectangle(&rr, brush);
+
+                    if (width > radius * 1.5f)
+                    {
+                        D2D1_RECT_F cover = D2D1::RectF(rect.left + radius, rect.top, rect.right, rect.bottom);
+                        ctx->FillRectangle(cover, brush);
+                    }
+                }
+                else if (isLast)
+                {
+                    // round right corners only: draw rounded rect then cover left side to square it
+                    D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(rect, radius, radius);
+                    ctx->FillRoundedRectangle(&rr, brush);
+
+                    if (width > radius * 1.5f)
+                    {
+                        D2D1_RECT_F cover = D2D1::RectF(rect.left, rect.top, rect.right - radius, rect.bottom);
+                        ctx->FillRectangle(cover, brush);
+                    }
+                }
+                else
+                {
+                    // middle lines: square corners
+                    ctx->FillRectangle(rect, brush);
+                }
+            }
         }
 
         if (brush)
@@ -1050,6 +1126,83 @@ namespace Orion
             textBrush->Release();
         if (activeTextBrush)
             activeTextBrush->Release();
+    }
+
+    // ----- New helper implementations -----
+    Geometry::IndentConfig Editor::GetIndentConfig() const
+    {
+        Geometry::IndentConfig config;
+        // Utiliser 4 espaces par défaut pour la tabulation
+        config.tabSize = 4;
+        config.characterWidth = metrics_.characterWidth;
+        return config;
+    }
+
+    std::wstring Editor::GetFileExtension() const
+    {
+        if (state_.filePath.empty())
+            return L"";
+
+        size_t pos = state_.filePath.find_last_of(L'.');
+        if (pos == std::wstring::npos)
+            return L"";
+
+        std::wstring ext = state_.filePath.substr(pos);
+        for (auto &c : ext)
+            c = towlower(c);
+        return ext;
+    }
+
+    std::vector<int> Editor::CalculateHtmlDepths(int firstLine, int lastLine) const
+    {
+        int numLines = lastLine - firstLine;
+        std::vector<int> cumDepth(numLines, 0);
+        int depth = 0;
+
+        for (int li = firstLine; li < lastLine && li < (int)state_.lines.size(); ++li)
+        {
+            const std::wstring &ln = state_.lines[li];
+            cumDepth[li - firstLine] = depth;
+
+            for (size_t p = 0; p < ln.size(); ++p)
+            {
+                if (ln[p] == L'<')
+                {
+                    if (p + 1 < ln.size() && (ln[p + 1] == L'!' || ln[p + 1] == L'?'))
+                    {
+                        size_t q = ln.find(L'>', p + 1);
+                        if (q == std::wstring::npos)
+                            break;
+                        p = q;
+                        continue;
+                    }
+
+                    bool closing = (p + 1 < ln.size() && ln[p + 1] == L'/');
+
+                    size_t q = ln.find(L'>', p + 1);
+                    if (q == std::wstring::npos)
+                        break;
+
+                    bool selfClosing = false;
+                    if (q > p + 1 && ln[q - 1] == L'/')
+                        selfClosing = true;
+
+                    if (closing)
+                    {
+                        if (depth > 0)
+                            depth--;
+                    }
+                    else if (!selfClosing)
+                    {
+                        depth++;
+                    }
+
+                    p = q;
+                }
+            }
+        }
+
+        return cumDepth;
     }
 
     std::wstring Editor::GetSelectionText() const
@@ -1292,22 +1445,54 @@ namespace Orion
         ID2D1SolidColorBrush *defaultBrush = nullptr;
         ctx->CreateSolidColorBrush(theme_.text, &defaultBrush);
 
+        // --- Replaced guide rendering with GuideRenderer usage ---
+        {
+            // Update indent config from current metrics
+            Geometry::IndentConfig indentConfig = GetIndentConfig();
+            indentHelper_ = std::make_unique<Geometry::IndentationHelper>(indentConfig);
+
+            // Configure style depending on extension
+            Rendering::GuideStyle guideStyle;
+            if (ext == L".html" || ext == L".htm")
+            {
+                guideStyle.normalColor = D2D1::ColorF(0.35f, 0.6f, 0.95f, 0.6f);
+                guideStyle.activeColor = D2D1::ColorF(0.2f, 0.6f, 1.0f, 0.7f);
+                // HTML lines should start a little higher to align with tag glyphs
+                guideStyle.topMargin = 0.06f;
+                guideStyle.bottomMargin = 0.06f;
+            }
+            else
+            {
+                guideStyle.normalColor = D2D1::ColorF(0.3f, 0.3f, 0.35f, 0.5f);
+                guideStyle.activeColor = D2D1::ColorF(0.4f, 0.4f, 0.5f, 0.7f);
+            }
+
+            guideRenderer_ = std::make_unique<Rendering::GuideRenderer>(indentConfig, guideStyle);
+
+            Rendering::GuideRenderContext renderCtx;
+            renderCtx.contentLeft = contentLeft;
+            renderCtx.topEdge = state_.topEdge;
+            renderCtx.scrollOffsetY = state_.scrollOffsetY;
+            renderCtx.scrollOffsetX = state_.scrollOffsetX;
+            renderCtx.lineHeight = metrics_.lineHeight;
+            renderCtx.firstVisibleLine = firstVisibleLine;
+            renderCtx.lastVisibleLine = lastVisibleLine;
+            renderCtx.caretLine = state_.caret.line;
+
+            if (ext == L".c" || ext == L".cpp" || ext == L".h" || ext == L".hpp")
+            {
+                guideRenderer_->DrawCppGuides(ctx, state_.lines, renderCtx);
+            }
+        }
+
         for (int i = firstVisibleLine; i < lastVisibleLine; ++i)
         {
             float lineY = state_.topEdge + (i * metrics_.lineHeight) - state_.scrollOffsetY;
 
             const std::wstring &line = state_.lines[i];
-            if (line.empty())
-                continue;
 
             IDWriteTextLayout *lineLayout = nullptr;
-            if (!format || FAILED(dwrite->CreateTextLayout(
-                    line.c_str(),
-                    (UINT32)line.size(),
-                    format,
-                    contentWidth,
-                    metrics_.lineHeight,
-                    &lineLayout)) ||
+            if (!format || FAILED(dwrite->CreateTextLayout(line.c_str(), (UINT32)line.size(), format, contentWidth, metrics_.lineHeight, &lineLayout)) ||
                 !lineLayout)
             {
                 if (lineLayout)
@@ -1317,7 +1502,64 @@ namespace Orion
 
             auto tokens = highlighter_->TokenizeLine(line, ext);
 
-            // ✅ Stocker les brushes pour les release après le Draw
+            // Emoji / symbol fallback: detect ranges of characters that are emoji
+            // or pictographs and force a color-capable font for those ranges so
+            // DirectWrite/Direct2D can render color emoji (Segoe UI Emoji, etc.).
+            // Work on UTF-16 wchar_t string: detect BMP symbol ranges and surrogate pairs.
+            std::vector<DWRITE_TEXT_RANGE> emojiRanges;
+            for (size_t idx = 0; idx < line.size();)
+            {
+                wchar_t wc = line[idx];
+                UINT32 codepoint = (UINT32)wc;
+                size_t start = idx;
+                size_t len = 1;
+
+                // Surrogate pair (high surrogate)
+                if (wc >= 0xD800 && wc <= 0xDBFF && idx + 1 < line.size())
+                {
+                    wchar_t wl = line[idx + 1];
+                    if (wl >= 0xDC00 && wl <= 0xDFFF)
+                    {
+                        // Combine into codepoint
+                        codepoint = 0x10000 + (((wc - 0xD800) << 10) | (wl - 0xDC00));
+                        len = 2;
+                    }
+                }
+
+                bool isEmoji = false;
+                // BMP symbol ranges
+                if ((codepoint >= 0x2600 && codepoint <= 0x26FF) || // Misc symbols
+                    (codepoint >= 0x2700 && codepoint <= 0x27BF))   // Dingbats
+                {
+                    isEmoji = true;
+                }
+                // Supplementary planes for pictographs/emojis
+                if ((codepoint >= 0x1F300 && codepoint <= 0x1F5FF) ||
+                    (codepoint >= 0x1F600 && codepoint <= 0x1F64F) ||
+                    (codepoint >= 0x1F680 && codepoint <= 0x1F6FF) ||
+                    (codepoint >= 0x1F900 && codepoint <= 0x1F9FF))
+                {
+                    isEmoji = true;
+                }
+
+                if (isEmoji)
+                {
+                    DWRITE_TEXT_RANGE r = {(UINT32)start, (UINT32)len};
+                    emojiRanges.push_back(r);
+                }
+
+                idx += len;
+            }
+
+            if (!emojiRanges.empty() && lineLayout)
+            {
+                for (const auto &r : emojiRanges)
+                {
+                    // Prefer Segoe UI Emoji which contains color glyphs on Windows
+                    lineLayout->SetFontFamilyName(L"Segoe UI Emoji", r);
+                }
+            }
+
             std::vector<ID2D1SolidColorBrush *> brushes;
 
             for (const auto &tok : tokens)
@@ -1329,18 +1571,40 @@ namespace Orion
                 if (tok.type == ::Orion::Syntax::TokenType::Normal)
                     continue;
 
-                bool isColorable = (
-                    tok.type == ::Orion::Syntax::TokenType::Keyword ||
-                    tok.type == ::Orion::Syntax::TokenType::Type ||
-                    tok.type == ::Orion::Syntax::TokenType::String ||
-                    tok.type == ::Orion::Syntax::TokenType::Comment ||
-                    tok.type == ::Orion::Syntax::TokenType::Number ||
-                    tok.type == ::Orion::Syntax::TokenType::Preprocessor ||
-                    tok.type == ::Orion::Syntax::TokenType::MarkdownHeading ||
-                    tok.type == ::Orion::Syntax::TokenType::MarkdownCode ||
-                    tok.type == ::Orion::Syntax::TokenType::MarkdownLink);
+                bool isColorable = (tok.type == ::Orion::Syntax::TokenType::Keyword ||
+                                    tok.type == ::Orion::Syntax::TokenType::Type ||
+                                    tok.type == ::Orion::Syntax::TokenType::String ||
+                                    tok.type == ::Orion::Syntax::TokenType::Comment ||
+                                    tok.type == ::Orion::Syntax::TokenType::Number ||
+                                    tok.type == ::Orion::Syntax::TokenType::Preprocessor ||
+                                    tok.type == ::Orion::Syntax::TokenType::MarkdownHeading ||
+                                    tok.type == ::Orion::Syntax::TokenType::MarkdownCode ||
+                                    tok.type == ::Orion::Syntax::TokenType::MarkdownLink);
 
                 if (!isColorable)
+                    continue;
+
+                // If this token overlaps any emoji range, skip applying the
+                // drawing effect so the emoji glyphs keep their native color
+                // rendering from the emoji-capable font.
+                bool overlapsEmoji = false;
+                if (!emojiRanges.empty())
+                {
+                    UINT32 tokStart = (UINT32)tok.start;
+                    UINT32 tokEnd = tokStart + (UINT32)tok.length;
+                    for (const auto &er : emojiRanges)
+                    {
+                        UINT32 erStart = er.startPosition;
+                        UINT32 erEnd = erStart + er.length;
+                        if (erStart < tokEnd && erEnd > tokStart)
+                        {
+                            overlapsEmoji = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (overlapsEmoji)
                     continue;
 
                 D2D1_COLOR_F color = GetTokenColor(tok.type, ext);
@@ -1389,31 +1653,44 @@ namespace Orion
         {
             switch (type)
             {
-            case ::Orion::Syntax::TokenType::Keyword: return D2D1::ColorF(0.9f, 0.4f, 0.4f); // reddish
-            case ::Orion::Syntax::TokenType::Type: return D2D1::ColorF(0.4f, 0.8f, 0.9f);
-            case ::Orion::Syntax::TokenType::String: return D2D1::ColorF(0.6f, 0.8f, 0.5f);
-            case ::Orion::Syntax::TokenType::Comment: return D2D1::ColorF(0.45f, 0.45f, 0.45f);
-            case ::Orion::Syntax::TokenType::Number: return D2D1::ColorF(0.8f, 0.6f, 0.9f);
-            default: return theme_.text;
+            case ::Orion::Syntax::TokenType::Keyword:
+                return D2D1::ColorF(0.9f, 0.4f, 0.4f); // reddish
+            case ::Orion::Syntax::TokenType::Type:
+                return D2D1::ColorF(0.4f, 0.8f, 0.9f);
+            case ::Orion::Syntax::TokenType::String:
+                return D2D1::ColorF(0.6f, 0.8f, 0.5f);
+            case ::Orion::Syntax::TokenType::Comment:
+                return D2D1::ColorF(0.45f, 0.45f, 0.45f);
+            case ::Orion::Syntax::TokenType::Number:
+                return D2D1::ColorF(0.8f, 0.6f, 0.9f);
+            default:
+                return theme_.text;
             }
         }
         else if (ext == L".md")
         {
             switch (type)
             {
-            case ::Orion::Syntax::TokenType::MarkdownHeading: return D2D1::ColorF(0.95f, 0.9f, 0.6f);
-            case ::Orion::Syntax::TokenType::MarkdownCode: return D2D1::ColorF(0.8f, 0.8f, 0.85f);
-            case ::Orion::Syntax::TokenType::MarkdownLink: return D2D1::ColorF(0.5f, 0.75f, 0.95f);
-            default: return theme_.text;
+            case ::Orion::Syntax::TokenType::MarkdownHeading:
+                return D2D1::ColorF(0.95f, 0.9f, 0.6f);
+            case ::Orion::Syntax::TokenType::MarkdownCode:
+                return D2D1::ColorF(0.8f, 0.8f, 0.85f);
+            case ::Orion::Syntax::TokenType::MarkdownLink:
+                return D2D1::ColorF(0.5f, 0.75f, 0.95f);
+            default:
+                return theme_.text;
             }
         }
         else if (ext == L".json")
         {
             switch (type)
             {
-            case ::Orion::Syntax::TokenType::String: return D2D1::ColorF(0.6f, 0.8f, 0.5f);
-            case ::Orion::Syntax::TokenType::Number: return D2D1::ColorF(0.8f, 0.6f, 0.9f);
-            default: return theme_.text;
+            case ::Orion::Syntax::TokenType::String:
+                return D2D1::ColorF(0.6f, 0.8f, 0.5f);
+            case ::Orion::Syntax::TokenType::Number:
+                return D2D1::ColorF(0.8f, 0.6f, 0.9f);
+            default:
+                return theme_.text;
             }
         }
 
@@ -1421,12 +1698,18 @@ namespace Orion
         {
             switch (type)
             {
-            case ::Orion::Syntax::TokenType::Keyword: return D2D1::ColorF(0.4f, 0.6f, 0.95f);
-            case ::Orion::Syntax::TokenType::Type: return D2D1::ColorF(0.4f, 0.9f, 0.9f);
-            case ::Orion::Syntax::TokenType::String: return D2D1::ColorF(0.6f, 0.9f, 0.6f);
-            case ::Orion::Syntax::TokenType::Comment: return D2D1::ColorF(0.5f, 0.5f, 0.5f);
-            case ::Orion::Syntax::TokenType::Number: return D2D1::ColorF(0.9f, 0.6f, 0.9f);
-            default: return theme_.text;
+            case ::Orion::Syntax::TokenType::Keyword:
+                return D2D1::ColorF(0.4f, 0.6f, 0.95f);
+            case ::Orion::Syntax::TokenType::Type:
+                return D2D1::ColorF(0.4f, 0.9f, 0.9f);
+            case ::Orion::Syntax::TokenType::String:
+                return D2D1::ColorF(0.6f, 0.9f, 0.6f);
+            case ::Orion::Syntax::TokenType::Comment:
+                return D2D1::ColorF(0.5f, 0.5f, 0.5f);
+            case ::Orion::Syntax::TokenType::Number:
+                return D2D1::ColorF(0.9f, 0.6f, 0.9f);
+            default:
+                return theme_.text;
             }
         }
 
@@ -1434,39 +1717,79 @@ namespace Orion
         {
             switch (type)
             {
-            case ::Orion::Syntax::TokenType::Keyword: return D2D1::ColorF(0.95f, 0.6f, 0.25f);
-            case ::Orion::Syntax::TokenType::Type: return D2D1::ColorF(0.3f, 0.85f, 0.9f);
-            case ::Orion::Syntax::TokenType::String: return D2D1::ColorF(0.6f, 0.9f, 0.6f);
-            case ::Orion::Syntax::TokenType::Comment: return D2D1::ColorF(0.45f, 0.45f, 0.45f);
-            default: return theme_.text;
+            case ::Orion::Syntax::TokenType::Keyword:
+                return D2D1::ColorF(0.95f, 0.6f, 0.25f);
+            case ::Orion::Syntax::TokenType::Type:
+                return D2D1::ColorF(0.3f, 0.85f, 0.9f);
+            case ::Orion::Syntax::TokenType::String:
+                return D2D1::ColorF(0.6f, 0.9f, 0.6f);
+            case ::Orion::Syntax::TokenType::Comment:
+                return D2D1::ColorF(0.45f, 0.45f, 0.45f);
+            default:
+                return theme_.text;
             }
         }
 
+        else if (ext == L".html" || ext == L".htm")
+        {
+            switch (type)
+            {
+            // tag names -> green
+            case ::Orion::Syntax::TokenType::Keyword:
+                return D2D1::ColorF(0.36f, 0.8f, 0.45f);
+            // attribute names -> cyan-ish
+            case ::Orion::Syntax::TokenType::Type:
+                return D2D1::ColorF(0.4f, 0.85f, 0.95f);
+            // attribute values -> light green
+            case ::Orion::Syntax::TokenType::String:
+                return D2D1::ColorF(0.6f, 0.9f, 0.6f);
+            case ::Orion::Syntax::TokenType::Comment:
+                return D2D1::ColorF(0.5f, 0.5f, 0.5f);
+            default:
+                return theme_.text;
+            }
+        }
+
+        // Tokenizer / Syntaxe highlighting pour C/C++ : garder les mêmes couleurs
         else if (ext == L".c" || ext == L".cpp" || ext == L".h" || ext == L".hpp")
         {
             // keep C/C++ style palette
             switch (type)
             {
-            case ::Orion::Syntax::TokenType::Keyword: return D2D1::ColorF(0.86f, 0.58f, 0.22f);
-            case ::Orion::Syntax::TokenType::Type: return D2D1::ColorF(0.4f, 0.8f, 1.0f);
-            case ::Orion::Syntax::TokenType::String: return D2D1::ColorF(0.56f, 0.87f, 0.56f);
-            case ::Orion::Syntax::TokenType::Comment: return D2D1::ColorF(0.5f, 0.5f, 0.5f);
-            default: return theme_.text;
+            case ::Orion::Syntax::TokenType::Keyword:
+                return D2D1::ColorF(0.86f, 0.58f, 0.22f);
+            case ::Orion::Syntax::TokenType::Type:
+                return D2D1::ColorF(0.4f, 0.8f, 1.0f);
+            case ::Orion::Syntax::TokenType::String:
+                return D2D1::ColorF(0.56f, 0.87f, 0.56f);
+            case ::Orion::Syntax::TokenType::Comment:
+                return D2D1::ColorF(0.5f, 0.5f, 0.5f);
+            default:
+                return theme_.text;
             }
         }
 
         // Default mapping (C/C++ style)
         switch (type)
         {
-        case ::Orion::Syntax::TokenType::Keyword: return D2D1::ColorF(0.86f, 0.58f, 0.22f);
-        case ::Orion::Syntax::TokenType::Type: return D2D1::ColorF(0.4f, 0.8f, 1.0f);
-        case ::Orion::Syntax::TokenType::String: return D2D1::ColorF(0.56f, 0.87f, 0.56f);
-        case ::Orion::Syntax::TokenType::Comment: return D2D1::ColorF(0.5f, 0.5f, 0.5f);
-        case ::Orion::Syntax::TokenType::Number: return D2D1::ColorF(0.8f, 0.6f, 0.9f);
-        case ::Orion::Syntax::TokenType::Preprocessor: return D2D1::ColorF(0.9f, 0.7f, 0.4f);
-        case ::Orion::Syntax::TokenType::MarkdownHeading: return D2D1::ColorF(0.9f, 0.9f, 0.6f);
-        case ::Orion::Syntax::TokenType::MarkdownCode: return D2D1::ColorF(0.8f, 0.8f, 0.85f);
-        default: return theme_.text;
+        case ::Orion::Syntax::TokenType::Keyword:
+            return D2D1::ColorF(0.86f, 0.58f, 0.22f);
+        case ::Orion::Syntax::TokenType::Type:
+            return D2D1::ColorF(0.4f, 0.8f, 1.0f);
+        case ::Orion::Syntax::TokenType::String:
+            return D2D1::ColorF(0.56f, 0.87f, 0.56f);
+        case ::Orion::Syntax::TokenType::Comment:
+            return D2D1::ColorF(0.5f, 0.5f, 0.5f);
+        case ::Orion::Syntax::TokenType::Number:
+            return D2D1::ColorF(0.8f, 0.6f, 0.9f);
+        case ::Orion::Syntax::TokenType::Preprocessor:
+            return D2D1::ColorF(0.9f, 0.7f, 0.4f);
+        case ::Orion::Syntax::TokenType::MarkdownHeading:
+            return D2D1::ColorF(0.9f, 0.9f, 0.6f);
+        case ::Orion::Syntax::TokenType::MarkdownCode:
+            return D2D1::ColorF(0.8f, 0.8f, 0.85f);
+        default:
+            return theme_.text;
         }
     }
 
@@ -1583,7 +1906,8 @@ namespace Orion
                         format,
                         10000.0f,
                         metrics_.lineHeight,
-                        &layout)) && layout)
+                        &layout)) &&
+                    layout)
                 {
                     BOOL isTrailingHit = FALSE;
                     BOOL isInside = FALSE;
@@ -1704,9 +2028,12 @@ namespace Orion
                         size_t lt = line.find_last_of(L"<", state_.caret.column - 1);
                         size_t qt = line.find_last_of(L'"', state_.caret.column - 1);
                         size_t start = std::wstring::npos;
-                        if (lt != std::wstring::npos && lt > pos) start = lt + 1;
-                        if (qt != std::wstring::npos && qt > pos) start = (start == std::wstring::npos) ? qt + 1 : std::min(start, qt + 1);
-                        if (start == std::wstring::npos) start = state_.caret.column;
+                        if (lt != std::wstring::npos && lt > pos)
+                            start = lt + 1;
+                        if (qt != std::wstring::npos && qt > pos)
+                            start = (start == std::wstring::npos) ? qt + 1 : std::min(start, qt + 1);
+                        if (start == std::wstring::npos)
+                            start = state_.caret.column;
                         size_t caretPos = (size_t)state_.caret.column;
                         if (caretPos > start)
                             line.erase(start, caretPos - start);
@@ -1729,7 +2056,32 @@ namespace Orion
             return;
         }
 
-        state_.caret = ScreenToTextPosition(pt);
+        // Shift+Click selection: if Shift is held, extend selection from the
+        // existing caret (or existing selection start) to the clicked position.
+        bool shiftPressed = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+        CaretPosition clickedPos = ScreenToTextPosition(pt);
+
+        if (shiftPressed)
+        {
+            if (!state_.hasSelection)
+            {
+                // start selection from the previous caret position
+                state_.selectionStart = state_.caret;
+            }
+
+            // Move caret to clicked position and enable selection
+            state_.caret = clickedPos;
+            state_.hasSelection = true;
+            state_.caretVisible = true;
+            state_.lastBlinkTime = GetTickCount();
+            EnsureCaretVisible();
+            if (hwnd)
+                InvalidateRect(hwnd, nullptr, FALSE);
+            return;
+        }
+
+        // Normal click: move caret and clear selection
+        state_.caret = clickedPos;
         EnsureCaretVisible();
         state_.hasSelection = false; // Réinitialiser la sélection
         state_.caretVisible = true;
@@ -1760,8 +2112,10 @@ namespace Orion
             {
                 float scrollDelta = (deltaX / availableTrack) * maxScroll;
                 state_.scrollOffsetX = hDragStartOffset_ + scrollDelta;
-                if (state_.scrollOffsetX < 0.0f) state_.scrollOffsetX = 0.0f;
-                if (state_.scrollOffsetX > maxScroll) state_.scrollOffsetX = maxScroll;
+                if (state_.scrollOffsetX < 0.0f)
+                    state_.scrollOffsetX = 0.0f;
+                if (state_.scrollOffsetX > maxScroll)
+                    state_.scrollOffsetX = maxScroll;
                 hThumbPos_ = (state_.scrollOffsetX / maxScroll) * availableTrack;
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
@@ -1830,7 +2184,9 @@ namespace Orion
         // Forward mouse to completion popup if visible
         if (completionPopup_ && completionPopup_->IsVisible())
         {
-            // Nothing for now; popup handles clicks only
+            completionPopup_->OnMouseMove(pt);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return;
         }
     }
 
@@ -1863,8 +2219,6 @@ namespace Orion
                 undoStack_.erase(undoStack_.begin());
         }
 
-        
-
         CaretPosition start = state_.selectionStart;
         CaretPosition end = state_.caret;
 
@@ -1880,18 +2234,20 @@ namespace Orion
         }
         else
         {
-            // Supprimer la fin de la première ligne
-            state_.lines[start.line].erase(start.column);
-
-            // Ajouter le reste de la dernière ligne
+            // Build new merged line: prefix of first line + suffix of last line
+            std::wstring prefix = state_.lines[start.line].substr(0, start.column);
+            std::wstring suffix;
             if (end.column < (int)state_.lines[end.line].size())
-            {
-                state_.lines[start.line] += state_.lines[end.line].substr(end.column);
-            }
+                suffix = state_.lines[end.line].substr(end.column);
 
-            // Supprimer les lignes intermédiaires
-            state_.lines.erase(state_.lines.begin() + start.line + 1,
-                               state_.lines.begin() + end.line + 1);
+            state_.lines[start.line] = prefix + suffix;
+
+            // Erase all lines between start.line+1 and end.line inclusive
+            if (end.line > start.line)
+            {
+                state_.lines.erase(state_.lines.begin() + start.line + 1,
+                                   state_.lines.begin() + end.line + 1);
+            }
         }
 
         state_.caret = start;
@@ -1937,295 +2293,6 @@ namespace Orion
         DeleteSelection();
     }
 
-    void Editor::OnChar(wchar_t ch)
-    {
-        // ✨ NOUVEAU : Si le SearchBox est visible ET focalisé, lui envoyer les caractères
-        if (searchBox_.IsVisible() && searchBox_.IsInputFocused())
-        {
-            searchBox_.OnChar(ch);
-            // Re-effectuer la recherche après chaque caractère
-            searchBox_.PerformSearch(state_.lines);
-
-            // Scroller vers le match courant si disponible
-            if (!searchBox_.GetMatches().empty())
-            {
-                int idx = searchBox_.GetCurrentMatchIndex();
-                if (idx >= 0 && idx < (int)searchBox_.GetMatches().size())
-                {
-                    const auto& match = searchBox_.GetMatches()[idx];
-                    state_.caret.line = match.line;
-                    state_.caret.column = match.startColumn;
-                    EnsureCaretVisible();
-                }
-            }
-            return;
-        }
-
-        // If a previous OnKeyDown consumed this char (e.g. Ctrl+Space), suppress it
-        if (suppressNextChar_ && ch == L' ')
-        {
-            suppressNextChar_ = false;
-            return;
-        }
-
-        if (ch < 32 && ch != L'\t' && ch != L'\r' && ch != L'\n')
-            return;
-
-        // Push undo snapshot before any mutation
-        if (undoStack_.empty() || undoStack_.back().lines != state_.lines ||
-            undoStack_.back().caret.line != state_.caret.line ||
-            undoStack_.back().caret.column != state_.caret.column)
-        {
-            undoStack_.push_back(state_);
-            if (undoStack_.size() > maxUndoEntries_)
-                undoStack_.erase(undoStack_.begin());
-        }
-
-        // Supprimer la sélection si elle existe
-        if (state_.hasSelection)
-        {
-            DeleteSelection();
-        }
-
-        // If completion popup visible and typing, hide it
-        if (completionPopup_ && completionPopup_->IsVisible())
-        {
-            completionPopup_->Hide();
-        }
-
-        if (ch == L'\r' || ch == L'\n')
-        {
-            // Nouvelle ligne
-            std::wstring currentLine = state_.lines[state_.caret.line];
-            std::wstring before = currentLine.substr(0, state_.caret.column);
-            std::wstring after = currentLine.substr(state_.caret.column);
-
-            // Special-case: if caret is between matching braces/paren/brackets
-            // (e.g. "{    }" or "(|)" with only whitespace between),
-            // insert an indented blank line between them like VSCode.
-            auto matching = [](wchar_t open)->wchar_t {
-                switch (open)
-                {
-                case L'(': return L')';
-                case L'{': return L'}';
-                case L'[': return L']';
-                default: return 0;
-                }
-            };
-
-            // Find last non-space in before
-            int lb = (int)before.size() - 1;
-            while (lb >= 0 && iswspace(before[lb]))
-                lb--;
-
-            bool didSpecial = false;
-            if (lb >= 0)
-            {
-                wchar_t openChar = before[lb];
-                wchar_t expectedClose = matching(openChar);
-                if (expectedClose != 0)
-                {
-                    // find first non-space in after
-                    int fa = 0;
-                    while (fa < (int)after.size() && iswspace(after[fa]))
-                        fa++;
-                    if (fa < (int)after.size() && after[fa] == expectedClose)
-                    {
-                        // compute base indent (leading whitespace of the current line)
-                        std::wstring baseIndent;
-                        for (size_t i = 0; i < currentLine.size(); ++i)
-                        {
-                            if (!iswspace(currentLine[i]))
-                                break;
-                            baseIndent.push_back(currentLine[i]);
-                        }
-
-                        // indent unit = 4 spaces (same as Tab behavior)
-                        std::wstring innerIndent = baseIndent + L"    ";
-
-                        // left content: before up to openChar (trim trailing spaces)
-                        std::wstring left = before.substr(0, lb + 1);
-
-                        // right content: after from first non-space (keep rest)
-                        std::wstring right = after.substr(fa);
-
-                        // Replace current line and insert two new lines
-                        state_.lines[state_.caret.line] = left;
-                        state_.lines.insert(state_.lines.begin() + state_.caret.line + 1, innerIndent);
-                        state_.lines.insert(state_.lines.begin() + state_.caret.line + 2, baseIndent + right);
-
-                        state_.caret.line++;
-                        state_.caret.column = (int)innerIndent.size();
-                        didSpecial = true;
-                    }
-                }
-            }
-
-            if (!didSpecial)
-            {
-                state_.lines[state_.caret.line] = before;
-                state_.lines.insert(state_.lines.begin() + state_.caret.line + 1, after);
-
-                state_.caret.line++;
-                state_.caret.column = 0;
-            }
-        }
-        else if (ch == L'\t')
-        {
-            // Tab = 4 espaces
-            std::wstring spaces = L"    ";
-            state_.lines[state_.caret.line].insert(state_.caret.column, spaces);
-            state_.caret.column += 4;
-        }
-        else
-        {
-            // Auto-pairing for brackets and quotes, and skip-over for closing chars
-            auto matching = [](wchar_t c)->wchar_t {
-                switch (c)
-                {
-                case L'(': return L')';
-                case L'{': return L'}';
-                case L'[': return L']';
-                case L'"': return L'"';
-                case L'\'': return L'\'';
-                default: return 0;
-                }
-            };
-
-            wchar_t closeForOpen = matching(ch);
-            bool isQuote = (ch == L'"' || ch == L'\'');
-
-            if (closeForOpen != 0)
-            {
-                // Special handling for quotes because opening and closing are the same
-                if (isQuote)
-                {
-                    std::wstring &line = state_.lines[state_.caret.line];
-
-                    // If there's a single-line selection, wrap it with the quotes
-                    if (state_.hasSelection)
-                    {
-                        CaretPosition a = state_.selectionStart;
-                        CaretPosition b = state_.caret;
-                        if (a.line > b.line || (a.line == b.line && a.column > b.column))
-                            std::swap(a, b);
-
-                        if (a.line == b.line)
-                        {
-                            std::wstring &selLine = state_.lines[a.line];
-                            selLine.insert(b.column, 1, ch);
-                            selLine.insert(a.column, 1, ch);
-                            state_.hasSelection = false;
-                            state_.caret.line = b.line;
-                            state_.caret.column = b.column + 1;
-                        }
-                        else
-                        {
-                            // Fallback for multi-line selection: insert an empty pair at caret
-                            std::wstring pairStr;
-                            pairStr.push_back(ch);
-                            pairStr.push_back(ch);
-                            state_.lines[state_.caret.line].insert(state_.caret.column, pairStr);
-                            state_.caret.column += 1;
-                        }
-                    }
-                    else
-                    {
-                        // No selection: if next char is the same quote and not escaped, skip over it
-                        if (state_.caret.column < (int)line.size() && line[state_.caret.column] == ch)
-                        {
-                            bool escaped = false;
-                            if (state_.caret.column > 0 && line[state_.caret.column - 1] == L'\\')
-                                escaped = true;
-
-                            if (!escaped)
-                            {
-                                state_.caret.column++;
-                            }
-                            else
-                            {
-                                // insert escaped quote normally
-                                state_.lines[state_.caret.line].insert(state_.caret.column, 1, ch);
-                                state_.caret.column++;
-                            }
-                        }
-                        else
-                        {
-                            // insert pair and place caret between
-                            std::wstring pairStr;
-                            pairStr.push_back(ch);
-                            pairStr.push_back(ch);
-                            state_.lines[state_.caret.line].insert(state_.caret.column, pairStr);
-                            state_.caret.column += 1;
-                        }
-                    }
-                }
-                else
-                {
-                    // opening bracket behavior (wrap single-line selection or insert pair)
-                    if (state_.hasSelection)
-                    {
-                        CaretPosition a = state_.selectionStart;
-                        CaretPosition b = state_.caret;
-                        if (a.line > b.line || (a.line == b.line && a.column > b.column))
-                            std::swap(a, b);
-
-                        if (a.line == b.line)
-                        {
-                            std::wstring &line = state_.lines[a.line];
-                            line.insert(b.column, 1, closeForOpen);
-                            line.insert(a.column, 1, ch);
-                            state_.hasSelection = false;
-                            state_.caret.line = b.line;
-                            state_.caret.column = b.column + 1;
-                        }
-                        else
-                        {
-                            std::wstring pairStr;
-                            pairStr.push_back(ch);
-                            pairStr.push_back(closeForOpen);
-                            state_.lines[state_.caret.line].insert(state_.caret.column, pairStr);
-                            state_.caret.column += 1;
-                        }
-                    }
-                    else
-                    {
-                        std::wstring pairStr;
-                        pairStr.push_back(ch);
-                        pairStr.push_back(closeForOpen);
-                        state_.lines[state_.caret.line].insert(state_.caret.column, pairStr);
-                        state_.caret.column += 1;
-                    }
-                }
-            }
-            else if (ch == L')' || ch == L'}' || ch == L']')
-            {
-                // If the next character is the same closing char, skip over it
-                std::wstring &line = state_.lines[state_.caret.line];
-                if (state_.caret.column < (int)line.size() && line[state_.caret.column] == ch)
-                {
-                    state_.caret.column++;
-                }
-                else
-                {
-                    // Otherwise insert normally
-                    state_.lines[state_.caret.line].insert(state_.caret.column, 1, ch);
-                    state_.caret.column++;
-                }
-            }
-            else
-            {
-                // Caractère normal
-                state_.lines[state_.caret.line].insert(state_.caret.column, 1, ch);
-                state_.caret.column++;
-            }
-        }
-
-        state_.caretVisible = true;
-        EnsureCaretVisible();
-        state_.lastBlinkTime = GetTickCount();
-    }
-
     void Editor::OnLeftButtonUp(HWND hwnd, POINT pt)
     {
         (void)hwnd;
@@ -2242,6 +2309,11 @@ namespace Orion
             ReleaseCapture();
             return;
         }
+        // Release completion popup thumb drag if any
+        if (completionPopup_ && completionPopup_->IsVisible())
+        {
+            completionPopup_->OnLeftButtonUp();
+        }
     }
 
     void Editor::OnMouseWheel(HWND hwnd, int delta, bool ctrlPressed)
@@ -2255,8 +2327,10 @@ namespace Orion
             float scrollAmount = (delta / 120.0f) * 40.0f; // same base speed as vertical
             state_.scrollOffsetX += scrollAmount;
             float maxScroll = hContentWidth_ - hViewportWidth_;
-            if (state_.scrollOffsetX < 0.0f) state_.scrollOffsetX = 0.0f;
-            if (state_.scrollOffsetX > maxScroll) state_.scrollOffsetX = maxScroll;
+            if (state_.scrollOffsetX < 0.0f)
+                state_.scrollOffsetX = 0.0f;
+            if (state_.scrollOffsetX > maxScroll)
+                state_.scrollOffsetX = maxScroll;
             float availableTrack = hViewportWidth_ - hThumbWidth_;
             if (maxScroll > 0.0f)
                 hThumbPos_ = (state_.scrollOffsetX / maxScroll) * availableTrack;
@@ -2282,6 +2356,23 @@ namespace Orion
             return;
         }
 
+        // If completion popup is visible and the cursor is over it, scroll the popup
+        if (completionPopup_ && completionPopup_->IsVisible())
+        {
+            POINT cur;
+            GetCursorPos(&cur);
+            ScreenToClient(hwnd, &cur);
+            if (completionPopup_->IsPointInPopup(cur))
+            {
+                if (completionPopup_->OnMouseWheel(delta))
+                {
+                    if (hwnd)
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                    return;
+                }
+            }
+        }
+
         if (scrollbar_.OnMouseWheel(delta))
         {
             state_.scrollOffsetY = scrollbar_.GetScrollOffset();
@@ -2298,8 +2389,10 @@ namespace Orion
         float scrollAmount = (delta / 120.0f) * 40.0f;
         state_.scrollOffsetX += scrollAmount;
         float maxScroll = hContentWidth_ - hViewportWidth_;
-        if (state_.scrollOffsetX < 0.0f) state_.scrollOffsetX = 0.0f;
-        if (state_.scrollOffsetX > maxScroll) state_.scrollOffsetX = maxScroll;
+        if (state_.scrollOffsetX < 0.0f)
+            state_.scrollOffsetX = 0.0f;
+        if (state_.scrollOffsetX > maxScroll)
+            state_.scrollOffsetX = maxScroll;
         float availableTrack = hViewportWidth_ - hThumbWidth_;
         if (maxScroll > 0.0f)
             hThumbPos_ = (state_.scrollOffsetX / maxScroll) * availableTrack;
@@ -2334,66 +2427,6 @@ namespace Orion
         }
     }
 
-    void Editor::BuildHeaderIndex()
-    {
-        headerIndex_.clear();
-        // simple scan of common folders
-        try {
-            namespace fs = std::filesystem;
-            std::vector<fs::path> roots = { fs::path("src"), fs::path("external") };
-            for (auto &r : roots)
-            {
-                if (!fs::exists(r)) continue;
-                for (auto &p : fs::recursive_directory_iterator(r))
-                {
-                    if (!p.is_regular_file()) continue;
-                    auto ext = p.path().extension().wstring();
-                    if (ext == L".h" || ext == L".hpp" || ext == L".hh" || ext == L".inc")
-                    {
-                        // store a path relative to project root, using forward slashes
-                        try {
-                            fs::path rel = fs::relative(p.path(), fs::current_path());
-                            std::string s = rel.generic_string();
-                            // convert to wide
-                            int wlen = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), NULL, 0);
-                            std::wstring ws(wlen, L'\0');
-                            if (wlen > 0)
-                                MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), ws.data(), wlen);
-                            headerIndex_.push_back(ws);
-                        } catch (...) {
-                            headerIndex_.push_back(p.path().filename().wstring());
-                        }
-                    }
-                }
-            }
-            // dedupe
-            std::sort(headerIndex_.begin(), headerIndex_.end());
-            headerIndex_.erase(std::unique(headerIndex_.begin(), headerIndex_.end()), headerIndex_.end());
-        } catch (...) {
-            // ignore filesystem errors
-        }
-    }
-
-    std::vector<std::wstring> Editor::GetIncludeSuggestions(const std::wstring &prefix) const
-    {
-        std::vector<std::wstring> out;
-        for (const auto &h : headerIndex_)
-        {
-            if (prefix.empty()) out.push_back(h);
-            else
-            {
-                std::wstring low = h;
-                std::wstring lp = prefix;
-                for (auto &c : low) c = towlower(c);
-                for (auto &c : lp) c = towlower(c);
-                if (low.rfind(lp, 0) == 0 || low.find(lp) != std::wstring::npos)
-                    out.push_back(h);
-            }
-            if (out.size() >= 200) break;
-        }
-        return out;
-    }
-
     void Editor::ResetZoom()
     {
         zoomLevel_ = 1.0f;
@@ -2403,475 +2436,6 @@ namespace Orion
             cachedTextFormat_->Release();
             cachedTextFormat_ = nullptr;
         }
-    }
-
-    void Editor::OnKeyDown(WPARAM key)
-    {
-        {
-            wchar_t buf[128];
-            bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-            bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-            swprintf_s(buf, L"Editor::OnKeyDown - key=%d ctrl=%d shift=%d", (int)key, ctrl ? 1 : 0, shift ? 1 : 0);
-            Logger::Instance().Log(std::wstring(buf));
-        }
-        bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-        bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-
-        // ✨ NOUVEAU : Ctrl+F pour ouvrir la recherche
-        if (ctrl && (key == 'F' || key == 'f'))
-        {
-            ShowSearch();
-            // Effectuer une recherche initiale si du texte est déjà présent
-            if (!searchBox_.GetSearchText().empty())
-            {
-                searchBox_.PerformSearch(state_.lines);
-            }
-            return;
-        }
-
-        // Ctrl+Space -> trigger completion popup for includes
-        if (ctrl && key == VK_SPACE)
-        {
-            // only in C/C++/h/hpp/.c/.cpp or empty ext treat similarly
-            std::wstring ext;
-            if (!state_.filePath.empty())
-            {
-                size_t pos = state_.filePath.find_last_of(L'.');
-                if (pos != std::wstring::npos)
-                {
-                    ext = state_.filePath.substr(pos);
-                    for (auto &c : ext) c = towlower(c);
-                }
-            }
-
-            // Only support include suggestion for C/C++ files
-            if (ext == L".c" || ext == L".cpp" || ext == L".h" || ext == L".hpp" || ext.empty())
-            {
-                // determine if caret is within an include <...> or "..."
-                const std::wstring &line = state_.lines[state_.caret.line];
-                size_t posInclude = line.rfind(L"#include", state_.caret.column);
-                if (posInclude != std::wstring::npos)
-                {
-                    // find last '<' or '"' after #include
-                    size_t lt = line.find_last_of(L"<\"", state_.caret.column - 1);
-                    if (lt != std::wstring::npos && lt > posInclude)
-                    {
-                        // extract prefix from after lt to caret
-                        size_t start = lt + 1;
-                        size_t end = (size_t)state_.caret.column;
-                        if (end < start) end = start;
-                        std::wstring prefix = line.substr(start, end - start);
-                        auto suggestions = GetIncludeSuggestions(prefix);
-                        if (!suggestions.empty())
-                        {
-                            completionPopup_->SetItems(suggestions);
-                            D2D1_POINT_2F p = TextToScreenPosition(state_.caret);
-                            completionPopup_->UpdateLayout(p.x, p.y + metrics_.lineHeight, 400.0f, metrics_.lineHeight);
-                            completionPopup_->Show();
-                            // Prevent the WM_CHAR for the space from inserting a literal space
-                            suppressNextChar_ = true;
-                        }
-                        return;
-                    }
-                }
-            }
-        }
-
-        // ✨ NOUVEAU : Si le SearchBox est visible et focalisé, gérer ses touches
-        if (searchBox_.IsVisible() && searchBox_.IsInputFocused())
-        {
-            searchBox_.OnKeyDown(key);
-            
-            // Re-effectuer la recherche après certaines touches
-            if (key == VK_BACK || key == VK_DELETE || key == VK_RETURN)
-            {
-                searchBox_.PerformSearch(state_.lines);
-                
-                // Scroller vers le match courant
-                if (!searchBox_.GetMatches().empty())
-                {
-                    int idx = searchBox_.GetCurrentMatchIndex();
-                    if (idx >= 0 && idx < (int)searchBox_.GetMatches().size())
-                    {
-                        const auto& match = searchBox_.GetMatches()[idx];
-                        state_.caret.line = match.line;
-                        state_.caret.column = match.startColumn;
-                        EnsureCaretVisible();
-                    }
-                }
-            }
-            
-            // Si Échap a été pressé, le SearchBox s'est fermé, on sort
-            if (!searchBox_.IsVisible())
-                return;
-            
-            // Ne pas propager les touches au reste de l'éditeur
-            return;
-        }
-
-        // Ctrl+Z -> Undo
-        if (ctrl && (key == 'Z' || key == 'z'))
-        {
-            Undo();
-            return;
-        }
-
-        // Commencer/continuer une sélection si Shift est enfoncé
-        if (shift && !state_.hasSelection)
-        {
-            state_.selectionStart = state_.caret;
-            state_.hasSelection = true;
-        }
-        else if (!shift && state_.hasSelection &&
-                 key != VK_BACK && key != VK_DELETE &&
-                 key != 'C' && key != 'X' && key != 'V')
-        {
-            state_.hasSelection = false;
-        }
-
-        switch (key)
-        {
-        case VK_LEFT:
-            if (state_.caret.column > 0)
-            {
-                state_.caret.column--;
-            }
-            else if (state_.caret.line > 0)
-            {
-                state_.caret.line--;
-                state_.caret.column = (int)state_.lines[state_.caret.line].size();
-            }
-            break;
-
-        case VK_RIGHT:
-            if (state_.caret.column < (int)state_.lines[state_.caret.line].size())
-            {
-                state_.caret.column++;
-            }
-            else if (state_.caret.line < (int)state_.lines.size() - 1)
-            {
-                state_.caret.line++;
-                state_.caret.column = 0;
-            }
-            break;
-
-        case VK_UP:
-            if (state_.caret.line > 0)
-            {
-                state_.caret.line--;
-                state_.caret.column = (std::min)(state_.caret.column,
-                                                 (int)state_.lines[state_.caret.line].size());
-            }
-            break;
-
-        case VK_DOWN:
-            if (state_.caret.line < (int)state_.lines.size() - 1)
-            {
-                state_.caret.line++;
-                state_.caret.column = (std::min)(state_.caret.column,
-                                                 (int)state_.lines[state_.caret.line].size());
-            }
-            break;
-
-        case VK_HOME:
-            state_.caret.column = 0;
-            break;
-
-        case VK_END:
-            state_.caret.column = (int)state_.lines[state_.caret.line].size();
-            break;
-
-        case VK_BACK:
-            // push undo snapshot before mutating
-            if (undoStack_.empty() || undoStack_.back().lines != state_.lines ||
-                undoStack_.back().caret.line != state_.caret.line ||
-                undoStack_.back().caret.column != state_.caret.column)
-            {
-                undoStack_.push_back(state_);
-                if (undoStack_.size() > maxUndoEntries_)
-                    undoStack_.erase(undoStack_.begin());
-            }
-
-            if (state_.hasSelection)
-            {
-                DeleteSelection();
-            }
-            else if (state_.caret.column > 0)
-            {
-                state_.lines[state_.caret.line].erase(state_.caret.column - 1, 1);
-                state_.caret.column--;
-            }
-            else if (state_.caret.line > 0)
-            {
-                // Fusionner avec la ligne précédente
-                int prevLineLen = (int)state_.lines[state_.caret.line - 1].size();
-                state_.lines[state_.caret.line - 1] += state_.lines[state_.caret.line];
-                state_.lines.erase(state_.lines.begin() + state_.caret.line);
-                state_.caret.line--;
-                state_.caret.column = prevLineLen;
-            }
-            break;
-
-        case VK_DELETE:
-            // push undo snapshot before mutating
-            if (undoStack_.empty() || undoStack_.back().lines != state_.lines ||
-                undoStack_.back().caret.line != state_.caret.line ||
-                undoStack_.back().caret.column != state_.caret.column)
-            {
-                undoStack_.push_back(state_);
-                if (undoStack_.size() > maxUndoEntries_)
-                    undoStack_.erase(undoStack_.begin());
-            }
-
-            if (state_.hasSelection)
-            {
-                DeleteSelection();
-            }
-            else if (state_.caret.column < (int)state_.lines[state_.caret.line].size())
-            {
-                state_.lines[state_.caret.line].erase(state_.caret.column, 1);
-            }
-            else if (state_.caret.line < (int)state_.lines.size() - 1)
-            {
-                // Fusionner avec la ligne suivante
-                state_.lines[state_.caret.line] += state_.lines[state_.caret.line + 1];
-                state_.lines.erase(state_.lines.begin() + state_.caret.line + 1);
-            }
-            break;
-
-        case 'A':
-            if (ctrl)
-            {
-                // Select All
-                state_.selectionStart = {0, 0};
-                state_.caret = {(int)state_.lines.size() - 1,
-                                (int)state_.lines.back().size()};
-                state_.hasSelection = true;
-            }
-            break;
-
-        case 'C':
-            if (ctrl && state_.hasSelection)
-            {
-                // Copier la sélection dans le presse-papier (Unicode)
-                auto getSelectionText = [this]() -> std::wstring
-                {
-                    CaretPosition start = state_.selectionStart;
-                    CaretPosition end = state_.caret;
-                    if (start.line > end.line || (start.line == end.line && start.column > end.column))
-                        std::swap(start, end);
-
-                    std::wstring out;
-                    if (start.line == end.line)
-                    {
-                        out = state_.lines[start.line].substr(start.column, end.column - start.column);
-                        return out;
-                    }
-
-                    // multiple lines
-                    out += state_.lines[start.line].substr(start.column);
-                    out += L"\r\n";
-                    for (int L = start.line + 1; L < end.line; ++L)
-                    {
-                        out += state_.lines[L];
-                        out += L"\r\n";
-                    }
-                    out += state_.lines[end.line].substr(0, end.column);
-                    return out;
-                };
-
-                std::wstring sel = getSelectionText();
-                if (!sel.empty())
-                {
-                    if (OpenClipboard(NULL))
-                    {
-                        EmptyClipboard();
-                        SIZE_T bytes = (sel.size() + 1) * sizeof(wchar_t);
-                        HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
-                        if (hMem)
-                        {
-                            void *ptr = GlobalLock(hMem);
-                            if (ptr)
-                            {
-                                memcpy(ptr, sel.c_str(), bytes);
-                                GlobalUnlock(hMem);
-                                SetClipboardData(CF_UNICODETEXT, hMem);
-                            }
-                            else
-                            {
-                                GlobalFree(hMem);
-                            }
-                        }
-                        CloseClipboard();
-                    }
-                }
-            }
-            break;
-
-        case 'X':
-            if (ctrl && state_.hasSelection)
-            {
-                // Couper: copier puis supprimer la sélection
-                // Réutiliser le même code que pour Ctrl+C
-                auto getSelectionText = [this]() -> std::wstring
-                {
-                    CaretPosition start = state_.selectionStart;
-                    CaretPosition end = state_.caret;
-                    if (start.line > end.line || (start.line == end.line && start.column > end.column))
-                        std::swap(start, end);
-
-                    std::wstring out;
-                    if (start.line == end.line)
-                    {
-                        out = state_.lines[start.line].substr(start.column, end.column - start.column);
-                        return out;
-                    }
-
-                    out += state_.lines[start.line].substr(start.column);
-                    out += L"\r\n";
-                    for (int L = start.line + 1; L < end.line; ++L)
-                    {
-                        out += state_.lines[L];
-                        out += L"\r\n";
-                    }
-                    out += state_.lines[end.line].substr(0, end.column);
-                    return out;
-                };
-
-                std::wstring sel = getSelectionText();
-                if (!sel.empty())
-                {
-                    if (OpenClipboard(NULL))
-                    {
-                        EmptyClipboard();
-                        SIZE_T bytes = (sel.size() + 1) * sizeof(wchar_t);
-                        HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
-                        if (hMem)
-                        {
-                            void *ptr = GlobalLock(hMem);
-                            if (ptr)
-                            {
-                                memcpy(ptr, sel.c_str(), bytes);
-                                GlobalUnlock(hMem);
-                                SetClipboardData(CF_UNICODETEXT, hMem);
-                            }
-                            else
-                            {
-                                GlobalFree(hMem);
-                            }
-                        }
-                        CloseClipboard();
-                    }
-                }
-
-                DeleteSelection();
-            }
-            break;
-
-        case 'V':
-            if (ctrl)
-            {
-                // snapshot before paste
-                if (undoStack_.empty() || undoStack_.back().lines != state_.lines ||
-                    undoStack_.back().caret.line != state_.caret.line ||
-                    undoStack_.back().caret.column != state_.caret.column)
-                {
-                    undoStack_.push_back(state_);
-                    if (undoStack_.size() > maxUndoEntries_)
-                        undoStack_.erase(undoStack_.begin());
-                }
-
-                // Coller depuis le presse-papier (Unicode)
-                if (OpenClipboard(NULL))
-                {
-                    HANDLE hData = GetClipboardData(CF_UNICODETEXT);
-                    if (hData)
-                    {
-                        wchar_t *clip = static_cast<wchar_t *>(GlobalLock(hData));
-                        if (clip)
-                        {
-                            std::wstring text(clip);
-                            GlobalUnlock(hData);
-
-                            // Normaliser les sauts de ligne: supprimer \r puis splitter sur \n
-                            std::wstring tmp;
-                            tmp.reserve(text.size());
-                            for (size_t i = 0; i < text.size(); ++i)
-                            {
-                                if (text[i] == L'\r')
-                                {
-                                    continue;
-                                }
-                                tmp.push_back(text[i]);
-                            }
-
-                            // Si sélection active, la supprimer avant insertion
-                            if (state_.hasSelection)
-                            {
-                                DeleteSelection();
-                            }
-
-                            // Split par '\n'
-                            std::vector<std::wstring> parts;
-                            size_t start = 0;
-                            while (start <= tmp.size())
-                            {
-                                size_t pos = tmp.find(L'\n', start);
-                                if (pos == std::wstring::npos)
-                                {
-                                    parts.push_back(tmp.substr(start));
-                                    break;
-                                }
-                                parts.push_back(tmp.substr(start, pos - start));
-                                start = pos + 1;
-                            }
-
-                            if (parts.empty())
-                            {
-                                // nothing to paste
-                            }
-                            else if (parts.size() == 1)
-                            {
-                                // simple insert in current line
-                                state_.lines[state_.caret.line].insert(state_.caret.column, parts[0]);
-                                state_.caret.column += (int)parts[0].size();
-                            }
-                            else
-                            {
-                                // Insert multi-line: first part into current line, then insert middle lines, then append tail to last part
-                                std::wstring currentLine = state_.lines[state_.caret.line];
-                                std::wstring before = currentLine.substr(0, state_.caret.column);
-                                std::wstring after = currentLine.substr(state_.caret.column);
-
-                                // first line becomes before + parts[0]
-                                state_.lines[state_.caret.line] = before + parts[0];
-
-                                // insert middle parts
-                                int insertAt = state_.caret.line + 1;
-                                for (size_t i = 1; i < parts.size(); ++i)
-                                {
-                                    state_.lines.insert(state_.lines.begin() + insertAt, parts[i]);
-                                    insertAt++;
-                                }
-
-                                // append the original 'after' to the last inserted line
-                                state_.lines[insertAt - 1] += after;
-
-                                // Move caret to end of the inserted content
-                                state_.caret.line = insertAt - 1;
-                                state_.caret.column = (int)(state_.lines[state_.caret.line].size() - after.size());
-                            }
-                        }
-                    }
-                    CloseClipboard();
-                }
-            }
-            break;
-        }
-
-        EnsureCaretVisible();
-        state_.caretVisible = true;
-        state_.lastBlinkTime = GetTickCount();
     }
 
     void Editor::UpdateCaretBlink()
@@ -2893,16 +2457,16 @@ namespace Orion
             state_.caret.column = 0;
             return;
         }
-        
+
         state_.caret.line = (std::max)(0, (std::min)(line, (int)state_.lines.size() - 1));
-        
+
         // Clamp column to valid range for the line
         int maxCol = (int)state_.lines[state_.caret.line].length();
         state_.caret.column = (std::max)(0, (std::min)(column, maxCol));
-        
+
         // Clear any selection
         state_.hasSelection = false;
-        
+
         // Make sure caret is visible
         EnsureCaretVisible();
     }

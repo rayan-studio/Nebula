@@ -14,6 +14,7 @@
 #include "ui/components/popups/CustomPopup.h"
 #include <shellapi.h>
 #include "ui/components/titlebar/TitleBar.h"
+#include "core/window/Window.h"
 #include "utils/logger/Logger.h"
 
 // Disable min/max macros from Windows headers
@@ -365,11 +366,11 @@ void ExplorerManager::CreateNewFile(const std::wstring &name)
         std::string path(size, '\0');
         WideCharToMultiByte(CP_UTF8, 0, targetPath.c_str(), -1, path.data(), size, NULL, NULL);
 
-#ifdef _DEBUG
-        // Debug temporaires pour vérifier l'appel
-        MessageBoxW(nullptr, (L"Création fichier: " + name).c_str(), L"Debug", MB_OK);
-        MessageBoxW(nullptr, (L"Chemin complet: " + targetPath).c_str(), L"Debug", MB_OK);
-#endif
+        #ifdef _DEBUG
+            // Debug temporaires pour vérifier l'appel
+            MessageBoxW(nullptr, (L"Création fichier: " + name).c_str(), L"Debug", MB_OK);
+            MessageBoxW(nullptr, (L"Chemin complet: " + targetPath).c_str(), L"Debug", MB_OK);    
+        #endif
 
         file.open(path);
         if (file.is_open())
@@ -1278,6 +1279,26 @@ void ExplorerManager::HandleContextCommand(int commandId)
                     // Reload explorer contents and refresh UI
                     LoadDirectoryContents();
                     InvalidateMainWindow();
+                    // If a file was deleted, close its tab if open
+                    try {
+                        HWND wnd = FindWindowW(L"NebulaTextWindowClass", NULL);
+                        if (wnd)
+                        {
+                            Window *window = GetWindowFromHwnd(wnd);
+                            if (window)
+                            {
+                                TabBar *tb = window->GetTabBar();
+                                if (tb)
+                                {
+                                    int tidx = tb->FindTabIndexByFilePath(path);
+                                    if (tidx >= 0)
+                                        tb->CloseTab(tidx);
+                                }
+                            }
+                        }
+                    } catch (...) {
+                        // ignore any errors while attempting to close tabs
+                    }
                 }
                 else
                 {

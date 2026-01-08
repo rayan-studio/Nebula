@@ -1,4 +1,5 @@
 #pragma once
+#include <Windows.h>
 #include <vector>
 #include <string>
 #include <d2d1.h>
@@ -25,6 +26,10 @@ namespace Orion
         // Input
         void OnKeyDown(WPARAM key);
         void OnLeftButtonDown(POINT pt);
+        // Mouse interaction for popup
+        void OnMouseMove(POINT pt);
+        bool OnMouseWheel(int delta);
+        void OnLeftButtonUp();
         bool IsPointInPopup(POINT pt) const;
 
     private:
@@ -34,6 +39,12 @@ namespace Orion
         D2D1_RECT_F rect_;
         float itemHeight_ = 20.0f;
         float maxWidth_ = 300.0f;
+        // Scrolling state when more items than visible
+        int scrollIndex_ = 0;
+        float scrollbarWidth_ = 12.0f;
+        bool isDraggingThumb_ = false;
+        int dragStartY_ = 0;
+        int dragStartIndex_ = 0;
     };
 
 } // namespace Orion
