@@ -212,6 +212,12 @@ namespace Orion
 
         // Calculer les profondeurs HTML (garde l'ancienne logique)
         std::vector<int> CalculateHtmlDepths(int firstLine, int lastLine) const;
+
+        // Click tracking for double/triple click selection
+        DWORD lastClickTime_ = 0;
+        POINT lastClickPos_ = {0, 0};
+        CaretPosition lastClickTextPos_ = {-1, -1};
+        int clickCount_ = 0;
     };
 
     class CustomTextRenderer : public IDWriteTextRenderer

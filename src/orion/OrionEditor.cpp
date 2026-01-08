@@ -916,46 +916,38 @@ namespace Orion
 
                 if (format)
                 {
-                    // Mesurer la position de début
-                    if (startCol > 0)
+                    // Create a full layout for the line and use HitTestTextPosition
+                    // to get precise caret X positions (handles trailing spaces reliably).
+                    IDWriteTextLayout *fullLayout = nullptr;
+                    if (SUCCEEDED(pDWriteFactory_->CreateTextLayout(
+                            state_.lines[line].c_str(),
+                            (UINT32)state_.lines[line].size(),
+                            format,
+                            10000.0f,
+                            metrics_.lineHeight,
+                            &fullLayout)) &&
+                        fullLayout)
                     {
-                        std::wstring textBefore = state_.lines[line].substr(0, startCol);
-                        IDWriteTextLayout *layout1 = nullptr;
-                        if (SUCCEEDED(pDWriteFactory_->CreateTextLayout(
-                                textBefore.c_str(),
-                                (UINT32)textBefore.size(),
-                                format,
-                                10000.0f,
-                                metrics_.lineHeight,
-                                &layout1)) &&
-                            layout1)
-                        {
-                            DWRITE_TEXT_METRICS tm1 = {};
-                            layout1->GetMetrics(&tm1);
-                            x1 = contentLeft + tm1.width - state_.scrollOffsetX;
-                            layout1->Release();
-                        }
-                    }
+                        FLOAT caretX = 0.0f, caretY = 0.0f;
+                        DWRITE_HIT_TEST_METRICS hit = {};
 
-                    // Mesurer la position de fin
-                    if (endCol > 0 && endCol <= (int)state_.lines[line].size())
-                    {
-                        std::wstring textBeforeEnd = state_.lines[line].substr(0, endCol);
-                        IDWriteTextLayout *layout2 = nullptr;
-                        if (SUCCEEDED(pDWriteFactory_->CreateTextLayout(
-                                textBeforeEnd.c_str(),
-                                (UINT32)textBeforeEnd.size(),
-                                format,
-                                10000.0f,
-                                metrics_.lineHeight,
-                                &layout2)) &&
-                            layout2)
+                        if (startCol >= 0 && startCol <= (int)state_.lines[line].size())
                         {
-                            DWRITE_TEXT_METRICS tm2 = {};
-                            layout2->GetMetrics(&tm2);
-                            x2 = contentLeft + tm2.width - state_.scrollOffsetX;
-                            layout2->Release();
+                            if (SUCCEEDED(fullLayout->HitTestTextPosition((UINT32)startCol, FALSE, &caretX, &caretY, &hit)))
+                            {
+                                x1 = contentLeft + caretX - state_.scrollOffsetX;
+                            }
                         }
+
+                        if (endCol >= 0 && endCol <= (int)state_.lines[line].size())
+                        {
+                            if (SUCCEEDED(fullLayout->HitTestTextPosition((UINT32)endCol, FALSE, &caretX, &caretY, &hit)))
+                            {
+                                x2 = contentLeft + caretX - state_.scrollOffsetX;
+                            }
+                        }
+
+                        fullLayout->Release();
                     }
 
                     if (tmpFormat)
@@ -2056,10 +2048,28 @@ namespace Orion
             return;
         }
 
+        // Determine clicked text position first (more stable than raw screen coords)
+        CaretPosition clickedPos = ScreenToTextPosition(pt);
+
+        // Manage click count (single/double/triple click) using text position
+        DWORD now = GetTickCount();
+        UINT dblTime = GetDoubleClickTime();
+        bool sameTextPos = (clickedPos.line == lastClickTextPos_.line && clickedPos.column == lastClickTextPos_.column);
+        if (now - lastClickTime_ <= dblTime && sameTextPos)
+        {
+            clickCount_ = (clickCount_ < 3) ? clickCount_ + 1 : 1;
+        }
+        else
+        {
+            clickCount_ = 1;
+        }
+        lastClickTime_ = now;
+        lastClickPos_ = pt;
+        lastClickTextPos_ = clickedPos;
+
         // Shift+Click selection: if Shift is held, extend selection from the
         // existing caret (or existing selection start) to the clicked position.
         bool shiftPressed = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-        CaretPosition clickedPos = ScreenToTextPosition(pt);
 
         if (shiftPressed)
         {
@@ -2071,6 +2081,89 @@ namespace Orion
 
             // Move caret to clicked position and enable selection
             state_.caret = clickedPos;
+            state_.hasSelection = true;
+            state_.caretVisible = true;
+            state_.lastBlinkTime = GetTickCount();
+            EnsureCaretVisible();
+            if (hwnd)
+                InvalidateRect(hwnd, nullptr, FALSE);
+            return;
+        }
+
+        // Handle double-click (select word) and triple-click (select line)
+        if (clickCount_ == 2 || clickCount_ == 3)
+        {
+            int line = clickedPos.line;
+            if (line < 0 || line >= (int)state_.lines.size())
+                return;
+
+            const std::wstring &ln = state_.lines[line];
+
+            if (clickCount_ == 3)
+            {
+                // Triple-click -> select entire line
+                state_.selectionStart = {line, 0};
+                state_.caret = {line, (int)ln.size()};
+                state_.hasSelection = true;
+                state_.caretVisible = true;
+                state_.lastBlinkTime = GetTickCount();
+                EnsureCaretVisible();
+                if (hwnd)
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                return;
+            }
+
+            // Double-click -> select word under caret
+            if (ln.empty())
+            {
+                // empty line -> select the line
+                state_.selectionStart = {line, 0};
+                state_.caret = {line, 0};
+                state_.hasSelection = true;
+                state_.caretVisible = true;
+                state_.lastBlinkTime = GetTickCount();
+                EnsureCaretVisible();
+                if (hwnd)
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                return;
+            }
+
+            auto isWordChar = [](wchar_t c) {
+                return (iswalnum(c) != 0) || (c == L'_');
+            };
+
+            int col = clickedPos.column;
+            if (col < 0) col = 0;
+            if (col > (int)ln.size()) col = (int)ln.size();
+
+            int idx = col;
+            if (idx == (int)ln.size())
+                idx = (int)ln.size() - 1;
+
+            // If clicked on whitespace/punct, try neighbor char
+            if (!isWordChar(ln[idx]))
+            {
+                if (idx > 0 && isWordChar(ln[idx - 1]))
+                    idx = idx - 1;
+            }
+
+            // Expand to word boundaries
+            int left = idx;
+            while (left > 0 && isWordChar(ln[left - 1]))
+                --left;
+            int right = idx;
+            while (right + 1 < (int)ln.size() && isWordChar(ln[right + 1]))
+                ++right;
+
+            // If we didn't find a word (clicked punctuation), select that character
+            if (left > right)
+            {
+                left = idx;
+                right = idx;
+            }
+
+            state_.selectionStart = {line, left};
+            state_.caret = {line, right + 1};
             state_.hasSelection = true;
             state_.caretVisible = true;
             state_.lastBlinkTime = GetTickCount();

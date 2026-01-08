@@ -46,9 +46,6 @@ namespace Orion::Rendering
             if (debugLogs)
             {
                 std::wstringstream ss;
-                ss << L"[GuideRenderer::DrawCppGuides] caretLine=" << renderCtx.caretLine 
-                   << L" caretIndent=" << caretIndent.level << L" caretX=" << caretX;
-                Logger::Instance().Log(ss.str());
             }
         }
 
@@ -60,13 +57,6 @@ namespace Orion::Rendering
 
         if (levels.empty())
             return;
-
-        if (debugLogs)
-        {
-            std::wstringstream ss;
-            ss << L"[GuideRenderer::DrawCppGuides] levelsCount=" << levels.size();
-            Logger::Instance().Log(ss.str());
-        }
 
         // Pour chaque niveau d'indentation
         for (int levelSpaces : levels)
@@ -135,18 +125,6 @@ namespace Orion::Rendering
                                    renderCtx.lineHeight - 
                                    (renderCtx.lineHeight * style_.bottomMargin);
 
-                    if (debugLogs)
-                    {
-                        std::wstringstream ss;
-                        ss << L"[GuideRenderer::DrawCppGuides] RANGE levelSpaces=" << levelSpaces 
-                           << L" lines=" << rangeStart << L"-" << (li-1)
-                           << L" guideX=" << guideX 
-                           << L" topY=" << topY 
-                           << L" bottomY=" << bottomY 
-                           << L" isActive=" << (isActive ? 1 : 0);
-                        Logger::Instance().Log(ss.str());
-                    }
-
                     DrawGuideSegment(ctx, guideX, topY, bottomY, isActive);
                     inRange = false;
                     rangeStart = -1;
@@ -168,18 +146,6 @@ namespace Orion::Rendering
                                renderCtx.scrollOffsetY + 
                                renderCtx.lineHeight - 
                                (renderCtx.lineHeight * style_.bottomMargin);
-
-                if (debugLogs)
-                {
-                    std::wstringstream ss;
-                    ss << L"[GuideRenderer::DrawCppGuides] RANGE (final) levelSpaces=" << levelSpaces 
-                       << L" lines=" << rangeStart << L"-" << lastLine
-                       << L" guideX=" << guideX 
-                       << L" topY=" << topY 
-                       << L" bottomY=" << bottomY 
-                       << L" isActive=" << (isActive ? 1 : 0);
-                    Logger::Instance().Log(ss.str());
-                }
 
                 DrawGuideSegment(ctx, guideX, topY, bottomY, isActive);
             }
