@@ -109,40 +109,152 @@ namespace Orion
         state_.caret = {0, 0};
         state_.scrollOffsetX = 0.0f;
         state_.scrollOffsetY = 0.0f;
-
-        std::ifstream file;
+        // Read entire file into memory and detect encoding (BOM-aware)
         int size_needed = WideCharToMultiByte(CP_UTF8, 0, filePath.c_str(), (int)filePath.size(), NULL, 0, NULL, NULL);
         std::string pathUtf8(size_needed, '\0');
         WideCharToMultiByte(CP_UTF8, 0, filePath.c_str(), (int)filePath.size(), pathUtf8.data(), size_needed, NULL, NULL);
 
-        file.open(pathUtf8, std::ios::binary);
+        std::ifstream file(pathUtf8, std::ios::binary);
         if (!file.is_open())
         {
             state_.lines.push_back(L"// Could not open file");
+            state_.encoding = L"";
             return;
         }
 
-        std::string line;
-        while (std::getline(file, line))
+        std::string data;
+        file.seekg(0, std::ios::end);
+        std::streamoff fsize = file.tellg();
+        if (fsize > 0)
         {
-            // SUPPRIMER LE \r SI PRÉSENT (Windows line endings)
-            if (!line.empty() && line.back() == '\r')
+            file.seekg(0, std::ios::beg);
+            data.resize((size_t)fsize);
+            file.read(&data[0], fsize);
+        }
+
+        // Default encoding
+        state_.encoding = L"Unknown";
+
+        // Detect BOMs
+        if (data.size() >= 3 && (unsigned char)data[0] == 0xEF && (unsigned char)data[1] == 0xBB && (unsigned char)data[2] == 0xBF)
+        {
+            // UTF-8 with BOM
+            state_.encoding = L"UTF-8";
+            // strip BOM
+            data.erase(0, 3);
+            // decode as UTF-8
+            std::string cur;
+            std::istringstream ss(data);
+            while (std::getline(ss, cur))
             {
-                line.pop_back();
+                if (!cur.empty() && cur.back() == '\r') cur.pop_back();
+                if (cur.empty()) state_.lines.push_back(L"");
+                else
+                {
+                    int wsize = MultiByteToWideChar(CP_UTF8, 0, cur.c_str(), (int)cur.size(), NULL, 0);
+                    std::wstring wline(wsize, L'\0');
+                    MultiByteToWideChar(CP_UTF8, 0, cur.c_str(), (int)cur.size(), wline.data(), wsize);
+                    state_.lines.push_back(wline);
+                }
+            }
+        }
+        else if (data.size() >= 2 && (unsigned char)data[0] == 0xFF && (unsigned char)data[1] == 0xFE)
+        {
+            // UTF-16 LE BOM
+            state_.encoding = L"UTF-16 LE";
+            // Interpret as wchar_t sequence (skip BOM)
+            size_t start = 2;
+            size_t byteCount = data.size() - start;
+            size_t wcharCount = byteCount / 2;
+            std::wstring w;
+            w.resize(wcharCount);
+            for (size_t i = 0; i < wcharCount; ++i)
+            {
+                unsigned char lo = data[start + i * 2];
+                unsigned char hi = data[start + i * 2 + 1];
+                wchar_t ch = (wchar_t)((hi << 8) | lo);
+                w[i] = ch;
+            }
+            // split on L'\n'
+            size_t pos = 0;
+            while (pos <= w.size())
+            {
+                size_t nl = w.find(L'\n', pos);
+                if (nl == std::wstring::npos) nl = w.size();
+                std::wstring linew = w.substr(pos, nl - pos);
+                if (!linew.empty() && linew.back() == L'\r') linew.pop_back();
+                state_.lines.push_back(linew);
+                pos = nl + 1;
+            }
+        }
+        else if (data.size() >= 2 && (unsigned char)data[0] == 0xFE && (unsigned char)data[1] == 0xFF)
+        {
+            // UTF-16 BE BOM
+            state_.encoding = L"UTF-16 BE";
+            size_t start = 2;
+            size_t byteCount = data.size() - start;
+            size_t wcharCount = byteCount / 2;
+            std::wstring w;
+            w.resize(wcharCount);
+            for (size_t i = 0; i < wcharCount; ++i)
+            {
+                unsigned char hi = data[start + i * 2];
+                unsigned char lo = data[start + i * 2 + 1];
+                wchar_t ch = (wchar_t)((hi << 8) | lo);
+                w[i] = ch;
+            }
+            size_t pos = 0;
+            while (pos <= w.size())
+            {
+                size_t nl = w.find(L'\n', pos);
+                if (nl == std::wstring::npos) nl = w.size();
+                std::wstring linew = w.substr(pos, nl - pos);
+                if (!linew.empty() && linew.back() == L'\r') linew.pop_back();
+                state_.lines.push_back(linew);
+                pos = nl + 1;
+            }
+        }
+        else
+        {
+            // Heuristic: try UTF-8 first, fallback to ANSI (CP_ACP)
+            state_.encoding = L"UTF-8";
+            std::string cur;
+            std::istringstream ss(data);
+            bool utf8Succeeded = true;
+            std::vector<std::wstring> tmpLines;
+            while (std::getline(ss, cur))
+            {
+                if (!cur.empty() && cur.back() == '\r') cur.pop_back();
+                int wsize = MultiByteToWideChar(CP_UTF8, 0, cur.c_str(), (int)cur.size(), NULL, 0);
+                if (wsize == 0)
+                {
+                    utf8Succeeded = false;
+                    break;
+                }
+                std::wstring wline(wsize, L'\0');
+                MultiByteToWideChar(CP_UTF8, 0, cur.c_str(), (int)cur.size(), wline.data(), wsize);
+                tmpLines.push_back(wline);
             }
 
-            if (line.empty())
+            if (utf8Succeeded)
             {
-                state_.lines.push_back(L"");
+                state_.lines = std::move(tmpLines);
             }
             else
             {
-                int wsize = MultiByteToWideChar(CP_UTF8, 0, line.c_str(), (int)line.size(), NULL, 0);
-                std::wstring wline(wsize, L'\0');
-                MultiByteToWideChar(CP_UTF8, 0, line.c_str(), (int)line.size(), wline.data(), wsize);
-
-                // Keep original tabs in the buffer; tabs are a visual feature only.
-                state_.lines.push_back(wline);
+                // Fallback to ANSI codepage
+                state_.encoding = L"ANSI";
+                state_.lines.clear();
+                std::istringstream ss2(data);
+                while (std::getline(ss2, cur))
+                {
+                    if (!cur.empty() && cur.back() == '\r') cur.pop_back();
+                    int wsize = MultiByteToWideChar(CP_ACP, 0, cur.c_str(), (int)cur.size(), NULL, 0);
+                    std::wstring wline(wsize, L'\0');
+                    if (wsize > 0)
+                        MultiByteToWideChar(CP_ACP, 0, cur.c_str(), (int)cur.size(), wline.data(), wsize);
+                    state_.lines.push_back(wline);
+                }
             }
         }
 

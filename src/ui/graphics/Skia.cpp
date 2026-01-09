@@ -213,6 +213,7 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
     {
         std::wstring fp = L"";
         int ln = 0, col = 0;
+        std::wstring enc = L"";
         if (window)
         {
             TabBar *tabBar = window->GetTabBar();
@@ -226,10 +227,11 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
                     Orion::CaretPosition c = editor->GetCaret();
                     ln = c.line;
                     col = c.column;
+                    enc = editor->GetEncoding();
                 }
             }
         }
-        DrawFooterD2D(pRenderTarget_, pDWriteFactory_, hwnd, fp, ln, col);
+        DrawFooterD2D(pRenderTarget_, pDWriteFactory_, hwnd, fp, ln, col, enc);
     }
 
     // Dessiner le dropdown par-dessus tout

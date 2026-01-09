@@ -59,6 +59,7 @@ namespace Orion
         std::vector<std::wstring> lines;
         CaretPosition caret = {0, 0};
         std::wstring filePath;
+        std::wstring encoding = L"UTF-8"; // Human-readable encoding label for footer
         float scrollOffsetX = 0.0f;
         float scrollOffsetY = 0.0f;
 
@@ -111,6 +112,7 @@ namespace Orion
         CaretPosition GetCaret() const { return state_.caret; }
         void SetCaret(int line, int column);
         std::wstring GetFilePath() const { return state_.filePath; }
+        std::wstring GetEncoding() const { return state_.encoding; }
         // Retourne le texte sélectionné (vide si pas de sélection)
         std::wstring GetSelectionText() const;
         // Indique si le buffer a du contenu non vide

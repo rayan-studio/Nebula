@@ -39,7 +39,7 @@ static std::wstring DetectLanguageFromPath(const std::wstring &path)
     return ext;
 }
 
-void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, const std::wstring &filePath, int line, int column)
+void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, const std::wstring &filePath, int line, int column, const std::wstring &encoding)
 {
     if (!ctx) return;
 
@@ -86,8 +86,8 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
 
     // Prepare right-side status text (line/column + language)
     std::wstring lang = DetectLanguageFromPath(filePath);
-    wchar_t buf[128];
-    swprintf_s(buf, 128, L"Ln %d, Col %d — %s", (line + 1), (column + 1), lang.c_str());
+    wchar_t buf[256];
+    swprintf_s(buf, 256, L"Ln %d, Col %d — %s — %s", (line + 1), (column + 1), lang.c_str(), encoding.c_str());
 
     // Create right-aligned format for status (use JetBrains Mono to match editor)
     IDWriteTextFormat *statusFmt = nullptr;
