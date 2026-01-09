@@ -666,6 +666,9 @@ namespace Orion
     // --- OnKeyDown (complete) ---
     void Editor::OnKeyDown(WPARAM key)
     {
+        // Save initial caret to detect whether a key actually moved it.
+        CaretPosition prevCaret = state_.caret;
+
         {
             wchar_t buf[128];
             bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
@@ -1283,7 +1286,11 @@ namespace Orion
             break;
         }
 
-        EnsureCaretVisible();
+        // Only ensure caret visibility when the caret actually moved.
+        if (prevCaret.line != state_.caret.line || prevCaret.column != state_.caret.column)
+        {
+            EnsureCaretVisible();
+        }
         state_.caretVisible = true;
         state_.lastBlinkTime = GetTickCount();
     }

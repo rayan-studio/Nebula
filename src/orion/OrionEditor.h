@@ -115,28 +115,19 @@ namespace Orion
         std::wstring GetSelectionText() const;
         // Indique si le buffer a du contenu non vide
         bool HasNonEmptyContent() const;
-        // Normalize leading whitespace of a line (convert leading tabs to spaces)
-        void NormalizeLeadingWhitespace(std::wstring &line) const;
-        // Clipboard operations
         void CopySelectionToClipboard();
         void CutSelectionToClipboard();
         void PasteFromClipboard();
-        // Selection helpers
         void SelectAll();
         void DeleteSelectionPublic();
         void SetSelectionStyle(Rendering::SelectionStyle style);
         void SetSelectionColor(float r, float g, float b, float a);
-        // Cancel any ongoing mouse interaction (selection/drag)
         void CancelInteraction();
-        // Undo support
         void Undo();
-
     private:
         CustomFontCollectionLoader *fontLoader_ = nullptr;
-        // Factory pointer used to unregister the collection loader safely
         IDWriteFactory *fontCollectionRegisteredFactory_ = nullptr;
         IDWriteFontCollection *customFontCollection_ = nullptr;
-        // Syntax highlighter (moved to separate module)
         Syntax::Highlighter *highlighter_ = nullptr;
         IDWriteTextFormat *cachedTextFormat_ = nullptr;
         void DrawActiveLine(ID2D1RenderTarget *ctx);
@@ -157,8 +148,6 @@ namespace Orion
         EditorTheme theme_;
         EditorMetrics metrics_;
 
-        // Zoom removed
-
         bool fontMetricsInitialized_ = false;
         float fontAscent_ = 12.0f; // <-- Valeur par défaut
         float fontDescent_ = 3.0f; // <-- Valeur par défaut
@@ -174,45 +163,29 @@ namespace Orion
         bool hIsDragging_ = false;
         int hDragStartX_ = 0;
         float hDragStartOffset_ = 0.0f;
-        // Search functionality
         SearchBox searchBox_;
-        // Completion popup for simple suggestions (includes)
         CompletionPopup *completionPopup_ = nullptr;
         std::unique_ptr<Completion::CompletionService> completionService_;
-        // Pending completion template (used for triggers like '!')
         bool pendingCompletionShow_ = false;
         std::wstring pendingCompletionLabel_;
         std::wstring pendingCompletionTemplate_;
 
-        // When a key combo like Ctrl+Space is handled in OnKeyDown, Windows still
-        // generates a WM_CHAR for the space. Use this flag to suppress the
-        // following OnChar space insertion.
         bool suppressNextChar_ = false;
-
-        // Header index and include suggestion responsibilities moved to CppCompletionProvider
-        // Helper method pour dessiner les matches de recherche
         void DrawSearchMatches(ID2D1RenderTarget *ctx);
-        // Simple undo stack (stores previous EditorState snapshots)
         std::vector<EditorState> undoStack_;
         size_t maxUndoEntries_ = 200;
-        // Color mapping helper for syntax tokens per file extension
         D2D1_COLOR_F GetTokenColor(::Orion::Syntax::TokenType type, const std::wstring &ext) const;
 
-        // ✨ NOUVEAUX MEMBRES
         std::unique_ptr<Geometry::IndentationHelper> indentHelper_;
         std::unique_ptr<Rendering::GuideRenderer> guideRenderer_;
         std::unique_ptr<Rendering::Selection> selection_;
 
-        // Configuration d'indentation
         Geometry::IndentConfig GetIndentConfig() const;
 
-        // Helper pour extraire l'extension du fichier
         std::wstring GetFileExtension() const;
 
-        // Calculer les profondeurs HTML (garde l'ancienne logique)
         std::vector<int> CalculateHtmlDepths(int firstLine, int lastLine) const;
 
-        // Click tracking for double/triple click selection
         DWORD lastClickTime_ = 0;
         POINT lastClickPos_ = {0, 0};
         CaretPosition lastClickTextPos_ = {-1, -1};
@@ -287,7 +260,7 @@ namespace Orion
                 D2D1::Point2F(baselineOriginX, baselineOriginY),
                 glyphRun,
                 brush,
-                measuringMode); // ✅ Utiliser le même mode de mesure !
+                measuringMode);
 
             if (brush != defaultBrush_)
                 brush->Release();

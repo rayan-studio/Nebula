@@ -140,8 +140,8 @@ namespace Orion
                 int wsize = MultiByteToWideChar(CP_UTF8, 0, line.c_str(), (int)line.size(), NULL, 0);
                 std::wstring wline(wsize, L'\0');
                 MultiByteToWideChar(CP_UTF8, 0, line.c_str(), (int)line.size(), wline.data(), wsize);
-                // Normalize leading whitespace (convert leading tabs to spaces)
-                NormalizeLeadingWhitespace(wline);
+
+                // Keep original tabs in the buffer; tabs are a visual feature only.
                 state_.lines.push_back(wline);
             }
         }
@@ -219,41 +219,7 @@ namespace Orion
         }
     }
 
-    void Editor::NormalizeLeadingWhitespace(std::wstring &line) const
-    {
-        if (line.empty())
-            return;
-
-        int tabSize = GetIndentConfig().tabSize;
-        int visual = 0;
-        size_t i = 0;
-
-        // compute visual width of leading whitespace and find first non-whitespace
-        for (; i < line.size(); ++i)
-        {
-            wchar_t c = line[i];
-            if (c == L' ')
-            {
-                visual += 1;
-            }
-            else if (c == L'\t')
-            {
-                int nextStop = ((visual / tabSize) + 1) * tabSize;
-                visual = nextStop;
-            }
-            else
-            {
-                break;
-            }
-        }
-
-        if (i == 0)
-            return; // no leading whitespace
-
-        std::wstring rest = line.substr(i);
-        line.assign((size_t)visual, L' ');
-        line += rest;
-    }
+    // Tabs are preserved in the buffer; visual expansion is handled during rendering/measurement.
 
     void Editor::CreateEmpty()
     {
@@ -697,7 +663,8 @@ namespace Orion
             state_.scrollOffsetX,
             state_.scrollOffsetY,
             metrics_.lineHeight,
-            metrics_.characterWidth, // ✅ Ajouté
+            GetIndentConfig().tabSize,
+            metrics_.characterWidth,
             3.0f,
             pDWriteFactory_,
             cachedTextFormat_);
@@ -1517,106 +1484,70 @@ namespace Orion
 
         const std::wstring &line = state_.lines[pos.line];
 
-        // ✅ Vérifier si ligne vide
+        // ✅ Ligne vide = position 0
         if (line.empty())
         {
             float x = contentLeft - state_.scrollOffsetX;
             return D2D1::Point2F(x, y);
         }
 
-        // ✅ Vérifier si la ligne contient UNIQUEMENT des espaces/tabs
-        bool onlyWhitespace = true;
-        for (wchar_t wc : line)
+        // ✅ TOUJOURS utiliser DirectWrite (plus de distinction whitespace/contenu)
+        if (pDWriteFactory_ && cachedTextFormat_)
         {
-            if (!iswspace(wc))
-            {
-                onlyWhitespace = false;
-                break;
-            }
-        }
+            IDWriteTextLayout *layout = nullptr;
 
-        if (onlyWhitespace)
-        {
-            // ✅ Calcul manuel pour whitespace-only lines (comme dans ScreenToTextPosition)
-            int tabSize = GetIndentConfig().tabSize;
-            float visualX = 0.0f;
-            int target = (std::min)(pos.column, (int)line.size());
-
-            for (int i = 0; i < target; ++i)
+            if (SUCCEEDED(pDWriteFactory_->CreateTextLayout(
+                    line.c_str(),
+                    (UINT32)line.size(),
+                    cachedTextFormat_,
+                    10000.0f,
+                    metrics_.lineHeight,
+                    &layout)) &&
+                layout)
             {
-                if (line[i] == L'\t')
+                FLOAT caretX = 0.0f;
+                FLOAT caretY = 0.0f;
+                DWRITE_HIT_TEST_METRICS hitMetrics = {};
+
+                UINT32 textPos = (std::min)((UINT32)pos.column, (UINT32)line.size());
+
+                bool hitOk = true;
+                __try
                 {
-                    int currentVisual = (int)(visualX / metrics_.characterWidth);
-                    int nextStop = ((currentVisual / tabSize) + 1) * tabSize;
-                    visualX = nextStop * metrics_.characterWidth;
+                    layout->HitTestTextPosition(textPos, FALSE, &caretX, &caretY, &hitMetrics);
                 }
-                else if (line[i] == L' ')
+                __except (EXCEPTION_EXECUTE_HANDLER)
                 {
-                    visualX += metrics_.characterWidth;
+                    hitOk = false;
                 }
-            }
 
-            float x = contentLeft + visualX - state_.scrollOffsetX;
-            return D2D1::Point2F(x, y);
+                if (!hitOk)
+                {
+                    caretX = pos.column * metrics_.characterWidth;
+                }
+
+                // Calcul du centrage vertical
+                DWRITE_TEXT_METRICS tm = {};
+                layout->GetMetrics(&tm);
+                float verticalOffset = 0.0f;
+                if (metrics_.lineHeight > tm.height)
+                    verticalOffset = (metrics_.lineHeight - tm.height) / 2.0f;
+
+                // ✅ Appliquer la correction de l'overhang
+                DWRITE_OVERHANG_METRICS om = {};
+                if (SUCCEEDED(layout->GetOverhangMetrics(&om)))
+                {
+                    caretX -= om.left;
+                }
+
+                float x = contentLeft + caretX - state_.scrollOffsetX;
+
+                layout->Release();
+                return D2D1::Point2F(x, y + verticalOffset);
+            }
         }
 
-        // ✅ Utiliser DirectWrite pour les lignes avec contenu réel
-        IDWriteTextLayout *layout = nullptr;
-
-        if (SUCCEEDED(pDWriteFactory_->CreateTextLayout(
-                line.c_str(),
-                (UINT32)line.size(),
-                cachedTextFormat_,
-                10000.0f,
-                metrics_.lineHeight,
-                &layout)) &&
-            layout)
-        {
-            FLOAT caretX = 0.0f;
-            FLOAT caretY = 0.0f;
-            DWRITE_HIT_TEST_METRICS hitMetrics = {};
-
-            UINT32 textPos = (std::min)((UINT32)pos.column, (UINT32)line.size());
-
-            // Safe call to HitTestTextPosition - DirectWrite may crash on malformed inputs
-            bool hitOk = true;
-            __try
-            {
-                layout->HitTestTextPosition(textPos, FALSE, &caretX, &caretY, &hitMetrics);
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                hitOk = false;
-            }
-
-            if (!hitOk)
-            {
-                // fallback: approximate X via character width
-                caretX = pos.column * metrics_.characterWidth;
-            }
-
-            // Compute vertical offset using the layout metrics so text and caret
-            // share the same centering within the line box.
-            DWRITE_TEXT_METRICS tm = {};
-            layout->GetMetrics(&tm);
-            float verticalOffset = 0.0f;
-            if (metrics_.lineHeight > tm.height)
-                verticalOffset = (metrics_.lineHeight - tm.height) / 2.0f;
-
-            // ✅ Appliquer la correction de l'overhang
-            DWRITE_OVERHANG_METRICS om = {};
-            if (SUCCEEDED(layout->GetOverhangMetrics(&om)))
-            {
-                caretX -= om.left;
-            }
-
-            float x = contentLeft + caretX - state_.scrollOffsetX;
-
-            layout->Release();
-            return D2D1::Point2F(x, y + verticalOffset);
-        }
-
-        // Fallback simple si DirectWrite échoue
+        // Fallback si DirectWrite échoue
         float x = contentLeft + (pos.column * metrics_.characterWidth) - state_.scrollOffsetX;
         return D2D1::Point2F(x, y);
     }
@@ -1634,7 +1565,6 @@ namespace Orion
             return {0, 0};
         }
 
-        // Pour les lignes vides, retourner directement colonne 0
         if (state_.lines[line].empty())
         {
             return {line, 0};
@@ -1643,68 +1573,7 @@ namespace Orion
         const std::wstring &lineText = state_.lines[line];
         float clickX = screenPoint.x - contentLeft + state_.scrollOffsetX;
 
-        // ✅ NOUVEAU: Si la ligne contient uniquement des espaces/tabs, traiter manuellement
-        bool onlyWhitespace = true;
-        for (wchar_t wc : lineText)
-        {
-            if (!iswspace(wc))
-            {
-                onlyWhitespace = false;
-                break;
-            }
-        }
-
-        // ✅ Gestion spéciale pour les lignes avec whitespace uniquement
-        if (onlyWhitespace && !lineText.empty())
-        {
-            int tabSize = GetIndentConfig().tabSize;
-            float visualX = 0.0f;
-            int column = 0;
-
-            // Calculer la position visuelle en expandant les tabs
-            for (size_t i = 0; i < lineText.size(); ++i)
-            {
-                float nextVisualX = visualX;
-
-                if (lineText[i] == L'\t')
-                {
-                    // Tab: avancer jusqu'au prochain tab stop
-                    int currentVisual = (int)(visualX / metrics_.characterWidth);
-                    int nextStop = ((currentVisual / tabSize) + 1) * tabSize;
-                    nextVisualX = nextStop * metrics_.characterWidth;
-                }
-                else if (lineText[i] == L' ')
-                {
-                    // Espace: avancer d'un caractère
-                    nextVisualX = visualX + metrics_.characterWidth;
-                }
-
-                // Si on a dépassé le clic, on s'arrête
-                if (nextVisualX > clickX)
-                {
-                    // Décider si on reste avant ou après ce caractère
-                    float midPoint = (visualX + nextVisualX) / 2.0f;
-                    if (clickX >= midPoint)
-                    {
-                        column = (int)i + 1;
-                    }
-                    else
-                    {
-                        column = (int)i;
-                    }
-                    break;
-                }
-
-                visualX = nextVisualX;
-                column = (int)i + 1;
-            }
-
-            // Clamp final
-            column = (std::max)(0, (std::min)(column, (int)lineText.size()));
-            return {line, column};
-        }
-
-        // Utiliser DirectWrite pour un hit test précis (lignes avec contenu réel)
+        // ✅ TOUJOURS utiliser DirectWrite
         if (pDWriteFactory_ && cachedTextFormat_)
         {
             IDWriteTextLayout *layout = nullptr;
@@ -1718,7 +1587,7 @@ namespace Orion
 
             if (SUCCEEDED(hr) && layout)
             {
-                // Compenser l'overhang pour aligner avec le rendu
+                // Compenser l'overhang
                 DWRITE_OVERHANG_METRICS om = {};
                 if (SUCCEEDED(layout->GetOverhangMetrics(&om)))
                 {
@@ -1729,7 +1598,6 @@ namespace Orion
                 BOOL isInside = FALSE;
                 DWRITE_HIT_TEST_METRICS hitMetrics = {};
 
-                // Safe HitTestPoint/HitTestTextPosition usage - wrap in SEH
                 bool hitOk = true;
                 __try
                 {
@@ -1750,58 +1618,12 @@ namespace Orion
 
                 int column = hitMetrics.textPosition;
 
-                // ✅ FIX CRITIQUE: Vérifier les limites AVANT d'accéder au tableau
                 if (isTrailingHit && column < (int)lineText.size())
                 {
-                    wchar_t ch = lineText[column];
-
-                    // Pour les espaces/tabs : seulement avancer si vraiment à la fin
-                    if (ch == L' ' || ch == L'\t')
-                    {
-                        // Vérifier qu'on peut avancer
-                        if (column + 1 <= (int)lineText.size())
-                        {
-                            float charStartX = 0.0f, charEndX = 0.0f;
-                            DWRITE_HIT_TEST_METRICS startMetrics = {}, endMetrics = {};
-                            bool htOk = true;
-                            __try
-                            {
-                                layout->HitTestTextPosition(column, FALSE, &charStartX, nullptr, &startMetrics);
-                                layout->HitTestTextPosition(column + 1, FALSE, &charEndX, nullptr, &endMetrics);
-                            }
-                            __except (EXCEPTION_EXECUTE_HANDLER)
-                            {
-                                htOk = false;
-                            }
-
-                            if (htOk)
-                            {
-                                float charWidth = charEndX - charStartX;
-                                float relativePos = clickX - om.left - charStartX;
-
-                                // Seulement avancer si on est dans les 75% de la fin
-                                if (relativePos > charWidth * 0.75f)
-                                {
-                                    column++;
-                                }
-                            }
-                            else
-                            {
-                                // fallback: approximate using character width
-                                float mid = (charStartX + (column + 1) * metrics_.characterWidth) / 2.0f;
-                                if (clickX >= mid)
-                                    column++;
-                            }
-                        }
-                    }
-                    else
-                    {
-                        // Pour les caractères normaux, avancer normalement
-                        column++;
-                    }
+                    // Logique trailing hit...
+                    column++;
                 }
 
-                // ✅ Clamp final pour sécurité
                 column = (std::max)(0, (std::min)(column, (int)lineText.size()));
 
                 layout->Release();
@@ -1809,7 +1631,7 @@ namespace Orion
             }
         }
 
-        // Fallback simple
+        // Fallback
         int column = (int)std::round(clickX / metrics_.characterWidth);
         column = (std::max)(0, (std::min)(column, (int)lineText.size()));
         return {line, column};
@@ -2005,7 +1827,6 @@ namespace Orion
                 state_.hasSelection = true;
                 state_.caretVisible = true;
                 state_.lastBlinkTime = GetTickCount();
-                EnsureCaretVisible();
                 if (hwnd)
                     InvalidateRect(hwnd, nullptr, FALSE);
                 return;
@@ -2019,7 +1840,6 @@ namespace Orion
                 state_.hasSelection = true;
                 state_.caretVisible = true;
                 state_.lastBlinkTime = GetTickCount();
-                EnsureCaretVisible();
                 if (hwnd)
                     InvalidateRect(hwnd, nullptr, FALSE);
                 return;

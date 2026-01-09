@@ -47,6 +47,7 @@ namespace Orion
                 float scrollOffsetX,
                 float scrollOffsetY,
                 float lineHeight,
+                int tabSize,
                 float characterWidth,
                 float cornerRadius,
                 IDWriteFactory *dwriteFactory,
