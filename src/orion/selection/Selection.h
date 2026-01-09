@@ -1,9 +1,11 @@
 #pragma once
 
 #include <d2d1.h>
-#include <dwrite.h>
 #include <vector>
 #include <string>
+
+struct IDWriteFactory;
+struct IDWriteTextFormat;
 
 namespace Orion
 {
@@ -17,9 +19,9 @@ namespace Orion
 
         enum class SelectionStyle
         {
-            Rectangle = 0,
-            Rounded = 1,
-            RoundedSmart = 2
+            Rectangle,      // Rectangles simples
+            RoundedSimple,  // Tous les coins arrondis (ancien comportement)
+            RoundedSmart    // Coins intelligents selon le contexte (nouveau!)
         };
 
         struct SelectionConfig
@@ -29,13 +31,16 @@ namespace Orion
             SelectionStyle style = SelectionStyle::RoundedSmart;
         };
 
+        // Forward declaration pour l'analyse des coins
+        enum class CornerStyle;
+        struct CornerStyles;
+
         class Selection
         {
         public:
             explicit Selection(const SelectionConfig &cfg);
             ~Selection();
 
-            // Rounded rects are used to allow both rectangular and rounded drawing
             void Draw(ID2D1RenderTarget *ctx, const std::vector<D2D1_ROUNDED_RECT> &regions);
 
             static std::vector<D2D1_ROUNDED_RECT> CalculateRegions(
@@ -55,6 +60,26 @@ namespace Orion
 
         private:
             SelectionConfig cfg_;
+
+            // Nouvelles méthodes pour la gestion intelligente des coins
+            std::vector<CornerStyles> AnalyzeCornerStyles(const std::vector<D2D1_ROUNDED_RECT> &regions);
+            
+            void DrawSmartRoundedSelection(
+                ID2D1RenderTarget *ctx,
+                ID2D1SolidColorBrush *brush,
+                const D2D1_RECT_F &rect,
+                const CornerStyles &corners);
+
+            void DrawRoundedCorner(
+                ID2D1RenderTarget *ctx,
+                ID2D1SolidColorBrush *brush,
+                float x, float y, float radius, float angleOffset);
+
+            void DrawInverseCorner(
+                ID2D1RenderTarget *ctx,
+                ID2D1Factory *factory,
+                ID2D1SolidColorBrush *bgBrush,
+                float x, float y, float radius, int corner);
         };
 
     } // namespace Rendering
