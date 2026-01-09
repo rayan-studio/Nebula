@@ -26,8 +26,10 @@ namespace Orion::Geometry
             }
             else if (ch == L'\t')
             {
-                info.level += config_.tabSize;
-                info.visualColumn += config_.tabSize;
+                int nextStop = ((info.visualColumn / config_.tabSize) + 1) * config_.tabSize;
+                int advance = nextStop - info.visualColumn;
+                info.level += advance;
+                info.visualColumn = nextStop;
             }
             else
             {
@@ -50,9 +52,11 @@ namespace Orion::Geometry
 
         return info;
     }
+
     float IndentationHelper::GetIndentScreenX(int indentLevel, float contentLeft, float scrollOffsetX) const
     {
-        return contentLeft + ((indentLevel - config_.tabSize) * config_.characterWidth) - scrollOffsetX;
+        // ✅ Note : cette méthode n'est plus utilisée si on mesure avec DirectWrite
+        return contentLeft + (indentLevel * config_.characterWidth) - scrollOffsetX;
     }
 
     bool IndentationHelper::ShouldDrawGuide(int lineIndent, int guideLevel) const
@@ -60,6 +64,7 @@ namespace Orion::Geometry
         // guideLevel and lineIndent are both expressed in "spaces" (after tab expansion)
         return lineIndent >= guideLevel;
     }
+
     std::vector<int> IndentationHelper::GetVisibleIndentLevels(
         const std::vector<std::wstring> &lines,
         int firstLine,
@@ -75,7 +80,8 @@ namespace Orion::Geometry
 
             if (info.level > 0)
             {
-                // Ajouter chaque multiple de tabSize jusqu'au niveau actuel
+                // ✅ Commencer à tabSize (4), pas 0
+                // Générer les niveaux : 4, 8, 12, 16...
                 for (int lvl = config_.tabSize; lvl <= info.level; lvl += config_.tabSize)
                 {
                     if (std::find(levels.begin(), levels.end(), lvl) == levels.end())
@@ -86,9 +92,7 @@ namespace Orion::Geometry
             }
         }
 
-        // Trier les niveaux
         std::sort(levels.begin(), levels.end());
-
         return levels;
     }
 

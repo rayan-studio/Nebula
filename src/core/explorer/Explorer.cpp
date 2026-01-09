@@ -1502,7 +1502,7 @@ void ExplorerManager::DrawTitle(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
         // Draw the SVG smaller inside the button to avoid oversized icon
         float inset = btnSize * 0.18f;
         D2D1_RECT_F dst = D2D1::RectF(fileRectF.left + inset, fileRectF.top + inset, fileRectF.right - inset, fileRectF.bottom - inset);
-        ctx->DrawBitmap(fileBmp, dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        ctx->DrawBitmap(fileBmp, dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
     }
 
     // Draw Folder button
@@ -1517,7 +1517,7 @@ void ExplorerManager::DrawTitle(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
         // smaller icon for folder as well
         float insetF = btnSize * 0.18f;
         D2D1_RECT_F dstF = D2D1::RectF(folderRectF.left + insetF, folderRectF.top + insetF, folderRectF.right - insetF, folderRectF.bottom - insetF);
-        ctx->DrawBitmap(folderBmp, dstF, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        ctx->DrawBitmap(folderBmp, dstF, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
     }
 
     if (btnHoverBrush)
@@ -2086,7 +2086,7 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
                 float left = iconLeft - arrowSize * 0.5f;
                 float top = iconY - arrowSize * 0.5f;
                 D2D1_RECT_F dst = D2D1::RectF(left, top, left + arrowSize, top + arrowSize);
-                ctx->DrawBitmap(chevBmp, dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                ctx->DrawBitmap(chevBmp, dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
             }
         }
         else

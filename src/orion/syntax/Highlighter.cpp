@@ -6,10 +6,6 @@
 
 using namespace Orion::Syntax;
 
-// Forward declare debug helper so TokenizeLine can call it before the
-// implementation appears later in this file.
-static void DebugLogTokens(const std::wstring &line, const std::vector<Token> &tokens);
-
 Highlighter::Highlighter() {}
 
 static bool IsIdentifierStart(wchar_t c) { return (iswalpha(c) || c == L'_'); }
@@ -190,7 +186,6 @@ std::vector<Token> Highlighter::TokenizeLine(const std::wstring &line, const std
                 out.push_back({start, i - start, TokenType::Normal});
         }
 
-        DebugLogTokens(line, out);
         return out;
     }
 
@@ -335,54 +330,5 @@ std::vector<Token> Highlighter::TokenizeLine(const std::wstring &line, const std
     }
 
     // Debug log tokens for include lines (temporary)
-    DebugLogTokens(line, out);
     return out;
-}
-
-// Debug helper: log tokens for lines containing #include (temporary)
-static void DebugLogTokens(const std::wstring &line, const std::vector<Token> &tokens)
-{
-    if (line.find(L"#include") == std::wstring::npos)
-        return;
-    std::wstringstream ss;
-    for (const auto &t : tokens)
-    {
-        std::wstring typeName = L"Normal";
-        switch (t.type)
-        {
-        case TokenType::Normal:
-            typeName = L"Normal";
-            break;
-        case TokenType::Keyword:
-            typeName = L"Keyword";
-            break;
-        case TokenType::Type:
-            typeName = L"Type";
-            break;
-        case TokenType::String:
-            typeName = L"String";
-            break;
-        case TokenType::Comment:
-            typeName = L"Comment";
-            break;
-        case TokenType::Number:
-            typeName = L"Number";
-            break;
-        case TokenType::Preprocessor:
-            typeName = L"Preprocessor";
-            break;
-        case TokenType::MarkdownHeading:
-            typeName = L"MHeading";
-            break;
-        case TokenType::MarkdownCode:
-            typeName = L"MCode";
-            break;
-        case TokenType::MarkdownLink:
-            typeName = L"MLink";
-            break;
-        }
-        std::wstring snippet = line.substr(t.start, (size_t)t.length);
-        ss << L"[" << typeName << L" " << t.start << L":" << t.length << L" '" << snippet << L"'] ";
-    }
-    Logger::Instance().Log(ss.str());
 }

@@ -103,6 +103,7 @@ target_link_libraries(Nebula PRIVATE
   uxtheme 
   ole32
   winmm  # Pour waveOut
+  dbghelp
 )
 
 if (MSVC)

@@ -831,39 +831,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
-        // ✨ Zoom shortcuts: Ctrl + Plus / Minus / 0
-        if (ctrl && (wParam == VK_ADD || wParam == VK_OEM_PLUS || wParam == 187))
-        {
-            Orion::Editor *editor = GetEditor();
-            if (editor)
-            {
-                editor->ZoomIn();
-                InvalidateRect(hwnd_, nullptr, FALSE);
-                return 0;
-            }
-        }
-
-        if (ctrl && (wParam == VK_SUBTRACT || wParam == VK_OEM_MINUS || wParam == 189))
-        {
-            Orion::Editor *editor = GetEditor();
-            if (editor)
-            {
-                editor->ZoomOut();
-                InvalidateRect(hwnd_, nullptr, FALSE);
-                return 0;
-            }
-        }
-
-        if (ctrl && (wParam == VK_NUMPAD0 || wParam == '0'))
-        {
-            Orion::Editor *editor = GetEditor();
-            if (editor)
-            {
-                editor->ResetZoom();
-                InvalidateRect(hwnd_, nullptr, FALSE);
-                return 0;
-            }
-        }
+        // Ctrl+Plus/Minus/0 zoom shortcuts removed
 
         // PRIORITÉ 0: Explorer inline input
         if (GetExplorerManager().IsInlineInputVisible())

@@ -1,7 +1,10 @@
 #include "GuideRenderer.h"
+#include <dwrite.h>
 #include <cmath>
 #include <algorithm>
 #include <sstream>
+#include <map>
+#include <set>
 #include "utils/logger/Logger.h"
 
 // Ensure Windows min/max macros don't interfere with std::min/std::max
@@ -14,116 +17,253 @@
 
 namespace Orion::Rendering
 {
-    GuideRenderer::GuideRenderer(const Geometry::IndentConfig& indentConfig, const GuideStyle& style)
-        : indentHelper_(indentConfig)
-        , style_(style)
-        , tabSize_(indentConfig.tabSize)
+    GuideRenderer::GuideRenderer(const Geometry::IndentConfig &indentConfig, const GuideStyle &style)
+        : indentHelper_(indentConfig), style_(style), tabSize_(indentConfig.tabSize)
     {
     }
 
     void GuideRenderer::DrawCppGuides(
-        ID2D1RenderTarget* ctx,
-        const std::vector<std::wstring>& lines,
-        const GuideRenderContext& renderCtx)
+        ID2D1RenderTarget *ctx,
+        const std::vector<std::wstring> &lines,
+        const GuideRenderContext &renderCtx)
     {
-        static bool debugLogs = true;
-
-        if (!ctx || lines.empty())
+        if (!ctx || lines.empty() || !renderCtx.textFormat || !renderCtx.dwriteFactory)
             return;
 
-        // Calculer la position X du caret (pour highlight)
+        int tabSize = indentHelper_.GetConfig().tabSize;
+
+        // Calculer la position X du caret pour le highlight
         float caretX = -10000.0f;
         if (renderCtx.caretLine >= renderCtx.firstVisibleLine &&
             renderCtx.caretLine < renderCtx.lastVisibleLine &&
             renderCtx.caretLine < (int)lines.size())
         {
-            auto caretIndent = indentHelper_.GetLineIndent(lines[renderCtx.caretLine]);
-            caretX = indentHelper_.GetIndentScreenX(
-                caretIndent.level,
-                renderCtx.contentLeft,
-                renderCtx.scrollOffsetX);
-            
-            if (debugLogs)
+            const std::wstring &caretLine = lines[renderCtx.caretLine];
+            auto caretIndent = indentHelper_.GetLineIndent(caretLine);
+
+            if (caretIndent.level > 0 && !caretIndent.isWhitespaceOnly)
             {
-                std::wstringstream ss;
+                // Trouver la colonne du premier caractère non-blanc
+                int codeColumn = 0;
+                for (size_t i = 0; i < caretLine.size(); ++i)
+                {
+                    if (caretLine[i] != L' ' && caretLine[i] != L'\t')
+                    {
+                        codeColumn = (int)i;
+                        break;
+                    }
+                }
+
+                IDWriteTextLayout *layout = nullptr;
+                if (SUCCEEDED(renderCtx.dwriteFactory->CreateTextLayout(
+                        caretLine.c_str(),
+                        (UINT32)caretLine.size(),
+                        renderCtx.textFormat,
+                        10000.0f,
+                        renderCtx.lineHeight,
+                        &layout)) &&
+                    layout)
+                {
+                    // Calculer la position de base
+                    float baseX = 0.0f;
+                    DWRITE_OVERHANG_METRICS om = {};
+                    if (SUCCEEDED(layout->GetOverhangMetrics(&om)))
+                    {
+                        baseX -= om.left;
+                    }
+
+                    FLOAT x = 0, y = 0;
+                    DWRITE_HIT_TEST_METRICS htm = {};
+                    layout->HitTestTextPosition(codeColumn, FALSE, &x, &y, &htm);
+
+                    caretX = renderCtx.contentLeft + baseX + x - renderCtx.scrollOffsetX;
+                    layout->Release();
+                }
             }
         }
 
-        // Trouver tous les niveaux d'indentation présents
-        auto levels = indentHelper_.GetVisibleIndentLevels(
-            lines,
-            renderCtx.firstVisibleLine,
-            renderCtx.lastVisibleLine);
+        // ✅ ÉTAPE 1 : Trouver tous les niveaux d'indentation présents
+        std::set<int> indentLevels;
 
-        if (levels.empty())
+        for (int li = renderCtx.firstVisibleLine; li < renderCtx.lastVisibleLine && li < (int)lines.size(); ++li)
+        {
+            const std::wstring &line = lines[li];
+            auto lineIndent = indentHelper_.GetLineIndent(line);
+
+            if (lineIndent.level > 0 && !lineIndent.isWhitespaceOnly)
+            {
+                for (int lvl = tabSize; lvl <= lineIndent.level; lvl += tabSize)
+                {
+                    indentLevels.insert(lvl);
+                }
+            }
+        }
+
+        if (indentLevels.empty())
             return;
 
-        // Pour chaque niveau d'indentation
-        for (int levelSpaces : levels)
-        {
-            // Utiliser le même calcul que pour le caret pour avoir le bon alignement
-            float guideX = indentHelper_.GetIndentScreenX(
-                levelSpaces,
-                renderCtx.contentLeft,
-                renderCtx.scrollOffsetX);
+        // ✅ ÉTAPE 2 : Pour chaque niveau, mesurer sur une VRAIE ligne de code
+        std::map<int, float> guidePositions;
 
-            // Déterminer si ce guide est actif (près du caret)
+        for (int targetLevel : indentLevels)
+        {
+            std::vector<float> measurements;
+
+            // Chercher des lignes qui ont au moins ce niveau d'indentation
+            for (int li = renderCtx.firstVisibleLine;
+                 li < renderCtx.lastVisibleLine && li < (int)lines.size(); ++li)
+            {
+                const std::wstring &line = lines[li];
+                auto lineIndent = indentHelper_.GetLineIndent(line);
+
+                if (lineIndent.isWhitespaceOnly || lineIndent.level < targetLevel)
+                    continue;
+
+                // ✅ Parcourir l'indentation de cette ligne pour trouver où on atteint targetLevel
+                int currentLevel = 0;
+                int targetColumn = -1;
+
+                // ✅ Au lieu de chercher targetColumn, chercher où finit l'indentation
+                for (size_t i = 0; i < line.size(); ++i)
+                {
+                    if (line[i] == L' ')
+                    {
+                        currentLevel++;
+                    }
+                    else if (line[i] == L'\t')
+                    {
+                        int nextStop = ((currentLevel / tabSize) + 1) * tabSize;
+                        currentLevel = nextStop;
+                    }
+                    else
+                    {
+                        // ✅ On vient d'atteindre le premier caractère de code
+                        // Si le niveau précédent est >= targetLevel, mesurer ICI
+                        if (currentLevel >= targetLevel)
+                        {
+                            targetColumn = (int)i;
+                            break;
+                        }
+                    }
+                }
+
+                // ✅ Si on a trouvé où commence le code ET qu'on est au bon niveau
+                if (targetColumn >= 0 && currentLevel >= targetLevel)
+                {
+                    // Créer une string qui contient SEULEMENT l'indentation
+                    std::wstring indentOnly = line.substr(0, targetColumn);
+
+                    // Maintenant, trouver quelle est la position du caractère qui correspond
+                    // EXACTEMENT à targetLevel espaces
+                    int measuredLevel = 0;
+                    int measureColumn = 0;
+
+                    for (size_t i = 0; i < indentOnly.size(); ++i)
+                    {
+                        int prevLevel = measuredLevel;
+
+                        if (indentOnly[i] == L' ')
+                        {
+                            measuredLevel++;
+                        }
+                        else if (indentOnly[i] == L'\t')
+                        {
+                            int nextStop = ((measuredLevel / tabSize) + 1) * tabSize;
+                            measuredLevel = nextStop;
+                        }
+
+                        // Dès qu'on atteint targetLevel, c'est ICI
+                        if (measuredLevel >= targetLevel && prevLevel < targetLevel)
+                        {
+                            measureColumn = (int)i;
+                            break;
+                        }
+                    }
+
+                    // ✅ Maintenant mesurer à cette position EXACTE
+                    IDWriteTextLayout *layout = nullptr;
+                    if (SUCCEEDED(renderCtx.dwriteFactory->CreateTextLayout(
+                            line.c_str(),
+                            (UINT32)line.size(),
+                            renderCtx.textFormat,
+                            10000.0f,
+                            renderCtx.lineHeight,
+                            &layout)) &&
+                        layout)
+                    {
+                        float baseX = 0.0f;
+
+                        DWRITE_OVERHANG_METRICS om = {};
+                        if (SUCCEEDED(layout->GetOverhangMetrics(&om)))
+                        {
+                            baseX -= om.left;
+                        }
+
+                        FLOAT x = 0, y = 0;
+                        DWRITE_HIT_TEST_METRICS htm = {};
+                        // ✅ Mesurer APRÈS ce caractère (trailing edge = TRUE)
+                        layout->HitTestTextPosition(measureColumn, TRUE, &x, &y, &htm);
+
+                        float finalX = baseX + x;
+
+                        measurements.push_back(finalX);
+                        layout->Release();
+
+                        if (measurements.size() >= 5)
+                            break;
+                    }
+                }
+            }
+
+            // Prendre la médiane
+            if (!measurements.empty())
+            {
+                std::sort(measurements.begin(), measurements.end());
+                guidePositions[targetLevel] = measurements[measurements.size() / 2];
+            }
+        }
+
+        // ✅ ÉTAPE 3 : Dessiner les guides
+        for (const auto &[levelSpaces, posX] : guidePositions)
+        {
+            float guideX = renderCtx.contentLeft + posX - renderCtx.scrollOffsetX;
             bool isActive = std::fabs(guideX - caretX) < 5.0f;
 
-            // Parcourir les lignes et créer des plages continues
             bool inRange = false;
             int rangeStart = -1;
 
             for (int li = renderCtx.firstVisibleLine; li < renderCtx.lastVisibleLine; ++li)
             {
+                if (li >= (int)lines.size())
+                    break;
+
+                auto lineIndent = indentHelper_.GetLineIndent(lines[li]);
                 bool shouldDraw = false;
-                bool isEmptyLine = false;
-                
-                // Vérifier si on est dans les limites
-                if (li < (int)lines.size())
+
+                if (lineIndent.isWhitespaceOnly)
                 {
-                    auto lineIndent = indentHelper_.GetLineIndent(lines[li]);
-                    
-                    // Une ligne est considérée vide si elle n'a que des espaces/tabs
-                    isEmptyLine = lineIndent.isWhitespaceOnly;
-                    
-                    // Dessiner si la ligne a assez d'indentation OU si c'est une ligne vide
-                    // (les lignes vides ne doivent pas interrompre les guides)
-                    if (isEmptyLine)
-                    {
-                        // Si on est déjà dans une plage, continuer
-                        shouldDraw = inRange;
-                    }
-                    else
-                    {
-                        shouldDraw = (lineIndent.level > 0 && 
-                                     indentHelper_.ShouldDrawGuide(lineIndent.level, levelSpaces));
-                    }
+                    shouldDraw = inRange;
+                }
+                else
+                {
+                    shouldDraw = (lineIndent.level >= levelSpaces);
                 }
 
                 if (shouldDraw)
                 {
                     if (!inRange)
                     {
-                        // Début d'une nouvelle plage
                         inRange = true;
                         rangeStart = li;
                     }
                 }
-                else if (inRange && !isEmptyLine)
+                else if (inRange)
                 {
-                    // Fin de plage - dessiner le segment continu
-                    // Seulement si c'est une ligne non-vide qui n'a pas assez d'indentation
-                    float topY = renderCtx.topEdge + 
-                                (rangeStart * renderCtx.lineHeight) - 
-                                renderCtx.scrollOffsetY + 
-                                (renderCtx.lineHeight * style_.topMargin);
-
-                    float bottomY = renderCtx.topEdge + 
-                                   ((li - 1) * renderCtx.lineHeight) - 
-                                   renderCtx.scrollOffsetY + 
-                                   renderCtx.lineHeight - 
-                                   (renderCtx.lineHeight * style_.bottomMargin);
+                    float topY = renderCtx.topEdge + (rangeStart * renderCtx.lineHeight) -
+                                 renderCtx.scrollOffsetY + (renderCtx.lineHeight * style_.topMargin);
+                    float bottomY = renderCtx.topEdge + ((li - 1) * renderCtx.lineHeight) -
+                                    renderCtx.scrollOffsetY + renderCtx.lineHeight -
+                                    (renderCtx.lineHeight * style_.bottomMargin);
 
                     DrawGuideSegment(ctx, guideX, topY, bottomY, isActive);
                     inRange = false;
@@ -131,31 +271,22 @@ namespace Orion::Rendering
                 }
             }
 
-            // Si une plage est toujours ouverte à la fin, la fermer
             if (inRange && rangeStart >= 0)
             {
                 int lastLine = std::min(renderCtx.lastVisibleLine - 1, (int)lines.size() - 1);
-                
-                float topY = renderCtx.topEdge + 
-                            (rangeStart * renderCtx.lineHeight) - 
-                            renderCtx.scrollOffsetY + 
-                            (renderCtx.lineHeight * style_.topMargin);
-
-                float bottomY = renderCtx.topEdge + 
-                               (lastLine * renderCtx.lineHeight) - 
-                               renderCtx.scrollOffsetY + 
-                               renderCtx.lineHeight - 
-                               (renderCtx.lineHeight * style_.bottomMargin);
+                float topY = renderCtx.topEdge + (rangeStart * renderCtx.lineHeight) -
+                             renderCtx.scrollOffsetY + (renderCtx.lineHeight * style_.topMargin);
+                float bottomY = renderCtx.topEdge + (lastLine * renderCtx.lineHeight) -
+                                renderCtx.scrollOffsetY + renderCtx.lineHeight -
+                                (renderCtx.lineHeight * style_.bottomMargin);
 
                 DrawGuideSegment(ctx, guideX, topY, bottomY, isActive);
             }
         }
     }
 
-   
-
     void GuideRenderer::DrawGuideSegment(
-        ID2D1RenderTarget* ctx,
+        ID2D1RenderTarget *ctx,
         float x,
         float topY,
         float bottomY,
@@ -165,8 +296,8 @@ namespace Orion::Rendering
             return;
 
         D2D1_COLOR_F color = isActive ? style_.activeColor : style_.normalColor;
-        
-        ID2D1SolidColorBrush* brush = nullptr;
+
+        ID2D1SolidColorBrush *brush = nullptr;
         if (SUCCEEDED(ctx->CreateSolidColorBrush(color, &brush)) && brush)
         {
             D2D1_RECT_F rect = D2D1::RectF(x, topY, x + style_.lineWidth, bottomY);

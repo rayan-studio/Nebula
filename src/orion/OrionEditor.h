@@ -8,12 +8,14 @@
 #include <windows.h>
 #include "ui/components/scrollbar/Scrollbar.h"
 #include "orion/font/CustomFontLoader.h"
-#include "orion/SearchBox.h"
+#include "./search/SearchBox.h"
 #include "syntax/Highlighter.h"
 #include "orion/completion/CompletionService.h"
 // New helpers
 #include "geometry/IndentationHelper.h"
 #include "rendering/GuideRenderer.h"
+// Selection rendering
+#include "selection/Selection.h"
 
 namespace Orion
 {
@@ -46,10 +48,10 @@ namespace Orion
     {
         float lineHeight = 20.0f;    // correspond à font-size 14px
         float characterWidth = 8.4f; // largeur approximative d'un caractère
-        float gutterWidth = 60.0f;   // garde tes 60 px
-        float leftPadding = 12.0f;   // ça peut rester pareil
-        float topPadding = 1.0f;     // idem
-        float caretWidth = 2.0f;     // idem
+        float gutterWidth = 90.0f;   // garde tes 60 px
+        float leftPadding = 0.0f;
+        float topPadding = 1.0f; // idem
+        float caretWidth = 2.0f; // idem
     };
 
     struct EditorState
@@ -82,7 +84,7 @@ namespace Orion
         ~Editor();
 
         void LoadFile(const std::wstring &filePath);
-        void Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd);
+        void Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
         void UpdateLayout(HWND hwnd, float left, float top, float right, float bottom);
         bool HasFile() const { return !state_.lines.empty(); }
         bool LoadCustomFont(IDWriteFactory *dwrite, const std::wstring &fontPath);
@@ -93,11 +95,7 @@ namespace Orion
         void OnMouseWheel(HWND hwnd, int delta, bool ctrlPressed = false);
         void OnHorizontalWheel(HWND hwnd, int delta);
         void OnMouseMove(HWND hwnd, POINT pt);
-        // Zoom methods
-        void ZoomIn();
-        void ZoomOut();
-        void ResetZoom();
-        float GetZoomLevel() const { return zoomLevel_; }
+        // Zoom methods removed
         void OnChar(wchar_t ch);
         void OnKeyDown(WPARAM key);
         // Search methods
@@ -117,6 +115,8 @@ namespace Orion
         std::wstring GetSelectionText() const;
         // Indique si le buffer a du contenu non vide
         bool HasNonEmptyContent() const;
+        // Normalize leading whitespace of a line (convert leading tabs to spaces)
+        void NormalizeLeadingWhitespace(std::wstring &line) const;
         // Clipboard operations
         void CopySelectionToClipboard();
         void CutSelectionToClipboard();
@@ -124,6 +124,8 @@ namespace Orion
         // Selection helpers
         void SelectAll();
         void DeleteSelectionPublic();
+        void SetSelectionStyle(Rendering::SelectionStyle style);
+        void SetSelectionColor(float r, float g, float b, float a);
         // Cancel any ongoing mouse interaction (selection/drag)
         void CancelInteraction();
         // Undo support
@@ -155,11 +157,7 @@ namespace Orion
         EditorTheme theme_;
         EditorMetrics metrics_;
 
-        // Zoom
-        float zoomLevel_ = 1.0f; // 1.0 = 100%, 1.5 = 150%, etc.
-        const float MIN_ZOOM = 0.5f;
-        const float MAX_ZOOM = 3.0f;
-        const float ZOOM_STEP = 0.1f;
+        // Zoom removed
 
         bool fontMetricsInitialized_ = false;
         float fontAscent_ = 12.0f; // <-- Valeur par défaut
@@ -203,6 +201,7 @@ namespace Orion
         // ✨ NOUVEAUX MEMBRES
         std::unique_ptr<Geometry::IndentationHelper> indentHelper_;
         std::unique_ptr<Rendering::GuideRenderer> guideRenderer_;
+        std::unique_ptr<Rendering::Selection> selection_;
 
         // Configuration d'indentation
         Geometry::IndentConfig GetIndentConfig() const;
@@ -273,7 +272,7 @@ namespace Orion
             void *,
             FLOAT baselineOriginX,
             FLOAT baselineOriginY,
-            DWRITE_MEASURING_MODE,
+            DWRITE_MEASURING_MODE measuringMode,
             DWRITE_GLYPH_RUN const *glyphRun,
             DWRITE_GLYPH_RUN_DESCRIPTION const *,
             IUnknown *clientDrawingEffect) override
@@ -288,13 +287,12 @@ namespace Orion
                 D2D1::Point2F(baselineOriginX, baselineOriginY),
                 glyphRun,
                 brush,
-                DWRITE_MEASURING_MODE_NATURAL);
+                measuringMode); // ✅ Utiliser le même mode de mesure !
 
             if (brush != defaultBrush_)
                 brush->Release();
             return S_OK;
         }
-
         HRESULT STDMETHODCALLTYPE DrawUnderline(void *, FLOAT, FLOAT, DWRITE_UNDERLINE const *, IUnknown *) override { return S_OK; }
         HRESULT STDMETHODCALLTYPE DrawStrikethrough(void *, FLOAT, FLOAT, DWRITE_STRIKETHROUGH const *, IUnknown *) override { return S_OK; }
         HRESULT STDMETHODCALLTYPE DrawInlineObject(void *, FLOAT, FLOAT, IDWriteInlineObject *, BOOL, BOOL, IUnknown *) override { return S_OK; }

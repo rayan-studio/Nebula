@@ -158,7 +158,7 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
                 }
 
                 editor->UpdateLayout(hwnd, editorLeft, editorTop, editorRight, editorBottom);
-                editor->Draw(pRenderTarget_, pDWriteFactory_, hwnd);
+                editor->Draw(pRenderTarget_, pDWriteFactory_);
                 
                 // Draw terminal after editor
                 if (terminal.IsVisible()) {

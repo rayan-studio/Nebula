@@ -3,10 +3,14 @@
 #include <Windows.h>
 #include <objbase.h>
 #include <sstream>
+// Crash handler to produce minidumps for native crashes
+#include "utils/crash/CrashHandler.h"
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 {
     CoInitialize(NULL);
+    // initialize crash handler early so native crashes produce a minidump
+    Utils::InitializeCrashHandler();
     // initialize logger (logs/nebula.log relative to working directory)
     Logger::Instance().Init(L"logs\\nebula.log");
     // Try to register bundled JetBrains Mono fonts privately for this process

@@ -1,22 +1,21 @@
 #pragma once
 #include <d2d1.h>
-#include <string>
+#include <dwrite.h>
 #include <vector>
+#include <string>
 #include "../geometry/IndentationHelper.h"
 
 namespace Orion::Rendering
 {
-    // Configuration visuelle des guides
     struct GuideStyle
     {
-        D2D1_COLOR_F normalColor = D2D1::ColorF(0.3f, 0.3f, 0.35f, 0.5f);
-        D2D1_COLOR_F activeColor = D2D1::ColorF(0.4f, 0.4f, 0.5f, 0.7f);
+        D2D1_COLOR_F normalColor;
+        D2D1_COLOR_F activeColor;
         float lineWidth = 1.0f;
-        float topMargin = 0.12f;    // Proportion de lineHeight
-        float bottomMargin = 0.12f; // Proportion de lineHeight
+        float topMargin = 0.0f;
+        float bottomMargin = 0.0f;
     };
 
-    // Informations de contexte pour le rendu
     struct GuideRenderContext
     {
         float contentLeft;
@@ -27,6 +26,8 @@ namespace Orion::Rendering
         int firstVisibleLine;
         int lastVisibleLine;
         int caretLine;
+        IDWriteFactory* dwriteFactory;
+        IDWriteTextFormat* textFormat;
     };
 
     class GuideRenderer
@@ -34,16 +35,12 @@ namespace Orion::Rendering
     public:
         GuideRenderer(const Geometry::IndentConfig& indentConfig, const GuideStyle& style);
 
-        // Dessine les guides d'indentation pour C/C++
         void DrawCppGuides(
             ID2D1RenderTarget* ctx,
             const std::vector<std::wstring>& lines,
             const GuideRenderContext& renderCtx);
 
-        void SetStyle(const GuideStyle& style) { style_ = style; }
-
     private:
-        // Dessine un segment vertical de guide
         void DrawGuideSegment(
             ID2D1RenderTarget* ctx,
             float x,
@@ -52,8 +49,8 @@ namespace Orion::Rendering
             bool isActive);
 
         Geometry::IndentationHelper indentHelper_;
-        int tabSize_ = 4;
         GuideStyle style_;
+        int tabSize_;
     };
 
 } // namespace Orion::Rendering
