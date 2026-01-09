@@ -688,7 +688,6 @@ namespace Orion
         Rendering::CaretPosition start = {state_.selectionStart.line, state_.selectionStart.column};
         Rendering::CaretPosition end = {state_.caret.line, state_.caret.column};
 
-        // Calculer les régions de sélection
         auto regions = Rendering::Selection::CalculateRegions(
             start,
             end,
@@ -698,7 +697,7 @@ namespace Orion
             state_.scrollOffsetX,
             state_.scrollOffsetY,
             metrics_.lineHeight,
-            metrics_.characterWidth,
+            metrics_.characterWidth, // ✅ Ajouté
             3.0f,
             pDWriteFactory_,
             cachedTextFormat_);

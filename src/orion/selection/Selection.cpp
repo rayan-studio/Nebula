@@ -50,10 +50,50 @@ namespace Orion
         int column,
         float contentLeft,
         float scrollOffsetX,
+        float charWidth,
         IDWriteFactory *dwriteFactory,
         IDWriteTextFormat *textFormat)
     {
-        if (!dwriteFactory || !textFormat || line.empty())
+        if (line.empty())
+            return contentLeft - scrollOffsetX;
+
+        // ✅ Check if line contains only whitespace
+        bool onlyWhitespace = true;
+        for (wchar_t wc : line)
+        {
+            if (!iswspace(wc))
+            {
+                onlyWhitespace = false;
+                break;
+            }
+        }
+
+        // ✅ Manual calculation for whitespace-only lines (like in TextToScreenPosition)
+        if (onlyWhitespace)
+        {
+            const int tabSize = 4; // Should match editor config
+            float visualX = 0.0f;
+            int target = std::min(column, (int)line.size());
+
+            for (int i = 0; i < target; ++i)
+            {
+                if (line[i] == L'\t')
+                {
+                    int currentVisual = (int)(visualX / charWidth);
+                    int nextStop = ((currentVisual / tabSize) + 1) * tabSize;
+                    visualX = nextStop * charWidth;
+                }
+                else if (line[i] == L' ')
+                {
+                    visualX += charWidth;
+                }
+            }
+
+            return contentLeft + visualX - scrollOffsetX;
+        }
+
+        // ✅ Use DirectWrite for lines with real content
+        if (!dwriteFactory || !textFormat)
             return contentLeft - scrollOffsetX;
 
         IDWriteTextLayout *layout = nullptr;
@@ -110,7 +150,7 @@ namespace Orion
         float scrollOffsetX,
         float scrollOffsetY,
         float lineHeight,
-        float charWidth,
+        float characterWidth,
         float cornerRadius,
         IDWriteFactory *dwriteFactory,
         IDWriteTextFormat *textFormat)
@@ -145,16 +185,16 @@ namespace Orion
                 int sc = std::max(0, std::min((int)earlier.column, lineLen));
                 int ec = std::max(0, std::min((int)later.column, lineLen));
                 
-                x1 = GetXPositionForColumn(ln, sc, contentLeft, scrollOffsetX, dwriteFactory, textFormat);
-                x2 = GetXPositionForColumn(ln, ec, contentLeft, scrollOffsetX, dwriteFactory, textFormat);
+                x1 = GetXPositionForColumn(ln, sc, contentLeft, scrollOffsetX, characterWidth, dwriteFactory, textFormat);
+                x2 = GetXPositionForColumn(ln, ec, contentLeft, scrollOffsetX, characterWidth, dwriteFactory, textFormat);
             }
             else if (line == sLine)
             {
                 // First line of multi-line selection
                 int sc = std::max(0, std::min((int)earlier.column, lineLen));
                 
-                x1 = GetXPositionForColumn(ln, sc, contentLeft, scrollOffsetX, dwriteFactory, textFormat);
-                x2 = GetXPositionForColumn(ln, lineLen, contentLeft, scrollOffsetX, dwriteFactory, textFormat);
+                x1 = GetXPositionForColumn(ln, sc, contentLeft, scrollOffsetX, characterWidth, dwriteFactory, textFormat);
+                x2 = GetXPositionForColumn(ln, lineLen, contentLeft, scrollOffsetX, characterWidth, dwriteFactory, textFormat);
             }
             else if (line == eLine)
             {
@@ -162,13 +202,13 @@ namespace Orion
                 int ec = std::max(0, std::min((int)later.column, lineLen));
                 
                 x1 = contentLeft - scrollOffsetX;
-                x2 = GetXPositionForColumn(ln, ec, contentLeft, scrollOffsetX, dwriteFactory, textFormat);
+                x2 = GetXPositionForColumn(ln, ec, contentLeft, scrollOffsetX, characterWidth, dwriteFactory, textFormat);
             }
             else
             {
                 // Middle lines - full line selection
                 x1 = contentLeft - scrollOffsetX;
-                x2 = GetXPositionForColumn(ln, lineLen, contentLeft, scrollOffsetX, dwriteFactory, textFormat);
+                x2 = GetXPositionForColumn(ln, lineLen, contentLeft, scrollOffsetX, characterWidth, dwriteFactory, textFormat);
             }
 
             if (x2 < x1)
