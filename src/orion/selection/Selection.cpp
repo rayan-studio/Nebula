@@ -13,22 +13,6 @@ namespace Orion
 {
     namespace Rendering
     {
-        // Styles de coins pour la sélection multi-ligne
-        enum class CornerStyle
-        {
-            EXTERN,  // Coin arrondi normal (vers l'extérieur)
-            INTERN,  // Coin arrondi inversé (vers l'intérieur)
-            FLAT     // Pas de coin arrondi (ligne continue)
-        };
-
-        struct CornerStyles
-        {
-            CornerStyle topLeft = CornerStyle::EXTERN;
-            CornerStyle bottomLeft = CornerStyle::EXTERN;
-            CornerStyle topRight = CornerStyle::EXTERN;
-            CornerStyle bottomRight = CornerStyle::EXTERN;
-        };
-
         Selection::Selection(const SelectionConfig &cfg) : cfg_(cfg) {}
         Selection::~Selection() {}
 
@@ -42,13 +26,9 @@ namespace Orion
             if (!brush)
                 return;
 
-            // Analyser les coins pour une sélection multi-ligne
-            std::vector<CornerStyles> cornerStyles = AnalyzeCornerStyles(regions);
-
             for (size_t i = 0; i < regions.size(); ++i)
             {
                 const auto &r = regions[i];
-                const auto &corners = cornerStyles[i];
 
                 if (cfg_.style == SelectionStyle::Rectangle)
                 {
@@ -57,7 +37,7 @@ namespace Orion
                 else if (cfg_.style == SelectionStyle::RoundedSmart)
                 {
                     // Dessiner avec coins intelligents
-                    DrawSmartRoundedSelection(ctx, brush, r.rect, corners);
+                    DrawSmartRoundedSelection(ctx, brush, r.rect, regions, i);
                 }
                 else
                 {
@@ -69,145 +49,76 @@ namespace Orion
             brush->Release();
         }
 
-        std::vector<CornerStyles> Selection::AnalyzeCornerStyles(const std::vector<D2D1_ROUNDED_RECT> &regions)
-        {
-            std::vector<CornerStyles> result(regions.size());
-            
-            if (regions.size() <= 1)
-            {
-                // Une seule ligne : coins arrondis partout
-                if (!regions.empty())
-                {
-                    result[0].topLeft = CornerStyle::EXTERN;
-                    result[0].bottomLeft = CornerStyle::EXTERN;
-                    result[0].topRight = CornerStyle::EXTERN;
-                    result[0].bottomRight = CornerStyle::EXTERN;
-                }
-                return result;
-            }
-
-            const float epsilon = 1.0f;
-
-            for (size_t i = 0; i < regions.size(); ++i)
-            {
-                const auto &curr = regions[i].rect;
-                CornerStyles &style = result[i];
-
-                // Par défaut : pas de coins arrondis
-                style.topLeft = CornerStyle::FLAT;
-                style.bottomLeft = CornerStyle::FLAT;
-                style.topRight = CornerStyle::FLAT;
-                style.bottomRight = CornerStyle::FLAT;
-
-                // ===== Analyser le coin TOP-LEFT =====
-                if (i == 0)
-                {
-                    // Première ligne : toujours arrondi en haut à gauche
-                    style.topLeft = CornerStyle::EXTERN;
-                }
-                else
-                {
-                    const auto &prev = regions[i - 1].rect;
-                    
-                    // Le coin gauche de la ligne actuelle est-il à l'extérieur de la ligne précédente ?
-                    if (curr.left < prev.left - epsilon)
-                    {
-                        // Plus à gauche que la ligne précédente : coin externe
-                        style.topLeft = CornerStyle::EXTERN;
-                    }
-                    else if (curr.left > prev.left + epsilon && curr.left < prev.right - epsilon)
-                    {
-                        // À l'intérieur de la ligne précédente : coin inversé
-                        style.topLeft = CornerStyle::INTERN;
-                    }
-                    // Sinon : aligné ou juste à côté → FLAT
-                }
-
-                // ===== Analyser le coin TOP-RIGHT =====
-                if (i == 0)
-                {
-                    // Première ligne : toujours arrondi en haut à droite
-                    style.topRight = CornerStyle::EXTERN;
-                }
-                else
-                {
-                    const auto &prev = regions[i - 1].rect;
-                    
-                    // Le coin droit de la ligne actuelle est-il à l'extérieur de la ligne précédente ?
-                    if (curr.right > prev.right + epsilon)
-                    {
-                        // Plus à droite que la ligne précédente : coin externe
-                        style.topRight = CornerStyle::EXTERN;
-                    }
-                    else if (curr.right < prev.right - epsilon && curr.right > prev.left + epsilon)
-                    {
-                        // À l'intérieur de la ligne précédente : coin inversé
-                        style.topRight = CornerStyle::INTERN;
-                    }
-                    // Sinon : aligné → FLAT
-                }
-
-                // ===== Analyser le coin BOTTOM-LEFT =====
-                if (i == regions.size() - 1)
-                {
-                    // Dernière ligne : toujours arrondi en bas à gauche
-                    style.bottomLeft = CornerStyle::EXTERN;
-                }
-                else
-                {
-                    const auto &next = regions[i + 1].rect;
-                    
-                    // Le coin gauche de la ligne actuelle est-il à l'extérieur de la ligne suivante ?
-                    if (curr.left < next.left - epsilon)
-                    {
-                        // Plus à gauche que la ligne suivante : coin externe
-                        style.bottomLeft = CornerStyle::EXTERN;
-                    }
-                    else if (next.left > curr.left + epsilon && next.left < curr.right - epsilon)
-                    {
-                        // La ligne suivante commence à l'intérieur : coin inversé
-                        style.bottomLeft = CornerStyle::INTERN;
-                    }
-                    // Sinon : aligné → FLAT
-                }
-
-                // ===== Analyser le coin BOTTOM-RIGHT =====
-                if (i == regions.size() - 1)
-                {
-                    // Dernière ligne : toujours arrondi en bas à droite
-                    style.bottomRight = CornerStyle::EXTERN;
-                }
-                else
-                {
-                    const auto &next = regions[i + 1].rect;
-                    
-                    // Le coin droit de la ligne actuelle est-il à l'extérieur de la ligne suivante ?
-                    if (curr.right > next.right + epsilon)
-                    {
-                        // Plus à droite que la ligne suivante : coin externe
-                        style.bottomRight = CornerStyle::EXTERN;
-                    }
-                    else if (next.right < curr.right - epsilon && next.right > curr.left + epsilon)
-                    {
-                        // La ligne suivante finit à l'intérieur : coin inversé
-                        style.bottomRight = CornerStyle::INTERN;
-                    }
-                    // Sinon : aligné → FLAT
-                }
-            }
-
-            return result;
-        }
-
         void Selection::DrawSmartRoundedSelection(
             ID2D1RenderTarget *ctx,
             ID2D1SolidColorBrush *brush,
             const D2D1_RECT_F &rect,
-            const CornerStyles &corners)
+            const std::vector<D2D1_ROUNDED_RECT> &allRegions,
+            size_t currentIndex)
         {
             const float radius = cfg_.cornerRadius;
+            const float epsilon = 1.0f;
 
-            // Obtenir la factory D2D1
+            // Déterminer quels coins doivent être arrondis
+            bool roundTopLeft = false;
+            bool roundTopRight = false;
+            bool roundBottomLeft = false;
+            bool roundBottomRight = false;
+
+            // Première ligne : coins du haut arrondis
+            if (currentIndex == 0)
+            {
+                roundTopLeft = true;
+                roundTopRight = true;
+            }
+            else
+            {
+                const auto &prevRect = allRegions[currentIndex - 1].rect;
+                
+                // Coin haut-gauche arrondi si on dépasse à gauche
+                if (rect.left < prevRect.left - epsilon)
+                {
+                    roundTopLeft = true;
+                }
+                
+                // Coin haut-droit arrondi si on dépasse à droite
+                if (rect.right > prevRect.right + epsilon)
+                {
+                    roundTopRight = true;
+                }
+            }
+
+            // Dernière ligne : coins du bas arrondis
+            if (currentIndex == allRegions.size() - 1)
+            {
+                roundBottomLeft = true;
+                roundBottomRight = true;
+            }
+            else
+            {
+                const auto &nextRect = allRegions[currentIndex + 1].rect;
+                
+                // Coin bas-gauche arrondi si on dépasse à gauche
+                if (rect.left < nextRect.left - epsilon)
+                {
+                    roundBottomLeft = true;
+                }
+                
+                // Coin bas-droit arrondi si on dépasse à droite
+                if (rect.right > nextRect.right + epsilon)
+                {
+                    roundBottomRight = true;
+                }
+            }
+
+            // Si aucun coin n'est arrondi, dessiner un rectangle simple
+            if (!roundTopLeft && !roundTopRight && !roundBottomLeft && !roundBottomRight)
+            {
+                ctx->FillRectangle(rect, brush);
+                return;
+            }
+
+            // Créer une géométrie avec coins sélectifs
             ID2D1Factory *factory = nullptr;
             ctx->GetFactory(&factory);
             if (!factory)
@@ -216,7 +127,6 @@ namespace Orion
                 return;
             }
 
-            // Créer la géométrie du rectangle avec coins personnalisés
             ID2D1PathGeometry *pathGeometry = nullptr;
             ID2D1GeometrySink *sink = nullptr;
 
@@ -237,43 +147,32 @@ namespace Orion
 
             sink->SetFillMode(D2D1_FILL_MODE_WINDING);
 
-            // Extension pour éviter les gaps (plus petite que le radius)
-            const float overlap = 0.5f;
+            // Commencer au coin supérieur gauche
+            D2D1_POINT_2F startPoint = roundTopLeft 
+                ? D2D1::Point2F(rect.left, rect.top + radius)
+                : D2D1::Point2F(rect.left, rect.top);
 
-            // Calculer les points de départ selon les styles de coins
-            float startX = rect.left;
-            float startY = rect.top;
+            sink->BeginFigure(startPoint, D2D1_FIGURE_BEGIN_FILLED);
 
-            if (corners.topLeft == CornerStyle::EXTERN)
+            // Coin supérieur gauche
+            if (roundTopLeft)
             {
-                startX = rect.left + radius;
-            }
-            else if (corners.topLeft == CornerStyle::INTERN)
-            {
-                startX = rect.left - overlap;
-                startY = rect.top - overlap;
-            }
-
-            sink->BeginFigure(D2D1::Point2F(startX, startY), D2D1_FIGURE_BEGIN_FILLED);
-
-            // ===== Ligne supérieure jusqu'au coin supérieur droit =====
-            float topRightX = rect.right;
-            float topRightY = rect.top;
-
-            if (corners.topRight == CornerStyle::EXTERN)
-            {
-                topRightX = rect.right - radius;
-            }
-            else if (corners.topRight == CornerStyle::INTERN)
-            {
-                topRightX = rect.right + overlap;
-                topRightY = rect.top - overlap;
+                sink->AddArc(D2D1::ArcSegment(
+                    D2D1::Point2F(rect.left + radius, rect.top),
+                    D2D1::SizeF(radius, radius),
+                    0.0f,
+                    D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                    D2D1_ARC_SIZE_SMALL));
             }
 
-            sink->AddLine(D2D1::Point2F(topRightX, topRightY));
+            // Ligne supérieure
+            D2D1_POINT_2F topRight = roundTopRight
+                ? D2D1::Point2F(rect.right - radius, rect.top)
+                : D2D1::Point2F(rect.right, rect.top);
+            sink->AddLine(topRight);
 
-            // ===== Coin supérieur droit =====
-            if (corners.topRight == CornerStyle::EXTERN)
+            // Coin supérieur droit
+            if (roundTopRight)
             {
                 sink->AddArc(D2D1::ArcSegment(
                     D2D1::Point2F(rect.right, rect.top + radius),
@@ -282,33 +181,15 @@ namespace Orion
                     D2D1_SWEEP_DIRECTION_CLOCKWISE,
                     D2D1_ARC_SIZE_SMALL));
             }
-            else if (corners.topRight == CornerStyle::FLAT)
-            {
-                sink->AddLine(D2D1::Point2F(rect.right, rect.top));
-            }
-            else // INTERN
-            {
-                sink->AddLine(D2D1::Point2F(rect.right + overlap, rect.top + overlap));
-            }
 
-            // ===== Ligne droite jusqu'au coin inférieur droit =====
-            float bottomRightY = rect.bottom;
-            float bottomRightX = rect.right;
+            // Ligne droite
+            D2D1_POINT_2F bottomRight = roundBottomRight
+                ? D2D1::Point2F(rect.right, rect.bottom - radius)
+                : D2D1::Point2F(rect.right, rect.bottom);
+            sink->AddLine(bottomRight);
 
-            if (corners.bottomRight == CornerStyle::EXTERN)
-            {
-                bottomRightY = rect.bottom - radius;
-            }
-            else if (corners.bottomRight == CornerStyle::INTERN)
-            {
-                bottomRightX = rect.right + overlap;
-                bottomRightY = rect.bottom + overlap;
-            }
-
-            sink->AddLine(D2D1::Point2F(bottomRightX, bottomRightY));
-
-            // ===== Coin inférieur droit =====
-            if (corners.bottomRight == CornerStyle::EXTERN)
+            // Coin inférieur droit
+            if (roundBottomRight)
             {
                 sink->AddArc(D2D1::ArcSegment(
                     D2D1::Point2F(rect.right - radius, rect.bottom),
@@ -317,33 +198,15 @@ namespace Orion
                     D2D1_SWEEP_DIRECTION_CLOCKWISE,
                     D2D1_ARC_SIZE_SMALL));
             }
-            else if (corners.bottomRight == CornerStyle::FLAT)
-            {
-                sink->AddLine(D2D1::Point2F(rect.right, rect.bottom));
-            }
-            else // INTERN
-            {
-                sink->AddLine(D2D1::Point2F(rect.right - overlap, rect.bottom + overlap));
-            }
 
-            // ===== Ligne inférieure jusqu'au coin inférieur gauche =====
-            float bottomLeftX = rect.left;
-            float bottomLeftY = rect.bottom;
+            // Ligne inférieure
+            D2D1_POINT_2F bottomLeft = roundBottomLeft
+                ? D2D1::Point2F(rect.left + radius, rect.bottom)
+                : D2D1::Point2F(rect.left, rect.bottom);
+            sink->AddLine(bottomLeft);
 
-            if (corners.bottomLeft == CornerStyle::EXTERN)
-            {
-                bottomLeftX = rect.left + radius;
-            }
-            else if (corners.bottomLeft == CornerStyle::INTERN)
-            {
-                bottomLeftX = rect.left - overlap;
-                bottomLeftY = rect.bottom + overlap;
-            }
-
-            sink->AddLine(D2D1::Point2F(bottomLeftX, bottomLeftY));
-
-            // ===== Coin inférieur gauche =====
-            if (corners.bottomLeft == CornerStyle::EXTERN)
+            // Coin inférieur gauche
+            if (roundBottomLeft)
             {
                 sink->AddArc(D2D1::ArcSegment(
                     D2D1::Point2F(rect.left, rect.bottom - radius),
@@ -352,70 +215,18 @@ namespace Orion
                     D2D1_SWEEP_DIRECTION_CLOCKWISE,
                     D2D1_ARC_SIZE_SMALL));
             }
-            else if (corners.bottomLeft == CornerStyle::FLAT)
-            {
-                sink->AddLine(D2D1::Point2F(rect.left, rect.bottom));
-            }
-            else // INTERN
-            {
-                sink->AddLine(D2D1::Point2F(rect.left - overlap, rect.bottom - overlap));
-            }
 
-            // ===== Ligne gauche jusqu'au point de départ =====
-            float topLeftY = rect.top;
-            float topLeftX = rect.left;
-
-            if (corners.topLeft == CornerStyle::EXTERN)
-            {
-                topLeftY = rect.top + radius;
-            }
-            else if (corners.topLeft == CornerStyle::INTERN)
-            {
-                topLeftX = rect.left - overlap;
-                topLeftY = rect.top + overlap;
-            }
-
-            sink->AddLine(D2D1::Point2F(topLeftX, topLeftY));
-
-            // ===== Coin supérieur gauche =====
-            if (corners.topLeft == CornerStyle::EXTERN)
-            {
-                sink->AddArc(D2D1::ArcSegment(
-                    D2D1::Point2F(startX, startY),
-                    D2D1::SizeF(radius, radius),
-                    0.0f,
-                    D2D1_SWEEP_DIRECTION_CLOCKWISE,
-                    D2D1_ARC_SIZE_SMALL));
-            }
+            // Ligne gauche (retour au début)
+            sink->AddLine(startPoint);
 
             sink->EndFigure(D2D1_FIGURE_END_CLOSED);
             
             if (SUCCEEDED(sink->Close()))
             {
-                // Activer l'antialiasing pour un rendu ultra-lisse
                 D2D1_ANTIALIAS_MODE oldMode = ctx->GetAntialiasMode();
                 ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
                 ctx->FillGeometry(pathGeometry, brush);
                 ctx->SetAntialiasMode(oldMode);
-            }
-
-            // Dessiner les coins inversés (INTERN) par-dessus
-            ID2D1SolidColorBrush *bgBrush = nullptr;
-            D2D1_COLOR_F bgColor = D2D1::ColorF(0x1e1e1e);
-            ctx->CreateSolidColorBrush(bgColor, &bgBrush);
-
-            if (bgBrush)
-            {
-                if (corners.topLeft == CornerStyle::INTERN)
-                    DrawInverseCorner(ctx, factory, bgBrush, rect.left, rect.top, radius, 0);
-                if (corners.topRight == CornerStyle::INTERN)
-                    DrawInverseCorner(ctx, factory, bgBrush, rect.right, rect.top, radius, 1);
-                if (corners.bottomRight == CornerStyle::INTERN)
-                    DrawInverseCorner(ctx, factory, bgBrush, rect.right, rect.bottom, radius, 2);
-                if (corners.bottomLeft == CornerStyle::INTERN)
-                    DrawInverseCorner(ctx, factory, bgBrush, rect.left, rect.bottom, radius, 3);
-
-                bgBrush->Release();
             }
 
             sink->Release();
@@ -428,7 +239,6 @@ namespace Orion
             ID2D1SolidColorBrush *brush,
             float x, float y, float radius, float angleOffset)
         {
-            // Cette méthode n'est plus utilisée - on utilise DrawSmartRoundedSelection à la place
             (void)ctx;
             (void)brush;
             (void)x;
@@ -443,91 +253,16 @@ namespace Orion
             ID2D1SolidColorBrush *bgBrush,
             float x, float y, float radius, int corner)
         {
-            // Coins inversés : créer une géométrie précise avec léger overlap
-            ID2D1PathGeometry *pathGeometry = nullptr;
-            ID2D1GeometrySink *sink = nullptr;
-
-            if (FAILED(factory->CreatePathGeometry(&pathGeometry)) || !pathGeometry)
-                return;
-
-            if (FAILED(pathGeometry->Open(&sink)) || !sink)
-            {
-                pathGeometry->Release();
-                return;
-            }
-
-            sink->SetFillMode(D2D1_FILL_MODE_WINDING);
-
-            // Augmenter légèrement la taille pour couvrir les gaps
-            const float size = radius + 0.5f;
-
-            switch (corner)
-            {
-            case 0: // Top-left inverse (coin en haut à gauche)
-                sink->BeginFigure(D2D1::Point2F(x - size, y - size), D2D1_FIGURE_BEGIN_FILLED);
-                sink->AddLine(D2D1::Point2F(x + 0.5f, y - size));
-                sink->AddLine(D2D1::Point2F(x + 0.5f, y + 0.5f));
-                sink->AddArc(D2D1::ArcSegment(
-                    D2D1::Point2F(x - size, y + 0.5f),
-                    D2D1::SizeF(size, size),
-                    0.0f,
-                    D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
-                    D2D1_ARC_SIZE_SMALL));
-                break;
-
-            case 1: // Top-right inverse
-                sink->BeginFigure(D2D1::Point2F(x - 0.5f, y - size), D2D1_FIGURE_BEGIN_FILLED);
-                sink->AddLine(D2D1::Point2F(x + size, y - size));
-                sink->AddLine(D2D1::Point2F(x + size, y + 0.5f));
-                sink->AddArc(D2D1::ArcSegment(
-                    D2D1::Point2F(x - 0.5f, y + 0.5f),
-                    D2D1::SizeF(size, size),
-                    0.0f,
-                    D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
-                    D2D1_ARC_SIZE_SMALL));
-                break;
-
-            case 2: // Bottom-right inverse
-                sink->BeginFigure(D2D1::Point2F(x + size, y - 0.5f), D2D1_FIGURE_BEGIN_FILLED);
-                sink->AddLine(D2D1::Point2F(x + size, y + size));
-                sink->AddLine(D2D1::Point2F(x - 0.5f, y + size));
-                sink->AddArc(D2D1::ArcSegment(
-                    D2D1::Point2F(x - 0.5f, y - 0.5f),
-                    D2D1::SizeF(size, size),
-                    0.0f,
-                    D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
-                    D2D1_ARC_SIZE_SMALL));
-                break;
-
-            case 3: // Bottom-left inverse
-                sink->BeginFigure(D2D1::Point2F(x + 0.5f, y + size), D2D1_FIGURE_BEGIN_FILLED);
-                sink->AddLine(D2D1::Point2F(x - size, y + size));
-                sink->AddLine(D2D1::Point2F(x - size, y - 0.5f));
-                sink->AddArc(D2D1::ArcSegment(
-                    D2D1::Point2F(x + 0.5f, y - 0.5f),
-                    D2D1::SizeF(size, size),
-                    0.0f,
-                    D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
-                    D2D1_ARC_SIZE_SMALL));
-                break;
-            }
-
-            sink->EndFigure(D2D1_FIGURE_END_CLOSED);
-
-            if (SUCCEEDED(sink->Close()))
-            {
-                // Activer l'antialiasing pour un rendu ultra-lisse
-                D2D1_ANTIALIAS_MODE oldMode = ctx->GetAntialiasMode();
-                ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-                ctx->FillGeometry(pathGeometry, bgBrush);
-                ctx->SetAntialiasMode(oldMode);
-            }
-
-            sink->Release();
-            pathGeometry->Release();
+            (void)ctx;
+            (void)factory;
+            (void)bgBrush;
+            (void)x;
+            (void)y;
+            (void)radius;
+            (void)corner;
         }
 
-        // Helper function pour GetXPositionForColumn (inchangée)
+        // Helper function pour GetXPositionForColumn
         static float GetXPositionForColumn(
             const std::wstring &line,
             int column,

@@ -19,14 +19,15 @@ namespace Orion
 
         enum class SelectionStyle
         {
-            Rectangle,      // Rectangles simples
-            RoundedSimple,  // Tous les coins arrondis (ancien comportement)
-            RoundedSmart    // Coins intelligents selon le contexte (nouveau!)
+            Rectangle,     // Rectangles simples
+            RoundedSimple, // Tous les coins arrondis (ancien comportement)
+            RoundedSmart   // Coins intelligents selon le contexte (nouveau!)
         };
 
         struct SelectionConfig
         {
-            D2D1_COLOR_F color = D2D1::ColorF(0.2f, 0.4f, 0.8f, 0.3f);
+            // Teinte de sélection : rendu plus clair et légèrement plus opaque
+            D2D1_COLOR_F color = D2D1::ColorF(0.45f, 0.65f, 1.0f, 0.4f);
             float cornerRadius = 3.0f;
             SelectionStyle style = SelectionStyle::RoundedSmart;
         };
@@ -63,12 +64,13 @@ namespace Orion
 
             // Nouvelles méthodes pour la gestion intelligente des coins
             std::vector<CornerStyles> AnalyzeCornerStyles(const std::vector<D2D1_ROUNDED_RECT> &regions);
-            
+
             void DrawSmartRoundedSelection(
                 ID2D1RenderTarget *ctx,
                 ID2D1SolidColorBrush *brush,
                 const D2D1_RECT_F &rect,
-                const CornerStyles &corners);
+                const std::vector<D2D1_ROUNDED_RECT> &allRegions,
+                size_t currentIndex);
 
             void DrawRoundedCorner(
                 ID2D1RenderTarget *ctx,
