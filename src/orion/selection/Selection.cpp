@@ -59,6 +59,9 @@ namespace Orion
             const float radius = cfg_.cornerRadius;
             const float epsilon = 1.0f;
 
+            // Détecter si c'est une ligne vide (très petite)
+            bool isEmptyLine = (rect.right - rect.left) < (epsilon * 2.0f);
+
             // Déterminer quels coins doivent être arrondis
             bool roundTopLeft = false;
             bool roundTopRight = false;
@@ -74,15 +77,16 @@ namespace Orion
             else
             {
                 const auto &prevRect = allRegions[currentIndex - 1].rect;
+                bool prevIsEmpty = (prevRect.right - prevRect.left) < (epsilon * 2.0f);
                 
-                // Coin haut-gauche arrondi si on dépasse à gauche
-                if (rect.left < prevRect.left - epsilon)
+                // Coin haut-gauche arrondi si on dépasse à gauche OU si c'est une ligne vide après une ligne normale
+                if (rect.left < prevRect.left - epsilon || (isEmptyLine && !prevIsEmpty))
                 {
                     roundTopLeft = true;
                 }
                 
-                // Coin haut-droit arrondi si on dépasse à droite
-                if (rect.right > prevRect.right + epsilon)
+                // Coin haut-droit arrondi si on dépasse à droite OU si c'est une ligne vide après une ligne normale
+                if (rect.right > prevRect.right + epsilon || (isEmptyLine && !prevIsEmpty))
                 {
                     roundTopRight = true;
                 }
@@ -97,15 +101,16 @@ namespace Orion
             else
             {
                 const auto &nextRect = allRegions[currentIndex + 1].rect;
+                bool nextIsEmpty = (nextRect.right - nextRect.left) < (epsilon * 2.0f);
                 
-                // Coin bas-gauche arrondi si on dépasse à gauche
-                if (rect.left < nextRect.left - epsilon)
+                // Coin bas-gauche arrondi si on dépasse à gauche OU si c'est une ligne vide avant une ligne normale
+                if (rect.left < nextRect.left - epsilon || (isEmptyLine && !nextIsEmpty))
                 {
                     roundBottomLeft = true;
                 }
                 
-                // Coin bas-droit arrondi si on dépasse à droite
-                if (rect.right > nextRect.right + epsilon)
+                // Coin bas-droit arrondi si on dépasse à droite OU si c'est une ligne vide avant une ligne normale
+                if (rect.right > nextRect.right + epsilon || (isEmptyLine && !nextIsEmpty))
                 {
                     roundBottomRight = true;
                 }
@@ -391,8 +396,14 @@ namespace Orion
                 if (x2 < x1)
                     std::swap(x1, x2);
 
-                if (x2 - x1 < 1.0f)
-                    x2 = x1 + 1.0f;
+                // Ajouter un petit padding à droite pour que ça respire (comme VSCode)
+                const float rightPadding = characterWidth * 0.3f;
+                x2 += rightPadding;
+
+                // Largeur minimale pour les lignes vides ou très petites
+                const float minWidth = characterWidth * 0.5f; // Demi-caractère minimum
+                if (x2 - x1 < minWidth)
+                    x2 = x1 + minWidth;
 
                 D2D1_ROUNDED_RECT rr;
                 rr.rect = D2D1_RECT_F{x1, y, x2, y + lineHeight};
