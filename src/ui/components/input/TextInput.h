@@ -67,7 +67,8 @@ public:
         D2D1_COLOR_F focusBorderColor = D2D1::ColorF(0.29f, 0.62f, 0.92f);
         D2D1_COLOR_F textColor = D2D1::ColorF(0.9f, 0.9f, 0.9f);
         D2D1_COLOR_F placeholderColor = D2D1::ColorF(0.5f, 0.5f, 0.5f);
-        D2D1_COLOR_F selectionColor = D2D1::ColorF(0.29f, 0.62f, 0.92f, 0.4f);
+        // editor.selectionBackground -> #3392ff44
+        D2D1_COLOR_F selectionColor = D2D1::ColorF(0.2f, 0.572549f, 1.0f, 0.266667f);
         D2D1_COLOR_F cursorColor = D2D1::ColorF(1.0f, 1.0f, 1.0f);
         D2D1_COLOR_F iconColor = D2D1::ColorF(0.5f, 0.5f, 0.5f);
         float cornerRadius = 4.0f;

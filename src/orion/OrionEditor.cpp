@@ -58,7 +58,8 @@ namespace Orion
 
         // Configure selection rendering
         Rendering::SelectionConfig selectionConfig;
-        selectionConfig.color = D2D1::ColorF(0.2f, 0.4f, 0.8f, 0.3f);
+        // editor.selectionBackground -> #3392ff44 -> rgba(0x33,0x92,0xff,0x44)
+        selectionConfig.color = D2D1::ColorF(0.2f, 0.572549f, 1.0f, 0.266667f);
         selectionConfig.cornerRadius = 3.0f;
         selectionConfig.style = Rendering::SelectionStyle::RoundedSmart;
 
@@ -102,6 +103,19 @@ namespace Orion
         }
     }
 
+    namespace
+    {
+        namespace
+        {
+            std::wstring ConvertTabsToSpaces(const std::wstring &line, int tabSize = 4)
+            {
+                (void)tabSize; // Éviter warning de variable inutilisée
+
+                // ✅ Ne rien faire, juste retourner la ligne telle quelle
+                return line;
+            }
+        }
+    }
     void Editor::LoadFile(const std::wstring &filePath)
     {
         state_.filePath = filePath;
@@ -147,13 +161,16 @@ namespace Orion
             std::istringstream ss(data);
             while (std::getline(ss, cur))
             {
-                if (!cur.empty() && cur.back() == '\r') cur.pop_back();
-                if (cur.empty()) state_.lines.push_back(L"");
+                if (!cur.empty() && cur.back() == '\r')
+                    cur.pop_back();
+                if (cur.empty())
+                    state_.lines.push_back(L"");
                 else
                 {
                     int wsize = MultiByteToWideChar(CP_UTF8, 0, cur.c_str(), (int)cur.size(), NULL, 0);
                     std::wstring wline(wsize, L'\0');
                     MultiByteToWideChar(CP_UTF8, 0, cur.c_str(), (int)cur.size(), wline.data(), wsize);
+                    wline = ConvertTabsToSpaces(wline);
                     state_.lines.push_back(wline);
                 }
             }
@@ -180,9 +197,12 @@ namespace Orion
             while (pos <= w.size())
             {
                 size_t nl = w.find(L'\n', pos);
-                if (nl == std::wstring::npos) nl = w.size();
+                if (nl == std::wstring::npos)
+                    nl = w.size();
                 std::wstring linew = w.substr(pos, nl - pos);
-                if (!linew.empty() && linew.back() == L'\r') linew.pop_back();
+                if (!linew.empty() && linew.back() == L'\r')
+                    linew.pop_back();
+                linew = ConvertTabsToSpaces(linew);
                 state_.lines.push_back(linew);
                 pos = nl + 1;
             }
@@ -207,9 +227,12 @@ namespace Orion
             while (pos <= w.size())
             {
                 size_t nl = w.find(L'\n', pos);
-                if (nl == std::wstring::npos) nl = w.size();
+                if (nl == std::wstring::npos)
+                    nl = w.size();
                 std::wstring linew = w.substr(pos, nl - pos);
-                if (!linew.empty() && linew.back() == L'\r') linew.pop_back();
+                if (!linew.empty() && linew.back() == L'\r')
+                    linew.pop_back();
+                linew = ConvertTabsToSpaces(linew);
                 state_.lines.push_back(linew);
                 pos = nl + 1;
             }
@@ -224,7 +247,8 @@ namespace Orion
             std::vector<std::wstring> tmpLines;
             while (std::getline(ss, cur))
             {
-                if (!cur.empty() && cur.back() == '\r') cur.pop_back();
+                if (!cur.empty() && cur.back() == '\r')
+                    cur.pop_back();
                 int wsize = MultiByteToWideChar(CP_UTF8, 0, cur.c_str(), (int)cur.size(), NULL, 0);
                 if (wsize == 0)
                 {
@@ -233,6 +257,7 @@ namespace Orion
                 }
                 std::wstring wline(wsize, L'\0');
                 MultiByteToWideChar(CP_UTF8, 0, cur.c_str(), (int)cur.size(), wline.data(), wsize);
+                wline = ConvertTabsToSpaces(wline);
                 tmpLines.push_back(wline);
             }
 
@@ -248,11 +273,13 @@ namespace Orion
                 std::istringstream ss2(data);
                 while (std::getline(ss2, cur))
                 {
-                    if (!cur.empty() && cur.back() == '\r') cur.pop_back();
+                    if (!cur.empty() && cur.back() == '\r')
+                        cur.pop_back();
                     int wsize = MultiByteToWideChar(CP_ACP, 0, cur.c_str(), (int)cur.size(), NULL, 0);
                     std::wstring wline(wsize, L'\0');
                     if (wsize > 0)
                         MultiByteToWideChar(CP_ACP, 0, cur.c_str(), (int)cur.size(), wline.data(), wsize);
+                    wline = ConvertTabsToSpaces(wline);
                     state_.lines.push_back(wline);
                 }
             }
@@ -451,6 +478,7 @@ namespace Orion
         DrawSelection(ctx); // ✅ Dessiner la sélection AVANT le texte
         DrawTextContent(ctx, dwrite);
         DrawSearchMatches(ctx);
+        DrawWhitespaceIndicators(ctx);
         DrawCaret(ctx);
 
         // Dessiner le popup de complétion si visible
@@ -660,6 +688,103 @@ namespace Orion
             currentMatchBrush->Release();
     }
 
+    void Editor::DrawWhitespaceIndicators(ID2D1RenderTarget *ctx)
+    {
+        int firstVisibleLine = (int)(state_.scrollOffsetY / metrics_.lineHeight);
+        int lastVisibleLine = (int)((state_.scrollOffsetY + (state_.bottomEdge - state_.topEdge)) / metrics_.lineHeight) + 1;
+
+        firstVisibleLine = (std::max)(0, firstVisibleLine);
+        lastVisibleLine = (std::min)((int)state_.lines.size(), lastVisibleLine);
+
+        float contentLeft = state_.leftEdge + metrics_.gutterWidth + metrics_.leftPadding;
+
+        ID2D1SolidColorBrush *spaceBrush = nullptr;
+        ID2D1SolidColorBrush *tabBrush = nullptr;
+
+        // Point gris pour les espaces
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.4f, 0.4f, 0.4f, 0.5f), &spaceBrush);
+        // Point rouge pour les tabs
+        ctx->CreateSolidColorBrush(D2D1::ColorF(1.0f, 0.2f, 0.2f, 0.7f), &tabBrush);
+
+        for (int i = firstVisibleLine; i < lastVisibleLine; ++i)
+        {
+            float lineY = state_.topEdge + (i * metrics_.lineHeight) - state_.scrollOffsetY;
+            const std::wstring &line = state_.lines[i];
+
+            float x = contentLeft - state_.scrollOffsetX;
+
+            for (size_t col = 0; col < line.size(); ++col)
+            {
+                wchar_t ch = line[col];
+
+                // Calculer la position X avec DirectWrite pour précision
+                float charX = x;
+                if (pDWriteFactory_ && cachedTextFormat_)
+                {
+                    IDWriteTextLayout *layout = nullptr;
+                    std::wstring textBefore = line.substr(0, col);
+
+                    if (SUCCEEDED(pDWriteFactory_->CreateTextLayout(
+                            textBefore.c_str(),
+                            (UINT32)textBefore.size(),
+                            cachedTextFormat_,
+                            10000.0f,
+                            metrics_.lineHeight,
+                            &layout)) &&
+                        layout)
+                    {
+                        DWRITE_TEXT_METRICS tm = {};
+                        layout->GetMetrics(&tm);
+                        charX = contentLeft + tm.width - state_.scrollOffsetX;
+                        layout->Release();
+                    }
+                }
+
+                if (ch == L' ' || ch == L'\u00A0') // Espace normal ou insécable
+                {
+                    // Dessiner un point bien visible au milieu
+                    float dotRadius = 2.5f; // Rayon plus grand pour un point de ~5px de diamètre
+                    float centerX = charX + metrics_.characterWidth * 0.5f;
+                    float centerY = lineY + metrics_.lineHeight * 0.5f;
+
+                    D2D1_ELLIPSE dot = D2D1::Ellipse(
+                        D2D1::Point2F(centerX, centerY),
+                        dotRadius, dotRadius);
+
+                    ctx->FillEllipse(dot, spaceBrush);
+                }
+                else if (ch == L'\t')
+                {
+                    // Dessiner une flèche rouge pour les tabs
+                    float arrowY = lineY + metrics_.lineHeight * 0.5f;
+                    float arrowStartX = charX + 2.0f;
+                    float arrowEndX = charX + metrics_.characterWidth * 4.0f - 2.0f;
+
+                    // Ligne horizontale
+                    ctx->DrawLine(
+                        D2D1::Point2F(arrowStartX, arrowY),
+                        D2D1::Point2F(arrowEndX, arrowY),
+                        tabBrush, 1.0f);
+
+                    // Pointe de flèche
+                    ctx->DrawLine(
+                        D2D1::Point2F(arrowEndX, arrowY),
+                        D2D1::Point2F(arrowEndX - 3.0f, arrowY - 2.0f),
+                        tabBrush, 1.0f);
+                    ctx->DrawLine(
+                        D2D1::Point2F(arrowEndX, arrowY),
+                        D2D1::Point2F(arrowEndX - 3.0f, arrowY + 2.0f),
+                        tabBrush, 1.0f);
+                }
+            }
+        }
+
+        if (spaceBrush)
+            spaceBrush->Release();
+        if (tabBrush)
+            tabBrush->Release();
+    }
+
     bool Editor::LoadCustomFont(IDWriteFactory *dwrite, const std::wstring &fontPath)
     {
         // Essayer de caster vers IDWriteFactory1 (disponible depuis Windows 7 SP1)
@@ -719,18 +844,6 @@ namespace Orion
         UINT32 index = 0;
         BOOL exists = FALSE;
         hr = customFontCollection_->FindFamilyName(L"JetBrains Mono", &index, &exists);
-
-        if (SUCCEEDED(hr) && exists)
-        {
-            Logger::Instance().Log(L"✅ 'JetBrains Mono' trouvée dans la collection custom !");
-            return true;
-        }
-        else
-        {
-            Logger::Instance().Log(L"⚠️ Police chargée mais famille 'JetBrains Mono' introuvable");
-            // La collection est quand même créée, on peut essayer de l'utiliser
-            return true;
-        }
     }
 
     void Editor::DrawActiveLine(ID2D1RenderTarget *ctx)
@@ -1273,6 +1386,22 @@ namespace Orion
                 continue;
             }
 
+            // ✅ DÉSACTIVER le collapsing des espaces (APRÈS création réussie du layout)
+            lineLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+
+            DWRITE_TEXT_RANGE fullRange = {0, (UINT32)line.size()};
+            lineLayout->SetFontStretch(DWRITE_FONT_STRETCH_NORMAL, fullRange);
+
+            // ✅ Désactiver les ligatures
+            IDWriteTypography *typography = nullptr;
+            if (SUCCEEDED(pDWriteFactory_->CreateTypography(&typography)) && typography)
+            {
+                DWRITE_FONT_FEATURE ff = {DWRITE_MAKE_FONT_FEATURE_TAG('l', 'i', 'g', 'a'), 0};
+                typography->AddFontFeature(ff);
+                lineLayout->SetTypography(typography, fullRange);
+                typography->Release();
+            }
+
             auto tokens = highlighter_->TokenizeLine(line, ext);
 
             // Emoji / symbol fallback: detect ranges of characters that are emoji
@@ -1607,7 +1736,6 @@ namespace Orion
         if (pDWriteFactory_ && cachedTextFormat_)
         {
             IDWriteTextLayout *layout = nullptr;
-
             if (SUCCEEDED(pDWriteFactory_->CreateTextLayout(
                     line.c_str(),
                     (UINT32)line.size(),
@@ -1617,6 +1745,19 @@ namespace Orion
                     &layout)) &&
                 layout)
             {
+                // ✅ MÊME FIX ICI
+                layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+
+                IDWriteTypography *typography = nullptr;
+                if (SUCCEEDED(pDWriteFactory_->CreateTypography(&typography)) && typography)
+                {
+                    DWRITE_FONT_FEATURE ff = {DWRITE_MAKE_FONT_FEATURE_TAG('l', 'i', 'g', 'a'), 0};
+                    typography->AddFontFeature(ff);
+                    DWRITE_TEXT_RANGE fullRange = {0, (UINT32)line.size()};
+                    layout->SetTypography(typography, fullRange);
+                    typography->Release();
+                }
+
                 FLOAT caretX = 0.0f;
                 FLOAT caretY = 0.0f;
                 DWRITE_HIT_TEST_METRICS hitMetrics = {};
@@ -1644,6 +1785,12 @@ namespace Orion
                 float verticalOffset = 0.0f;
                 if (metrics_.lineHeight > tm.height)
                     verticalOffset = (metrics_.lineHeight - tm.height) / 2.0f;
+
+                // If asking for caret at end of line, clamp to measured layout width
+                if (textPos == (UINT32)line.size())
+                {
+                    caretX = tm.width;
+                }
 
                 // ✅ Appliquer la correction de l'overhang
                 DWRITE_OVERHANG_METRICS om = {};
@@ -1699,6 +1846,27 @@ namespace Orion
 
             if (SUCCEEDED(hr) && layout)
             {
+                // ✅ MÊME FIX ICI AUSSI
+                layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+
+                IDWriteTypography *typography = nullptr;
+                if (SUCCEEDED(pDWriteFactory_->CreateTypography(&typography)) && typography)
+                {
+                    DWRITE_FONT_FEATURE ff = {DWRITE_MAKE_FONT_FEATURE_TAG('l', 'i', 'g', 'a'), 0};
+                    typography->AddFontFeature(ff);
+                    DWRITE_TEXT_RANGE fullRange = {0, (UINT32)lineText.size()};
+                    layout->SetTypography(typography, fullRange);
+                    typography->Release();
+                }
+                // Get metrics to detect clicks to the far right or far left of the layout
+                DWRITE_TEXT_METRICS tm = {};
+                layout->GetMetrics(&tm);
+
+                // Do not early-return for clicks to the right of the measured
+                // text width: some fonts/layouts trim trailing space in
+                // measured width, causing clicks on visual trailing spaces to
+                // be misclassified as EOL. Let HitTestPoint run and fall back
+                // to a nearest-position estimation if it fails.
                 // Compenser l'overhang
                 DWRITE_OVERHANG_METRICS om = {};
                 if (SUCCEEDED(layout->GetOverhangMetrics(&om)))
@@ -1720,22 +1888,54 @@ namespace Orion
                     hitOk = false;
                 }
 
-                if (!hitOk)
+                if (!hitOk || !isInside)
                 {
+                    // If hit testing failed or point is not inside the layout bounds,
+                    // attempt to estimate the nearest text position instead of
+                    // defaulting to EOL. This helps clicking on runs of spaces
+                    // (column-aligned text) map to the correct caret position.
+                    int len = (int)lineText.size();
+                    int bestPos = 0;
+                    float bestDist = 1e30f;
+
+                    for (int tp = 0; tp <= len; ++tp)
+                    {
+                        FLOAT tx = 0.0f, ty = 0.0f;
+                        DWRITE_HIT_TEST_METRICS hm = {};
+                        bool ok2 = true;
+                        __try
+                        {
+                            layout->HitTestTextPosition((UINT32)tp, FALSE, &tx, &ty, &hm);
+                        }
+                        __except (EXCEPTION_EXECUTE_HANDLER)
+                        {
+                            ok2 = false;
+                        }
+                        if (!ok2)
+                            continue;
+
+                        float d = fabsf(tx - clickX);
+                        if (d < bestDist)
+                        {
+                            bestDist = d;
+                            bestPos = tp;
+                        }
+                    }
+
                     layout->Release();
-                    int column = (int)std::round(clickX / metrics_.characterWidth);
-                    column = (std::max)(0, (std::min)(column, (int)lineText.size()));
+                    int column = (std::max)(0, (std::min)(bestPos, len));
                     return {line, column};
                 }
 
-                int column = hitMetrics.textPosition;
+                int column = (int)hitMetrics.textPosition;
 
+                // If trailing hit, advance column by one if it doesn't exceed length
                 if (isTrailingHit && column < (int)lineText.size())
                 {
-                    // Logique trailing hit...
                     column++;
                 }
 
+                // Final clamp to valid range
                 column = (std::max)(0, (std::min)(column, (int)lineText.size()));
 
                 layout->Release();

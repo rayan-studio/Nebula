@@ -56,7 +56,8 @@ SearchPanel::SearchPanel()
     // Text and other accents
     style.textColor = D2D1::ColorF(0.9f, 0.9f, 0.9f);
     style.placeholderColor = D2D1::ColorF(0.4f, 0.4f, 0.4f);
-    style.selectionColor = D2D1::ColorF(0.29f, 0.62f, 0.92f, 0.38f);
+    // editor.selectionHighlightBackground -> #17e5e633
+    style.selectionColor = D2D1::ColorF(0.0901961f, 0.898039f, 0.901961f, 0.2f);
     style.cursorColor = D2D1::ColorF(0.9f, 0.9f, 0.9f);
     
     searchInput_.onTextChanged = [this](const std::wstring &text) {

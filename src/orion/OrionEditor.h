@@ -41,7 +41,8 @@ namespace Orion
         D2D1_COLOR_F caret = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
         D2D1_COLOR_F lineNumberText = D2D1::ColorF(0.5f, 0.5f, 0.5f, 1.0f);
         D2D1_COLOR_F activeLineBackground = D2D1::ColorF(0.14f, 0.14f, 0.14f, 1.0f);
-        D2D1_COLOR_F selection = D2D1::ColorF(0.2f, 0.4f, 0.8f, 0.5f);
+        // editor.selectionBackground -> #3392ff44
+        D2D1_COLOR_F selection = D2D1::ColorF(0.122f, 0.435f, 0.922f, 0.3f);
     };
 
     struct EditorMetrics
@@ -174,6 +175,7 @@ namespace Orion
 
         bool suppressNextChar_ = false;
         void DrawSearchMatches(ID2D1RenderTarget *ctx);
+        void DrawWhitespaceIndicators(ID2D1RenderTarget *ctx);
         std::vector<EditorState> undoStack_;
         size_t maxUndoEntries_ = 200;
         D2D1_COLOR_F GetTokenColor(::Orion::Syntax::TokenType type, const std::wstring &ext) const;
