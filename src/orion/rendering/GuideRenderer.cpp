@@ -7,7 +7,6 @@
 #include <set>
 #include "utils/logger/Logger.h"
 
-// Ensure Windows min/max macros don't interfere with std::min/std::max
 #ifdef max
 #undef max
 #endif
@@ -30,153 +29,101 @@ namespace Orion::Rendering
         if (!ctx || lines.empty() || !renderCtx.textFormat || !renderCtx.dwriteFactory)
             return;
 
-        int tabSize = indentHelper_.GetConfig().tabSize;
-
-        // ✅ ÉTAPE 1 : Calculer la largeur moyenne d'un caractère
-        float charWidth = 0.0f;
+        // Compute approximate space width using text layout for accurate X positions
+        float spaceWidth = 8.0f;
         {
-            // Mesurer avec une string de test d'espaces (plus fiable que "MMMM")
-            std::wstring testStr = L"          "; // 10 espaces
+            std::wstring oneSpace = L" ";
             IDWriteTextLayout *layout = nullptr;
             if (SUCCEEDED(renderCtx.dwriteFactory->CreateTextLayout(
-                    testStr.c_str(),
-                    (UINT32)testStr.size(),
-                    renderCtx.textFormat,
-                    10000.0f,
-                    renderCtx.lineHeight,
-                    &layout)) &&
-                layout)
+                    oneSpace.c_str(), 1, renderCtx.textFormat, 10000.0f, renderCtx.lineHeight, &layout)) && layout)
             {
                 DWRITE_TEXT_METRICS metrics = {};
                 if (SUCCEEDED(layout->GetMetrics(&metrics)))
-                {
-                    charWidth = metrics.width / 10.0f; // Moyenne sur 10 espaces
-                }
-
-                // ✅ APPLIQUER la correction de l'overhang
+                    spaceWidth = metrics.width;
                 DWRITE_OVERHANG_METRICS om = {};
                 if (SUCCEEDED(layout->GetOverhangMetrics(&om)))
-                {
-                    charWidth -= om.left / 10.0f;
-                }
-
+                    spaceWidth -= om.left;
                 layout->Release();
             }
         }
 
-        if (charWidth <= 0.0f)
-        {
-            charWidth = 8.0f; // Fallback
-        }
-
-        // ✅ ÉTAPE 2 : Trouver tous les niveaux d'indentation présents
-        std::set<int> indentLevels;
-
+        // For each visible line, if it contains "static" or "if" draw a simple guide
         for (int li = renderCtx.firstVisibleLine; li < renderCtx.lastVisibleLine && li < (int)lines.size(); ++li)
         {
-            const std::wstring &line = lines[li];
-            auto lineIndent = indentHelper_.GetLineIndent(line);
+            const std::wstring &ln = lines[li];
+            // crude token search: look for standalone "static" or "if"
+            bool match = false;
+            auto findWord = [&](const std::wstring &word) -> bool {
+                size_t p = ln.find(word);
+                if (p == std::wstring::npos)
+                    return false;
+                // ensure preceding/next chars are non-identifier
+                if (p > 0 && (iswalnum(ln[p - 1]) || ln[p - 1] == L'_'))
+                    return false;
+                size_t n = p + word.size();
+                if (n < ln.size() && (iswalnum(ln[n]) || ln[n] == L'_'))
+                    return false;
+                return true;
+            };
 
-            if (lineIndent.level > 0 && !lineIndent.isWhitespaceOnly)
+            if (findWord(L"static") || findWord(L"if"))
+                match = true;
+
+            if (!match)
+                continue;
+
+            // Determine X position: use indent helper to get leading whitespace width
+            auto indent = indentHelper_.GetLineIndent(ln);
+            float guideX = renderCtx.contentLeft + (indent.level * spaceWidth) - renderCtx.scrollOffsetX;
+
+            // Find opening brace '{' starting from this line; if not found search forward
+            int braceLine = -1;
+            size_t bracePos = std::wstring::npos;
+            for (int s = li; s < (int)lines.size(); ++s)
             {
-                for (int lvl = tabSize; lvl <= lineIndent.level; lvl += tabSize)
+                size_t p = lines[s].find(L'{');
+                if (p != std::wstring::npos)
                 {
-                    indentLevels.insert(lvl);
-                }
-            }
-        }
-
-        if (indentLevels.empty())
-            return;
-
-        // ✅ ÉTAPE 3 : Calculer les positions des guides (position mathématique)
-        std::map<int, float> guidePositions;
-
-        for (int targetLevel : indentLevels)
-        {
-            // Position = nombre d'espaces × largeur d'un caractère
-            guidePositions[targetLevel] = targetLevel * charWidth;
-        }
-
-        // ✅ ÉTAPE 4 : Calculer caretX pour le highlight
-        float caretX = -10000.0f;
-        if (renderCtx.caretLine >= renderCtx.firstVisibleLine &&
-            renderCtx.caretLine < renderCtx.lastVisibleLine &&
-            renderCtx.caretLine < (int)lines.size())
-        {
-            const std::wstring &caretLine = lines[renderCtx.caretLine];
-            auto caretIndent = indentHelper_.GetLineIndent(caretLine);
-
-            if (caretIndent.level > 0 && !caretIndent.isWhitespaceOnly)
-            {
-                // Arrondir au niveau d'indentation le plus proche
-                int caretLevel = (caretIndent.level / tabSize) * tabSize;
-                if (caretLevel > 0 && guidePositions.count(caretLevel) > 0)
-                {
-                    caretX = renderCtx.contentLeft + guidePositions[caretLevel] - renderCtx.scrollOffsetX;
-                }
-            }
-        }
-
-        // ✅ ÉTAPE 5 : Dessiner les guides
-        for (const auto &[levelSpaces, posX] : guidePositions)
-        {
-            float guideX = renderCtx.contentLeft + posX - renderCtx.scrollOffsetX;
-            bool isActive = std::fabs(guideX - caretX) < 5.0f;
-
-            bool inRange = false;
-            int rangeStart = -1;
-
-            for (int li = renderCtx.firstVisibleLine; li < renderCtx.lastVisibleLine; ++li)
-            {
-                if (li >= (int)lines.size())
+                    braceLine = s;
+                    bracePos = p;
                     break;
-
-                auto lineIndent = indentHelper_.GetLineIndent(lines[li]);
-                bool shouldDraw = false;
-
-                if (lineIndent.isWhitespaceOnly)
-                {
-                    shouldDraw = inRange;
                 }
-                else
-                {
-                    shouldDraw = (lineIndent.level >= levelSpaces);
-                }
+            }
 
-                if (shouldDraw)
+            if (braceLine == -1)
+                continue; // no block found
+
+            // From braceLine, find matching closing brace '}'
+            int depth = 0;
+            int endLine = -1;
+            for (int s = braceLine; s < (int)lines.size(); ++s)
+            {
+                const std::wstring &L = lines[s];
+                for (size_t k = 0; k < L.size(); ++k)
                 {
-                    if (!inRange)
+                    if (L[k] == L'{')
+                        depth++;
+                    else if (L[k] == L'}')
                     {
-                        inRange = true;
-                        rangeStart = li;
+                        depth--;
+                        if (depth == 0)
+                        {
+                            endLine = s;
+                            break;
+                        }
                     }
                 }
-                else if (inRange)
-                {
-                    float topY = renderCtx.topEdge + (rangeStart * renderCtx.lineHeight) -
-                                 renderCtx.scrollOffsetY + (renderCtx.lineHeight * style_.topMargin);
-                    float bottomY = renderCtx.topEdge + ((li - 1) * renderCtx.lineHeight) -
-                                    renderCtx.scrollOffsetY + renderCtx.lineHeight -
-                                    (renderCtx.lineHeight * style_.bottomMargin);
-
-                    DrawGuideSegment(ctx, guideX, topY, bottomY, isActive);
-                    inRange = false;
-                    rangeStart = -1;
-                }
+                if (endLine != -1)
+                    break;
             }
 
-            if (inRange && rangeStart >= 0)
-            {
-                int lastLine = std::min(renderCtx.lastVisibleLine - 1, (int)lines.size() - 1);
-                float topY = renderCtx.topEdge + (rangeStart * renderCtx.lineHeight) -
-                             renderCtx.scrollOffsetY + (renderCtx.lineHeight * style_.topMargin);
-                float bottomY = renderCtx.topEdge + (lastLine * renderCtx.lineHeight) -
-                                renderCtx.scrollOffsetY + renderCtx.lineHeight -
-                                (renderCtx.lineHeight * style_.bottomMargin);
+            if (endLine == -1)
+                endLine = std::min(renderCtx.lastVisibleLine - 1, (int)lines.size() - 1);
 
-                DrawGuideSegment(ctx, guideX, topY, bottomY, isActive);
-            }
+            float topY = renderCtx.topEdge + (li * renderCtx.lineHeight) - renderCtx.scrollOffsetY + (renderCtx.lineHeight * style_.topMargin);
+            float bottomY = renderCtx.topEdge + (endLine * renderCtx.lineHeight) - renderCtx.scrollOffsetY + renderCtx.lineHeight - (renderCtx.lineHeight * style_.bottomMargin);
+
+            DrawGuideSegment(ctx, guideX, topY, bottomY, false);
         }
     }
 

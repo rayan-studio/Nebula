@@ -1,6 +1,7 @@
 #include "OrionEditor.h"
 #include "CompletionPopup.h"
 #include "utils/logger/Logger.h"
+#include "caret/Caret.h"
 #include <algorithm>
 
 namespace Orion
@@ -23,7 +24,7 @@ namespace Orion
                     const auto &match = searchBox_.GetMatches()[idx];
                     state_.caret.line = match.line;
                     state_.caret.column = match.startColumn;
-                    EnsureCaretVisible();
+                    Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
                 }
             }
             return;
@@ -200,7 +201,7 @@ namespace Orion
                                 state_.caret.line++;
                                 state_.caret.column = (int)innerIndent.size();
                                 state_.caretVisible = true;
-                                EnsureCaretVisible();
+                                Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
                                 state_.lastBlinkTime = GetTickCount();
                                 return;
                             }
@@ -659,7 +660,7 @@ namespace Orion
         }
 
         state_.caretVisible = true;
-        EnsureCaretVisible();
+        Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
         state_.lastBlinkTime = GetTickCount();
     } // end OnChar
 
@@ -912,7 +913,7 @@ namespace Orion
                         const auto &match = searchBox_.GetMatches()[idx];
                         state_.caret.line = match.line;
                         state_.caret.column = match.startColumn;
-                        EnsureCaretVisible();
+                        Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
                     }
                 }
             }
@@ -1289,7 +1290,7 @@ namespace Orion
         // Only ensure caret visibility when the caret actually moved.
         if (prevCaret.line != state_.caret.line || prevCaret.column != state_.caret.column)
         {
-            EnsureCaretVisible();
+            Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
         }
         state_.caretVisible = true;
         state_.lastBlinkTime = GetTickCount();

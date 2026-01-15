@@ -1,6 +1,12 @@
 #include "Selection.h"
+#include "../caret/CaretPosition.h"
+
+#include "../geometry/TextColumns.h" // <-- IMPORTANT pour Orion::Geometry::AdvanceVisualCol
+
 #include <algorithm>
 #include <dwrite.h>
+#include <string>
+#include <vector>
 
 #ifdef max
 #undef max
@@ -13,6 +19,45 @@ namespace Orion
 {
     namespace Rendering
     {
+        // ============================================================
+        // Helper : colonne logique -> position X écran (tabs inclus)
+        // ============================================================
+        static float GetXPositionForColumn(
+            const std::wstring &line,
+            int column,
+            float contentLeft,
+            float scrollOffsetX,
+            int tabSize,
+            float charWidth,
+            IDWriteFactory *dwriteFactory,
+            IDWriteTextFormat *textFormat)
+        {
+            (void)dwriteFactory;
+            (void)textFormat;
+
+            const float baseX = contentLeft - scrollOffsetX;
+
+            if (column <= 0 || line.empty())
+                return baseX;
+
+            int col = column;
+            if (col > (int)line.size())
+                col = (int)line.size();
+
+            // logique -> visuel (tabs)
+            int visualCol = 0;
+            for (int i = 0; i < col; ++i)
+            {
+                visualCol = Orion::Geometry::AdvanceVisualCol(visualCol, line[i], tabSize);
+            }
+
+            return baseX + (visualCol * charWidth);
+        }
+
+        // ============================================================
+        // Selection
+        // ============================================================
+
         Selection::Selection(const SelectionConfig &cfg) : cfg_(cfg) {}
         Selection::~Selection() {}
 
@@ -36,17 +81,103 @@ namespace Orion
                 }
                 else if (cfg_.style == SelectionStyle::RoundedSmart)
                 {
-                    // Dessiner avec coins intelligents
                     DrawSmartRoundedSelection(ctx, brush, r.rect, regions, i);
                 }
                 else
                 {
-                    // RoundedSimple : tous les coins arrondis
                     ctx->FillRoundedRectangle(&r, brush);
                 }
             }
 
             brush->Release();
+        }
+
+        std::vector<D2D1_ROUNDED_RECT> Selection::CalculateRegions(
+            CaretPosition start,
+            CaretPosition end,
+            const std::vector<std::wstring> &lines,
+            float contentLeft,
+            float topEdge,
+            float scrollOffsetX,
+            float scrollOffsetY,
+            float lineHeight,
+            int tabSize,
+            float characterWidth,
+            float cornerRadius,
+            IDWriteFactory *dwriteFactory,
+            IDWriteTextFormat *textFormat)
+        {
+            std::vector<D2D1_ROUNDED_RECT> out;
+
+            CaretPosition a = start;
+            CaretPosition b = end;
+            if (a.line > b.line || (a.line == b.line && a.column > b.column))
+                std::swap(a, b);
+
+            if (lines.empty())
+                return out;
+
+            int sLine = (std::max)(0, a.line);
+            int eLine = (std::max)(0, b.line);
+
+            sLine = (std::min)(sLine, (int)lines.size() - 1);
+            eLine = (std::min)(eLine, (int)lines.size() - 1);
+
+            for (int line = sLine; line <= eLine; ++line)
+            {
+                float y = topEdge + (line * lineHeight) - scrollOffsetY;
+
+                const std::wstring &ln = lines[line];
+                int lineLen = (int)ln.size();
+
+                float x1 = contentLeft - scrollOffsetX;
+                float x2 = contentLeft - scrollOffsetX;
+
+                if (sLine == eLine)
+                {
+                    int sc = (std::max)(0, (std::min)(a.column, lineLen));
+                    int ec = (std::max)(0, (std::min)(b.column, lineLen));
+
+                    x1 = GetXPositionForColumn(ln, sc, contentLeft, scrollOffsetX, tabSize, characterWidth, dwriteFactory, textFormat);
+                    x2 = GetXPositionForColumn(ln, ec, contentLeft, scrollOffsetX, tabSize, characterWidth, dwriteFactory, textFormat);
+                }
+                else if (line == sLine)
+                {
+                    int sc = (std::max)(0, (std::min)(a.column, lineLen));
+                    x1 = GetXPositionForColumn(ln, sc, contentLeft, scrollOffsetX, tabSize, characterWidth, dwriteFactory, textFormat);
+                    x2 = GetXPositionForColumn(ln, lineLen, contentLeft, scrollOffsetX, tabSize, characterWidth, dwriteFactory, textFormat);
+                }
+                else if (line == eLine)
+                {
+                    int ec = (std::max)(0, (std::min)(b.column, lineLen));
+                    x1 = contentLeft - scrollOffsetX;
+                    x2 = GetXPositionForColumn(ln, ec, contentLeft, scrollOffsetX, tabSize, characterWidth, dwriteFactory, textFormat);
+                }
+                else
+                {
+                    x1 = contentLeft - scrollOffsetX;
+                    x2 = GetXPositionForColumn(ln, lineLen, contentLeft, scrollOffsetX, tabSize, characterWidth, dwriteFactory, textFormat);
+                }
+
+                if (x2 < x1)
+                    std::swap(x1, x2);
+
+                // petit padding style VSCode
+                x2 += characterWidth * 0.3f;
+
+                // largeur minimum (ligne vide etc.)
+                const float minWidth = characterWidth * 0.5f;
+                if (x2 - x1 < minWidth)
+                    x2 = x1 + minWidth;
+
+                D2D1_ROUNDED_RECT rr{};
+                rr.rect = D2D1_RECT_F{x1, y, x2, y + lineHeight};
+                rr.radiusX = cornerRadius;
+                rr.radiusY = cornerRadius;
+                out.push_back(rr);
+            }
+
+            return out;
         }
 
         void Selection::DrawSmartRoundedSelection(
@@ -59,16 +190,13 @@ namespace Orion
             const float radius = cfg_.cornerRadius;
             const float epsilon = 1.0f;
 
-            // Détecter si c'est une ligne vide (très petite)
             bool isEmptyLine = (rect.right - rect.left) < (epsilon * 2.0f);
 
-            // Déterminer quels coins doivent être arrondis
             bool roundTopLeft = false;
             bool roundTopRight = false;
             bool roundBottomLeft = false;
             bool roundBottomRight = false;
 
-            // Première ligne : coins du haut arrondis
             if (currentIndex == 0)
             {
                 roundTopLeft = true;
@@ -78,21 +206,14 @@ namespace Orion
             {
                 const auto &prevRect = allRegions[currentIndex - 1].rect;
                 bool prevIsEmpty = (prevRect.right - prevRect.left) < (epsilon * 2.0f);
-                
-                // Coin haut-gauche arrondi si on dépasse à gauche OU si c'est une ligne vide après une ligne normale
+
                 if (rect.left < prevRect.left - epsilon || (isEmptyLine && !prevIsEmpty))
-                {
                     roundTopLeft = true;
-                }
-                
-                // Coin haut-droit arrondi si on dépasse à droite OU si c'est une ligne vide après une ligne normale
+
                 if (rect.right > prevRect.right + epsilon || (isEmptyLine && !prevIsEmpty))
-                {
                     roundTopRight = true;
-                }
             }
 
-            // Dernière ligne : coins du bas arrondis
             if (currentIndex == allRegions.size() - 1)
             {
                 roundBottomLeft = true;
@@ -102,28 +223,20 @@ namespace Orion
             {
                 const auto &nextRect = allRegions[currentIndex + 1].rect;
                 bool nextIsEmpty = (nextRect.right - nextRect.left) < (epsilon * 2.0f);
-                
-                // Coin bas-gauche arrondi si on dépasse à gauche OU si c'est une ligne vide avant une ligne normale
+
                 if (rect.left < nextRect.left - epsilon || (isEmptyLine && !nextIsEmpty))
-                {
                     roundBottomLeft = true;
-                }
-                
-                // Coin bas-droit arrondi si on dépasse à droite OU si c'est une ligne vide avant une ligne normale
+
                 if (rect.right > nextRect.right + epsilon || (isEmptyLine && !nextIsEmpty))
-                {
                     roundBottomRight = true;
-                }
             }
 
-            // Si aucun coin n'est arrondi, dessiner un rectangle simple
             if (!roundTopLeft && !roundTopRight && !roundBottomLeft && !roundBottomRight)
             {
                 ctx->FillRectangle(rect, brush);
                 return;
             }
 
-            // Créer une géométrie avec coins sélectifs
             ID2D1Factory *factory = nullptr;
             ctx->GetFactory(&factory);
             if (!factory)
@@ -152,14 +265,12 @@ namespace Orion
 
             sink->SetFillMode(D2D1_FILL_MODE_WINDING);
 
-            // Commencer au coin supérieur gauche
-            D2D1_POINT_2F startPoint = roundTopLeft 
-                ? D2D1::Point2F(rect.left, rect.top + radius)
-                : D2D1::Point2F(rect.left, rect.top);
+            D2D1_POINT_2F startPoint = roundTopLeft
+                                           ? D2D1::Point2F(rect.left, rect.top + radius)
+                                           : D2D1::Point2F(rect.left, rect.top);
 
             sink->BeginFigure(startPoint, D2D1_FIGURE_BEGIN_FILLED);
 
-            // Coin supérieur gauche
             if (roundTopLeft)
             {
                 sink->AddArc(D2D1::ArcSegment(
@@ -170,13 +281,11 @@ namespace Orion
                     D2D1_ARC_SIZE_SMALL));
             }
 
-            // Ligne supérieure
             D2D1_POINT_2F topRight = roundTopRight
-                ? D2D1::Point2F(rect.right - radius, rect.top)
-                : D2D1::Point2F(rect.right, rect.top);
+                                         ? D2D1::Point2F(rect.right - radius, rect.top)
+                                         : D2D1::Point2F(rect.right, rect.top);
             sink->AddLine(topRight);
 
-            // Coin supérieur droit
             if (roundTopRight)
             {
                 sink->AddArc(D2D1::ArcSegment(
@@ -187,13 +296,11 @@ namespace Orion
                     D2D1_ARC_SIZE_SMALL));
             }
 
-            // Ligne droite
             D2D1_POINT_2F bottomRight = roundBottomRight
-                ? D2D1::Point2F(rect.right, rect.bottom - radius)
-                : D2D1::Point2F(rect.right, rect.bottom);
+                                            ? D2D1::Point2F(rect.right, rect.bottom - radius)
+                                            : D2D1::Point2F(rect.right, rect.bottom);
             sink->AddLine(bottomRight);
 
-            // Coin inférieur droit
             if (roundBottomRight)
             {
                 sink->AddArc(D2D1::ArcSegment(
@@ -204,13 +311,11 @@ namespace Orion
                     D2D1_ARC_SIZE_SMALL));
             }
 
-            // Ligne inférieure
             D2D1_POINT_2F bottomLeft = roundBottomLeft
-                ? D2D1::Point2F(rect.left + radius, rect.bottom)
-                : D2D1::Point2F(rect.left, rect.bottom);
+                                           ? D2D1::Point2F(rect.left + radius, rect.bottom)
+                                           : D2D1::Point2F(rect.left, rect.bottom);
             sink->AddLine(bottomLeft);
 
-            // Coin inférieur gauche
             if (roundBottomLeft)
             {
                 sink->AddArc(D2D1::ArcSegment(
@@ -221,11 +326,9 @@ namespace Orion
                     D2D1_ARC_SIZE_SMALL));
             }
 
-            // Ligne gauche (retour au début)
             sink->AddLine(startPoint);
-
             sink->EndFigure(D2D1_FIGURE_END_CLOSED);
-            
+
             if (SUCCEEDED(sink->Close()))
             {
                 D2D1_ANTIALIAS_MODE oldMode = ctx->GetAntialiasMode();
@@ -265,154 +368,6 @@ namespace Orion
             (void)y;
             (void)radius;
             (void)corner;
-        }
-
-        // Helper function pour GetXPositionForColumn
-        static float GetXPositionForColumn(
-            const std::wstring &line,
-            int column,
-            float contentLeft,
-            float scrollOffsetX,
-            int tabSize,
-            float charWidth,
-            IDWriteFactory *dwriteFactory,
-            IDWriteTextFormat *textFormat)
-        {
-            if (line.empty())
-                return contentLeft - scrollOffsetX;
-
-            if (!dwriteFactory || !textFormat)
-                return contentLeft - scrollOffsetX;
-
-            IDWriteTextLayout *layout = nullptr;
-            HRESULT hr = dwriteFactory->CreateTextLayout(
-                line.c_str(),
-                (UINT32)line.size(),
-                textFormat,
-                10000.0f,
-                100.0f,
-                &layout);
-
-            if (FAILED(hr) || !layout)
-                return contentLeft - scrollOffsetX;
-
-            float xPos = 0.0f;
-            UINT32 textPos = std::min((UINT32)column, (UINT32)line.size());
-
-            FLOAT caretX = 0.0f;
-            FLOAT caretY = 0.0f;
-            DWRITE_HIT_TEST_METRICS hitMetrics = {};
-
-            bool success = true;
-            __try
-            {
-                layout->HitTestTextPosition(textPos, FALSE, &caretX, &caretY, &hitMetrics);
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                success = false;
-            }
-
-            if (success)
-            {
-                DWRITE_OVERHANG_METRICS om = {};
-                if (SUCCEEDED(layout->GetOverhangMetrics(&om)))
-                {
-                    caretX -= om.left;
-                }
-                xPos = caretX;
-            }
-
-            layout->Release();
-            return contentLeft + xPos - scrollOffsetX;
-        }
-
-        std::vector<D2D1_ROUNDED_RECT> Selection::CalculateRegions(
-            CaretPosition start,
-            CaretPosition end,
-            const std::vector<std::wstring> &lines,
-            float contentLeft,
-            float topEdge,
-            float scrollOffsetX,
-            float scrollOffsetY,
-            float lineHeight,
-            int tabSize,
-            float characterWidth,
-            float cornerRadius,
-            IDWriteFactory *dwriteFactory,
-            IDWriteTextFormat *textFormat)
-        {
-            std::vector<D2D1_ROUNDED_RECT> out;
-
-            auto earlier = start;
-            auto later = end;
-            if (earlier.line > later.line || (earlier.line == later.line && earlier.column > later.column))
-            {
-                std::swap(earlier, later);
-            }
-
-            int sLine = std::max(0, earlier.line);
-            int eLine = std::max(0, later.line);
-
-            for (int line = sLine; line <= eLine; ++line)
-            {
-                float y = topEdge + (line * lineHeight) - scrollOffsetY;
-
-                const std::wstring empty;
-                const std::wstring &ln = (line >= 0 && line < (int)lines.size()) ? lines[line] : empty;
-                int lineLen = (int)ln.size();
-
-                float x1 = contentLeft - scrollOffsetX;
-                float x2 = contentLeft - scrollOffsetX;
-
-                if (sLine == eLine)
-                {
-                    int sc = std::max(0, std::min((int)earlier.column, lineLen));
-                    int ec = std::max(0, std::min((int)later.column, lineLen));
-
-                    x1 = GetXPositionForColumn(ln, sc, contentLeft, scrollOffsetX, tabSize, characterWidth, dwriteFactory, textFormat);
-                    x2 = GetXPositionForColumn(ln, ec, contentLeft, scrollOffsetX, tabSize, characterWidth, dwriteFactory, textFormat);
-                }
-                else if (line == sLine)
-                {
-                    int sc = std::max(0, std::min((int)earlier.column, lineLen));
-
-                    x1 = GetXPositionForColumn(ln, sc, contentLeft, scrollOffsetX, tabSize, characterWidth, dwriteFactory, textFormat);
-                    x2 = GetXPositionForColumn(ln, lineLen, contentLeft, scrollOffsetX, tabSize, characterWidth, dwriteFactory, textFormat);
-                }
-                else if (line == eLine)
-                {
-                    int ec = std::max(0, std::min((int)later.column, lineLen));
-
-                    x1 = contentLeft - scrollOffsetX;
-                    x2 = GetXPositionForColumn(ln, ec, contentLeft, scrollOffsetX, tabSize, characterWidth, dwriteFactory, textFormat);
-                }
-                else
-                {
-                    x1 = contentLeft - scrollOffsetX;
-                    x2 = GetXPositionForColumn(ln, lineLen, contentLeft, scrollOffsetX, tabSize, characterWidth, dwriteFactory, textFormat);
-                }
-
-                if (x2 < x1)
-                    std::swap(x1, x2);
-
-                // Ajouter un petit padding à droite pour que ça respire (comme VSCode)
-                const float rightPadding = characterWidth * 0.3f;
-                x2 += rightPadding;
-
-                // Largeur minimale pour les lignes vides ou très petites
-                const float minWidth = characterWidth * 0.5f; // Demi-caractère minimum
-                if (x2 - x1 < minWidth)
-                    x2 = x1 + minWidth;
-
-                D2D1_ROUNDED_RECT rr;
-                rr.rect = D2D1_RECT_F{x1, y, x2, y + lineHeight};
-                rr.radiusX = cornerRadius;
-                rr.radiusY = cornerRadius;
-                out.push_back(rr);
-            }
-
-            return out;
         }
 
     } // namespace Rendering

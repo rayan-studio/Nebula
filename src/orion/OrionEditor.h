@@ -16,33 +16,103 @@
 #include "rendering/GuideRenderer.h"
 // Selection rendering
 #include "selection/Selection.h"
+#include "orion/caret/CaretPosition.h"
+
+// ============================================================================
+// HELPER : Conversion couleurs Web (hex) → Direct2D AVEC CORRECTION GAMMA sRGB
+// ============================================================================
+#include <cstdio>
+#include <cmath>
 
 namespace Orion
 {
-
-    struct CaretPosition
+    // ========================================================================
+    // CONVERSION GAMMA : sRGB → Linear (pour Direct2D)
+    // ========================================================================
+    
+    inline float SRGBToLinear(float srgb)
     {
-        int line;
-        int column;
-    };
+        // Formule officielle sRGB → Linear
+        if (srgb <= 0.04045f)
+            return srgb / 12.92f;
+        else
+            return powf((srgb + 0.055f) / 1.055f, 2.4f);
+    }
+    
+    // ========================================================================
+    // CONVERSION HEX → D2D1_COLOR_F avec correction gamma
+    // ========================================================================
+    
+    inline D2D1_COLOR_F ColorFromHex(uint32_t hex, float alpha = 1.0f, bool applyGamma = true)
+    {
+        float r = ((hex >> 16) & 0xFF) / 255.0f;
+        float g = ((hex >> 8) & 0xFF) / 255.0f;
+        float b = (hex & 0xFF) / 255.0f;
+        
+        // ⚠️ IMPORTANT : Appliquer la correction gamma sRGB
+        if (applyGamma)
+        {
+            r = SRGBToLinear(r);
+            g = SRGBToLinear(g);
+            b = SRGBToLinear(b);
+        }
+        
+        return D2D1::ColorF(r, g, b, alpha);
+    }
 
+    // Fonction alternative avec string (ex: "#121212")
+    inline D2D1_COLOR_F ColorFromString(const char *hexStr, float alpha = 1.0f, bool applyGamma = true)
+    {
+        if (!hexStr || hexStr[0] != '#')
+            return D2D1::ColorF(0, 0, 0, alpha);
+
+        uint32_t hex = 0;
+        sscanf_s(hexStr + 1, "%x", &hex);
+        return ColorFromHex(hex, alpha, applyGamma);
+    }
+
+} // namespace Orion
+
+// Macro pour convertir hex → Direct2D SANS correction gamma (Direct2D gère déjà sRGB)
+#define HEX_TO_D2D(hex) Orion::ColorFromHex(0x##hex, 1.0f, false)
+
+// Macro avec correction gamma (si besoin)
+#define HEX_TO_D2D_LINEAR(hex) Orion::ColorFromHex(0x##hex, 1.0f, true)
+
+namespace Orion
+{
     namespace Syntax
     {
         class Highlighter;
     }
 
     class CompletionPopup;
-
+    class Editor;
+    namespace Caret
+    {
+        void SetCaret(Editor &editor, int line, int column);
+    }
+    
     struct EditorTheme
     {
-        D2D1_COLOR_F background = D2D1::ColorF(0.06f, 0.06f, 0.06f, 1.0f);
-        D2D1_COLOR_F text = D2D1::ColorF(0.86f, 0.86f, 0.86f, 1.0f);
-        D2D1_COLOR_F gutterBackground = D2D1::ColorF(0.09f, 0.09f, 0.09f, 1.0f);
-        D2D1_COLOR_F caret = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
-        D2D1_COLOR_F lineNumberText = D2D1::ColorF(0.5f, 0.5f, 0.5f, 1.0f);
-        D2D1_COLOR_F activeLineBackground = D2D1::ColorF(0.14f, 0.14f, 0.14f, 1.0f);
-        // editor.selectionBackground -> #3392ff44
-        D2D1_COLOR_F selection = D2D1::ColorF(0.122f, 0.435f, 0.922f, 0.3f);
+        // 🎨 Couleurs avec correction gamma sRGB pour match parfait avec le web
+        D2D1_COLOR_F background = HEX_TO_D2D(121212);           // #121212
+        D2D1_COLOR_F text = HEX_TO_D2D(E6E6E6);                 // #E6E6E6
+        D2D1_COLOR_F gutterBackground = HEX_TO_D2D(0D0D0D);     // #0D0D0D
+        D2D1_COLOR_F caret = HEX_TO_D2D(FFFFFF);                // #FFFFFF
+        D2D1_COLOR_F lineNumberText = HEX_TO_D2D(737373);       // #737373
+        D2D1_COLOR_F activeLineBackground = HEX_TO_D2D(1A1A1A); // #1A1A1A
+        D2D1_COLOR_F selection = ColorFromHex(0x1F7AEB, 0.3f);  // #1F7AEB avec 30% alpha
+
+        // Couleurs de syntaxe (identiques à VS Code Dark+)
+        D2D1_COLOR_F keyword = HEX_TO_D2D(569CD6);   // #569CD6 - Bleu
+        D2D1_COLOR_F string = HEX_TO_D2D(CE9178);    // #CE9178 - Orange
+        D2D1_COLOR_F comment = HEX_TO_D2D(6A9955);   // #6A9955 - Vert
+        D2D1_COLOR_F number = HEX_TO_D2D(B5CEA8);    // #B5CEA8 - Vert clair
+        D2D1_COLOR_F function = HEX_TO_D2D(DCDCAA);  // #DCDCAA - Jaune
+        D2D1_COLOR_F type = HEX_TO_D2D(4EC9B0);      // #4EC9B0 - Cyan
+        D2D1_COLOR_F operator_ = HEX_TO_D2D(D4D4D4); // #D4D4D4 - Gris clair
+        D2D1_COLOR_F variable = HEX_TO_D2D(9CDCFE);  // #9CDCFE - Bleu clair
     };
 
     struct EditorMetrics
@@ -111,7 +181,6 @@ namespace Orion
         bool SaveToFile(const std::wstring &filePath);
         // Accessors for external UI (footer)
         CaretPosition GetCaret() const { return state_.caret; }
-        void SetCaret(int line, int column);
         std::wstring GetFilePath() const { return state_.filePath; }
         std::wstring GetEncoding() const { return state_.encoding; }
         // Retourne le texte sélectionné (vide si pas de sélection)
@@ -127,6 +196,9 @@ namespace Orion
         void SetSelectionColor(float r, float g, float b, float a);
         void CancelInteraction();
         void Undo();
+
+        friend void Caret::SetCaret(Editor &editor, int line, int column);
+
     private:
         CustomFontCollectionLoader *fontLoader_ = nullptr;
         IDWriteFactory *fontCollectionRegisteredFactory_ = nullptr;
@@ -135,17 +207,13 @@ namespace Orion
         IDWriteTextFormat *cachedTextFormat_ = nullptr;
         void DrawActiveLine(ID2D1RenderTarget *ctx);
         void DrawSelection(ID2D1RenderTarget *ctx);
-        void DrawGutter(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
-        void DrawLineNumbers(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
         void DrawTextContent(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
         void DrawCaret(ID2D1RenderTarget *ctx);
 
         D2D1_POINT_2F TextToScreenPosition(CaretPosition pos);
         CaretPosition ScreenToTextPosition(POINT screenPoint);
 
-        void UpdateCaretBlink();
         void DeleteSelection();
-        void EnsureCaretVisible();
 
         EditorState state_;
         EditorTheme theme_;

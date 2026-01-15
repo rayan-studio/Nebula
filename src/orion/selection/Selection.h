@@ -9,13 +9,11 @@ struct IDWriteTextFormat;
 
 namespace Orion
 {
+    // Forward-declare CaretPosition here so nested namespaces can use the unqualified name
+    struct CaretPosition;
+
     namespace Rendering
     {
-        struct CaretPosition
-        {
-            int line;
-            int column;
-        };
 
         enum class SelectionStyle
         {
@@ -26,7 +24,6 @@ namespace Orion
 
         struct SelectionConfig
         {
-            // Teinte de sélection : rendu plus clair et légèrement plus opaque
             D2D1_COLOR_F color = D2D1::ColorF(0.45f, 0.65f, 1.0f, 0.4f);
             float cornerRadius = 3.0f;
             SelectionStyle style = SelectionStyle::RoundedSmart;

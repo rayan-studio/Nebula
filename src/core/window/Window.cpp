@@ -25,6 +25,7 @@
 #include "ui/panels/terminal/TerminalPanel.h"
 #include "ui/panels/ggwave/GGWavePanel.h"
 #include "utils/logger/Logger.h"
+#include "orion/caret/Caret.h"
 
 static void EnableMicaIfAvailable(HWND hwnd)
 {
@@ -148,7 +149,7 @@ void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber)
     // Position caret at specified line if provided
     if (lineNumber >= 0 && editors_.count(tabIndex) > 0)
     {
-        editors_[tabIndex]->SetCaret(lineNumber, 0);
+        ::Orion::Caret::SetCaret(*editors_[tabIndex], lineNumber, 0);
     }
 
     InvalidateRect(hwnd_, nullptr, FALSE);
@@ -1048,7 +1049,6 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
-        // ✨ NOUVEAU : Gestion prioritaire de Ctrl+F pour ouvrir la recherche
         {
             bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
             if (ctrl && (wParam == 'F' || wParam == 'f'))

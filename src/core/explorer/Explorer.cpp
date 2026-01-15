@@ -52,15 +52,21 @@ namespace
 
 static std::string ReadFileToString(const std::wstring &wpath)
 {
-    std::ifstream in;
+    // Convert wide path to UTF-8 safely. WideCharToMultiByte returns the
+    // required buffer size INCLUDING the terminating null, so allocate that
+    // many bytes, perform the conversion, then remove the trailing '\0'
+    // before using the std::string path.
     int size_needed = WideCharToMultiByte(CP_UTF8, 0, wpath.c_str(), -1, NULL, 0, NULL, NULL);
-    std::string path;
-    if (size_needed > 0) {
-        path.resize(size_needed - 1);
-        WideCharToMultiByte(CP_UTF8, 0, wpath.c_str(), -1, &path[0], size_needed, NULL, NULL);
-    }
+    if (size_needed <= 0)
+        return {};
 
-    in.open(path);
+    std::string path;
+    path.resize(size_needed);
+    WideCharToMultiByte(CP_UTF8, 0, wpath.c_str(), -1, &path[0], size_needed, NULL, NULL);
+    if (!path.empty() && path.back() == '\0')
+        path.pop_back();
+
+    std::ifstream in(path, std::ios::binary);
     if (!in)
         return {};
 
