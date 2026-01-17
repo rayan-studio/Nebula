@@ -1,56 +1,61 @@
 #pragma once
+#include <vector>
 #include <d2d1.h>
 #include <dwrite.h>
-#include <vector>
-#include <string>
-#include "orion/geometry/IndentationHelper.h"
+
+#include "../geometry/IndentGuides.h"
+#include "../geometry/IndentationHelper.h"
 
 namespace Orion::Rendering
 {
     struct GuideStyle
     {
-        D2D1_COLOR_F normalColor;
-        D2D1_COLOR_F activeColor;
+        D2D1_COLOR_F normalColor = D2D1::ColorF(0.3f, 0.3f, 0.35f, 0.5f);
+        D2D1_COLOR_F activeColor = D2D1::ColorF(0.4f, 0.4f, 0.5f, 0.7f);
         float lineWidth = 1.0f;
-        float topMargin = 0.0f;
-        float bottomMargin = 0.0f;
+        float topMargin = 0.10f;
+        float bottomMargin = 0.10f;
     };
 
     struct GuideRenderContext
     {
-        float contentLeft;
-        float topEdge;
-        float scrollOffsetY;
-        float scrollOffsetX;
-        float lineHeight;
-        int firstVisibleLine;
-        int lastVisibleLine;
-        int caretLine;
-        IDWriteFactory* dwriteFactory;
-        IDWriteTextFormat* textFormat;
+        float contentLeft = 0.0f;
+        float topEdge = 0.0f;
+        float scrollOffsetX = 0.0f;
+        float scrollOffsetY = 0.0f;
+        float lineHeight = 0.0f;
+
+        // ✅ largeur char utilisée par ton rendu texte
+        float charWidth = 0.0f;
+
+        int firstVisibleLine = 0;
+        int lastVisibleLine = 0; // exclusif
+
+        // ✅ GARDÉS pour compat avec ton Editor_TextRender.cpp
+        IDWriteFactory* dwriteFactory = nullptr;
+        IDWriteTextFormat* textFormat = nullptr;
     };
 
     class GuideRenderer
     {
     public:
         GuideRenderer(const Geometry::IndentConfig& indentConfig, const GuideStyle& style);
+        ~GuideRenderer();
 
-        void DrawCppGuides(
+        void DrawGuides(
             ID2D1RenderTarget* ctx,
-            const std::vector<std::wstring>& lines,
+            const std::vector<Geometry::IndentGuide>& guides,
             const GuideRenderContext& renderCtx);
 
     private:
-        void DrawGuideSegment(
-            ID2D1RenderTarget* ctx,
-            float x,
-            float topY,
-            float bottomY,
-            bool isActive);
+        void EnsureBrushes(ID2D1RenderTarget* ctx);
+        void DrawGuideSegment(ID2D1RenderTarget* ctx, float x, float topY, float bottomY, bool isActive);
 
-        Geometry::IndentationHelper indentHelper_;
+    private:
         GuideStyle style_;
-        int tabSize_;
-    };
+        int tabSize_ = 4;
 
-} // namespace Orion::Rendering
+        ID2D1SolidColorBrush* normalBrush_ = nullptr;
+        ID2D1SolidColorBrush* activeBrush_ = nullptr;
+    };
+}

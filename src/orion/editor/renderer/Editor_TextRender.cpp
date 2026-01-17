@@ -1,6 +1,8 @@
 #include "orion/editor/Editor.h"
 #include "../../completion/popup/Popup.h"
 #include "orion/editor/internal/Editor_Internal.h"
+#include "../../geometry/CppBraceGuides.h"
+#include "../../../utils/logger/Logger.h"
 
 #include <algorithm>
 #include <cmath>
@@ -272,13 +274,24 @@ namespace Orion
             renderCtx.lineHeight = metrics_.lineHeight;
             renderCtx.firstVisibleLine = firstVisibleLine;
             renderCtx.lastVisibleLine = lastVisibleLine;
-            renderCtx.caretLine = state_.caret.line;
             renderCtx.dwriteFactory = pDWriteFactory_;
             renderCtx.textFormat = format;
 
             if (ext == L".c" || ext == L".cpp" || ext == L".h" || ext == L".hpp")
             {
-                guideRenderer_->DrawCppGuides(ctx, state_.lines, renderCtx);
+                // Scan slightly beyond the visible window to capture opening braces
+                const int margin = 200; // adjust if needed for typical file sizes
+                int scanFirst = (std::max)(0, firstVisibleLine - margin);
+                int scanLast = (std::min)((int)state_.lines.size(), lastVisibleLine + margin);
+
+                auto guides = Orion::Geometry::ComputeCppBraceGuides(
+                    state_.lines,
+                    GetIndentConfig().tabSize,
+                    state_.caret.line,
+                    0,
+                    (int)state_.lines.size());
+
+                guideRenderer_->DrawGuides(ctx, guides, renderCtx);
             }
         }
 

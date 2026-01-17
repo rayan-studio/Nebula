@@ -55,7 +55,6 @@ void Logger::Log(const std::wstring &msg)
     DWORD written = 0;
     // WriteFile expects bytes count
     WriteFile(hFile_, out.c_str(), static_cast<DWORD>(out.size() * sizeof(wchar_t)), &written, NULL);
-    FlushFileBuffers(hFile_);
 }
 
 void Logger::Close()
