@@ -226,6 +226,8 @@ namespace Orion
             return false;
 
         state_.filePath = filePath;
+        // Clear dirty flag after successful save
+        ClearDirty();
         return true;
     }
 

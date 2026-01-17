@@ -372,11 +372,11 @@ void ExplorerManager::CreateNewFile(const std::wstring &name)
         std::string path(size, '\0');
         WideCharToMultiByte(CP_UTF8, 0, targetPath.c_str(), -1, path.data(), size, NULL, NULL);
 
-        #ifdef _DEBUG
-            // Debug temporaires pour vérifier l'appel
-            MessageBoxW(nullptr, (L"Création fichier: " + name).c_str(), L"Debug", MB_OK);
-            MessageBoxW(nullptr, (L"Chemin complet: " + targetPath).c_str(), L"Debug", MB_OK);    
-        #endif
+#ifdef _DEBUG
+        // Debug temporaires pour vérifier l'appel
+        MessageBoxW(nullptr, (L"Création fichier: " + name).c_str(), L"Debug", MB_OK);
+        MessageBoxW(nullptr, (L"Chemin complet: " + targetPath).c_str(), L"Debug", MB_OK);
+#endif
 
         file.open(path);
         if (file.is_open())
@@ -1058,7 +1058,8 @@ void ExplorerManager::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
         else
         {
             // Fichier - ouvrir
-            SendMessageW(hwnd, WM_USER + 100, 0, (LPARAM)fullPath.c_str());
+            auto *heapPath = new std::wstring(fullPath);
+            PostMessageW(hwnd, WM_USER + 100, 0, (LPARAM)heapPath);
         }
     }
     else
@@ -1167,7 +1168,8 @@ void ExplorerManager::HandleContextCommand(int commandId)
             std::wstring base = src.stem().wstring();
             std::wstring ext = src.has_extension() ? src.extension().wstring() : L"";
 
-            auto makeCandidate = [&](int n) {
+            auto makeCandidate = [&](int n)
+            {
                 if (n == 0)
                 {
                     return parent / std::wstring(base + L" - Copy" + ext);
@@ -1200,7 +1202,7 @@ void ExplorerManager::HandleContextCommand(int commandId)
             UpdateItemPositions();
             InvalidateMainWindow();
         }
-        catch (...) 
+        catch (...)
         {
             Logger::Instance().Log(L"Explorer: duplicate failed for " + path);
         }
@@ -1286,7 +1288,8 @@ void ExplorerManager::HandleContextCommand(int commandId)
                     LoadDirectoryContents();
                     InvalidateMainWindow();
                     // If a file was deleted, close its tab if open
-                    try {
+                    try
+                    {
                         HWND wnd = FindWindowW(L"NebulaTextWindowClass", NULL);
                         if (wnd)
                         {
@@ -1302,7 +1305,9 @@ void ExplorerManager::HandleContextCommand(int commandId)
                                 }
                             }
                         }
-                    } catch (...) {
+                    }
+                    catch (...)
+                    {
                         // ignore any errors while attempting to close tabs
                     }
                 }
@@ -1387,8 +1392,10 @@ void ExplorerManager::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
             std::wstring msg = L"No project opened. Use File → Open Project to load a folder.";
             ctx->DrawTextW(msg.c_str(), (UINT32)msg.size(), fmt, r, msgBrush);
         }
-        if (fmt) fmt->Release();
-        if (msgBrush) msgBrush->Release();
+        if (fmt)
+            fmt->Release();
+        if (msgBrush)
+            msgBrush->Release();
     }
     else if (searchMode_)
         DrawSearchPanel(ctx, dwrite, hwnd);
@@ -2142,8 +2149,8 @@ void ExplorerManager::DrawRightBorder(ID2D1RenderTarget *ctx)
     // Draw border - cyan when hovering/resizing, subtle gray otherwise
     ID2D1SolidColorBrush *brush = nullptr;
     D2D1_COLOR_F borderColor = (state_.isHoveringResizeZone || state_.isResizing)
-        ? D2D1::ColorF(0x00ccff)  // Cyan on hover/resize
-        : D2D1::ColorF(48.0f / 255.0f, 48.0f / 255.0f, 48.0f / 255.0f, 1.0f);
+                                   ? D2D1::ColorF(0x00ccff) // Cyan on hover/resize
+                                   : D2D1::ColorF(48.0f / 255.0f, 48.0f / 255.0f, 48.0f / 255.0f, 1.0f);
     ctx->CreateSolidColorBrush(borderColor, &brush);
 
     if (brush)
@@ -2265,32 +2272,37 @@ void ExplorerManager::UpdateSearchResults()
         return;
 
     // helper to lowercase a narrow string
-    auto toLower = [](const std::string &s) {
+    auto toLower = [](const std::string &s)
+    {
         std::string out = s;
-        for (auto &c : out) c = (char)tolower((unsigned char)c);
+        for (auto &c : out)
+            c = (char)tolower((unsigned char)c);
         return out;
     };
 
     std::string q;
     {
         int needed = WideCharToMultiByte(CP_UTF8, 0, searchQuery_.c_str(), -1, NULL, 0, NULL, NULL);
-        if (needed > 0) {
+        if (needed > 0)
+        {
             q.resize(needed - 1);
             WideCharToMultiByte(CP_UTF8, 0, searchQuery_.c_str(), -1, &q[0], needed, NULL, NULL);
         }
         q = toLower(q);
     }
 
-    std::vector<std::string> textExt = {".cpp",".c",".h",".hpp",".py",".js",".ts",".java",".txt",".md",".json",".css",".html",".xml",".rs",".cs"};
+    std::vector<std::string> textExt = {".cpp", ".c", ".h", ".hpp", ".py", ".js", ".ts", ".java", ".txt", ".md", ".json", ".css", ".html", ".xml", ".rs", ".cs"};
 
     try
     {
         for (auto &p : std::filesystem::recursive_directory_iterator(root))
         {
-            if (!p.is_regular_file()) continue;
+            if (!p.is_regular_file())
+                continue;
             std::string spth;
             int needed = WideCharToMultiByte(CP_UTF8, 0, p.path().wstring().c_str(), -1, NULL, 0, NULL, NULL);
-            if (needed > 0) {
+            if (needed > 0)
+            {
                 spth.resize(needed - 1);
                 WideCharToMultiByte(CP_UTF8, 0, p.path().wstring().c_str(), -1, &spth[0], needed, NULL, NULL);
             }
@@ -2298,11 +2310,18 @@ void ExplorerManager::UpdateSearchResults()
             // check extension
             std::string ext = p.path().extension().string();
             bool okExt = false;
-            for (auto &e : textExt) if (ext == e) { okExt = true; break; }
-            if (!okExt) continue;
+            for (auto &e : textExt)
+                if (ext == e)
+                {
+                    okExt = true;
+                    break;
+                }
+            if (!okExt)
+                continue;
 
             std::string content = ReadFileToString(p.path().wstring());
-            if (content.empty()) continue;
+            if (content.empty())
+                continue;
             std::string contentLower = toLower(content);
             size_t pos = contentLower.find(q);
             if (pos != std::string::npos)
@@ -2323,11 +2342,14 @@ void ExplorerManager::UpdateSearchResults()
                 r.filePath = wpath.c_str();
                 r.lineExcerpt = wexcerpt.c_str();
                 searchResults_.push_back(r);
-                if (searchResults_.size() >= 200) break; // cap
+                if (searchResults_.size() >= 200)
+                    break; // cap
             }
         }
     }
-    catch (...) {}
+    catch (...)
+    {
+    }
 }
 
 void ExplorerManager::EnterSearchMode()
@@ -2346,27 +2368,35 @@ void ExplorerManager::ExitSearchMode()
 
 void ExplorerManager::OnCharSearch(wchar_t ch)
 {
-    if (!searchMode_) return;
+    if (!searchMode_)
+        return;
     if (ch == 8) // backspace
     {
-        if (!searchQuery_.empty()) searchQuery_.pop_back();
+        if (!searchQuery_.empty())
+            searchQuery_.pop_back();
     }
     else if (ch >= 32)
     {
         searchQuery_.push_back(ch);
     }
-    try {
+    try
+    {
         UpdateSearchResults();
-    } catch (const std::exception &e) {
+    }
+    catch (const std::exception &e)
+    {
         Logger::Instance().Log(L"Explorer: UpdateSearchResults exception");
-    } catch (...) {
+    }
+    catch (...)
+    {
         Logger::Instance().Log(L"Explorer: UpdateSearchResults unknown exception");
     }
 }
 
 void ExplorerManager::OnKeyDownSearch(WPARAM key)
 {
-    if (!searchMode_) return;
+    if (!searchMode_)
+        return;
     if (key == VK_ESCAPE)
     {
         ExitSearchMode();
@@ -2388,14 +2418,18 @@ void ExplorerManager::DrawSearchPanel(ID2D1RenderTarget *ctx, IDWriteFactory *dw
     // Draw input box under title area
     IDWriteTextFormat *tf = nullptr;
     dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 13.0f, L"en-us", &tf);
-    if (tf) { tf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER); tf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING); }
+    if (tf)
+    {
+        tf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        tf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+    }
 
     ID2D1SolidColorBrush *bg = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.12f,0.12f,0.12f,1.0f), &bg);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f), &bg);
     ID2D1SolidColorBrush *border = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.3f,0.3f,0.3f,1.0f), &border);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.3f, 0.3f, 0.3f, 1.0f), &border);
     ID2D1SolidColorBrush *txt = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.9f,0.9f,0.9f,1.0f), &txt);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.9f, 0.9f, 0.9f, 1.0f), &txt);
 
     float left = state_.leftEdge + state_.leftPadding;
     float right = state_.rightEdge - state_.leftPadding;
@@ -2408,9 +2442,10 @@ void ExplorerManager::DrawSearchPanel(ID2D1RenderTarget *ctx, IDWriteFactory *dw
     // Draw query
     std::wstring display = searchQuery_.empty() ? std::wstring(L"Search...") : searchQuery_;
     ID2D1SolidColorBrush *phBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.6f,0.6f,0.6f,1.0f), &phBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.6f, 0.6f, 0.6f, 1.0f), &phBrush);
     ctx->DrawTextW(display.c_str(), (UINT32)display.size(), tf, D2D1::RectF(inputRect.left + 8.0f, inputRect.top, inputRect.right - 8.0f, inputRect.bottom), searchQuery_.empty() ? phBrush : txt);
-    if (phBrush) phBrush->Release();
+    if (phBrush)
+        phBrush->Release();
 
     // Draw results list below
     float y = inputRect.bottom + 8.0f;
@@ -2419,13 +2454,17 @@ void ExplorerManager::DrawSearchPanel(ID2D1RenderTarget *ctx, IDWriteFactory *dw
     for (size_t i = 0; i < searchResults_.size() && i < (size_t)maxDisplay; ++i)
     {
         D2D1_RECT_F r = D2D1::RectF(left, y, right, y + itemH);
-        ctx->DrawTextW(searchResults_[i].filePath.c_str(), (UINT32)searchResults_[i].filePath.size(), tf, D2D1::RectF(r.left + 4.0f, r.top, r.right - 4.0f, r.top + itemH*0.5f), txt);
-        ctx->DrawTextW(searchResults_[i].lineExcerpt.c_str(), (UINT32)searchResults_[i].lineExcerpt.size(), tf, D2D1::RectF(r.left + 4.0f, r.top + itemH*0.5f, r.right - 4.0f, r.bottom), phBrush);
+        ctx->DrawTextW(searchResults_[i].filePath.c_str(), (UINT32)searchResults_[i].filePath.size(), tf, D2D1::RectF(r.left + 4.0f, r.top, r.right - 4.0f, r.top + itemH * 0.5f), txt);
+        ctx->DrawTextW(searchResults_[i].lineExcerpt.c_str(), (UINT32)searchResults_[i].lineExcerpt.size(), tf, D2D1::RectF(r.left + 4.0f, r.top + itemH * 0.5f, r.right - 4.0f, r.bottom), phBrush);
         y += itemH + 4.0f;
     }
 
-    if (tf) tf->Release();
-    if (bg) bg->Release();
-    if (border) border->Release();
-    if (txt) txt->Release();
+    if (tf)
+        tf->Release();
+    if (bg)
+        bg->Release();
+    if (border)
+        border->Release();
+    if (txt)
+        txt->Release();
 }

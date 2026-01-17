@@ -66,105 +66,44 @@ static void ThrottledInvalidateRect(HWND hwnd, const RECT *rect, BOOL erase)
     }
 }
 
-Window::Window(HINSTANCE hInstance)
-    : hInstance_(hInstance), hwnd_(nullptr), skia_(nullptr)
+struct KeyMods
 {
+    bool ctrl = false;
+    bool shift = false;
+    bool alt = false;
+};
+static KeyMods GetMods()
+{
+    KeyMods m;
+    m.ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    m.shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    m.alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+    return m;
 }
 
-void Window::ClearAllHoverStates()
+static bool KeyIs(WPARAM wParam, int vk)
 {
-    // Clear hovered state in titlebar/menu
-    hoveredButton_ = Hovered_None;
-    for (int i = 0; i < 8; ++i)
-        SetMenuItemHovered(i, false);
-    HideMenuDropdown(hwnd_);
-
-    // Clear tab hover
-    tabBar_.ClearHover();
-
-    // Clear explorer hover
-    GetExplorerManager().ClearHover(hwnd_);
-
-    // Clear panel resize hover
-    GetPanelManager().ClearResizeHover(hwnd_);
-
-    // Clear footer hover
-    Footer_ClearHover(hwnd_);
-
-    // Throttle full-window invalidation to avoid redraw storms from frequent mouse moves
-    ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
+    return (int)wParam == vk;
 }
 
-Window::~Window()
+static bool KeyIsChar(WPARAM wParam, wchar_t cUpper)
 {
-    if (skia_)
-        delete skia_;
-
-    for (auto &pair : editors_)
-    {
-        delete pair.second;
-    }
-    editors_.clear();
-}
-
-Orion::Editor *Window::GetEditor()
-{
-    int activeTab = tabBar_.GetActiveTabIndex();
-    if (activeTab >= 0 && editors_.count(activeTab) > 0)
-    {
-        return editors_[activeTab];
-    }
-    return nullptr;
-}
-
-Orion::Editor *Window::GetEditorForTab(int tabIndex)
-{
-    if (editors_.count(tabIndex) > 0)
-    {
-        return editors_[tabIndex];
-    }
-    return nullptr;
-}
-
-void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber)
-{
-    size_t lastSlash = filePath.find_last_of(L"\\/");
-    std::wstring fileName = (lastSlash != std::wstring::npos) ? filePath.substr(lastSlash + 1) : filePath;
-
-    int tabIndex = tabBar_.AddTab(filePath, fileName);
-
-    // If there's already an editor for this tab, don't create a new one.
-    if (editors_.count(tabIndex) == 0)
-    {
-        Orion::Editor *newEditor = new Orion::Editor();
-        // Load custom font for the editor if available
-        if (!customFontPath_.empty() && skia_)
-        {
-            newEditor->LoadCustomFont(skia_->GetDWriteFactory(), customFontPath_);
-        }
-        newEditor->LoadFile(filePath);
-        editors_[tabIndex] = newEditor;
-    }
-
-    // Position caret at specified line if provided
-    if (lineNumber >= 0 && editors_.count(tabIndex) > 0)
-    {
-        ::Orion::Caret::SetCaret(*editors_[tabIndex], lineNumber, 0);
-    }
-
-    InvalidateRect(hwnd_, nullptr, FALSE);
+    // WM_KEYDOWN donne virtual-key codes, pour lettres c'est 'A'..'Z'
+    return (wParam == (WPARAM)cUpper);
 }
 
 bool Window::Create(int nCmdShow)
 {
     WNDCLASSEXW wcex = {};
-    wcex.cbSize = sizeof(wcex);
-    // Enable double-click messages for this window class
-    wcex.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
+    wcex.cbSize = sizeof(WNDCLASSEXW);
+    wcex.style = CS_HREDRAW | CS_VREDRAW;
     wcex.lpfnWndProc = Window::WndProc;
     wcex.hInstance = hInstance_;
+    wcex.hCursor = LoadCursor(NULL, IDC_ARROW);
     wcex.lpszClassName = WINDOW_CLASS_NAME;
-    wcex.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wcex.hbrBackground = nullptr;
+    wcex.hIcon = NULL;
+    wcex.hIconSm = NULL;
 
     HICON hAppIcon = reinterpret_cast<HICON>(LoadImageW(nullptr, L"assets\\favicon.ico", IMAGE_ICON, 32, 32, LR_LOADFROMFILE | LR_DEFAULTSIZE));
     HICON hAppIconSmall = reinterpret_cast<HICON>(LoadImageW(nullptr, L"assets\\favicon.ico", IMAGE_ICON, 16, 16, LR_LOADFROMFILE | LR_DEFAULTSIZE));
@@ -287,10 +226,69 @@ Window *GetWindowFromHwnd(HWND hwnd)
     return reinterpret_cast<Window *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
 }
 
+HWND Window::GetHwnd() const
+{
+    return hwnd_;
+}
+
+void Window::CloseEditorForTabIndex(int index)
+{
+    // Remove and delete the editor for the given tab index, then reindex editors_ to match TabBar
+    std::map<int, Orion::Editor *> old = editors_;
+
+    auto it = old.find(index);
+    if (it != old.end())
+    {
+        delete it->second;
+        old.erase(it);
+    }
+
+    editors_.clear();
+
+    int count = tabBar_.GetTabCount();
+    for (int i = 0; i < count; ++i)
+    {
+        const auto *t = tabBar_.GetTab(i);
+        if (!t)
+            continue;
+
+        Orion::Editor *found = nullptr;
+        for (auto &p : old)
+        {
+            if (!p.second)
+                continue;
+            if (p.second->GetFilePath() == t->filePath)
+            {
+                found = p.second;
+                break;
+            }
+            // Match untitled placeholders
+            if (t->filePath.rfind(L"__untitled__", 0) == 0 && p.second->GetFilePath().rfind(L"__untitled__", 0) == 0)
+            {
+                found = p.second;
+                break;
+            }
+        }
+
+        editors_[i] = found;
+        if (found)
+        {
+            // Ensure the editor's document-changed callback reflects its new tab index
+            found->onDocumentChanged = [this, i]()
+            {
+                tabBar_.SetTabDirty(i, true);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            };
+        }
+    }
+}
+
 LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
     switch (uMsg)
     {
+    case WM_ERASEBKGND:
+        return 1;
     case WM_NCCALCSIZE:
     {
         if (!wParam)
@@ -362,6 +360,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 
         // Initialize the panel system
         InitializePanelSystem();
+        // Initialize keyboard manager when HWND is available
+        keyboard_.Init(this);
 
         RECT clientRect;
         GetClientRect(hwnd_, &clientRect);
@@ -497,16 +497,40 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
         return DefWindowProc(hwnd_, uMsg, wParam, lParam);
     }
+    case WM_EDITOR_FILE_LOADED:
+    {
+        auto *res = reinterpret_cast<EditorFileLoadResult *>(lParam);
+        if (!res)
+            return 0;
+
+        Orion::Editor *ed = GetEditorForTab(res->tabIndex);
+        if (ed)
+        {
+            // IMPORTANT: vérifier que l’éditeur correspond toujours au même fichier (tab peut avoir changé)
+            if (ed->GetFilePath() == res->filePath)
+            {
+                ed->ApplyLoadedFile(std::move(res->filePath), std::move(res->encoding), std::move(res->lines));
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+        }
+
+        delete res;
+        return 0;
+    }
+
     case WM_USER + 100:
     {
-        const wchar_t *filePath = (const wchar_t *)lParam;
-        int lineNumber = (int)wParam; // Line number (0-based), -1 if not specified
-        if (filePath)
+        auto *pPath = reinterpret_cast<std::wstring *>(lParam);
+        int lineNumber = (int)wParam;
+
+        if (pPath)
         {
-            OpenFileInNewTab(filePath, lineNumber > 0 ? lineNumber : -1);
+            OpenFileInNewTab(*pPath, lineNumber > 0 ? lineNumber : -1);
+            delete pPath;
         }
         return 0;
     }
+
     case WM_USER + 201:
     {
         // Posted from TerminalPanel::ReadThread - lParam is heap buffer, wParam is length
@@ -581,8 +605,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         RECT tbRect = win32_titlebar_rect(hwnd_);
         if (pt.y >= tbRect.bottom && pt.y < tbRect.bottom + tabBar_.GetHeight())
         {
-            int clickedTab = tabBar_.OnLeftButtonDown(pt);
-            if (clickedTab >= 0)
+            int r = tabBar_.OnLeftButtonDown(pt);
+
+            if (r != -1) // ✅ tab activated OR close requested => event consumed
             {
                 // Ensure any editor mouse interactions are cancelled and release capture
                 ReleaseCapture();
@@ -590,12 +615,59 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 if (editor)
                     editor->CancelInteraction();
 
+                // Handle close request separately so Window decides (UI only from TabBar)
+                if (r == TabBar::TAB_CLICKED_CLOSE)
+                {
+                    int idx = tabBar_.GetLastCloseRequestIndex();
+                    if (idx >= 0)
+                    {
+                        if (tabBar_.IsTabDirty(idx))
+                        {
+                            int choice = MessageBoxW(
+                                hwnd_,
+                                L"Le fichier n'est pas sauvegardé.\n\nOui = Enregistrer et fermer\nNon = Fermer sans enregistrer\nAnnuler = Annuler",
+                                L"Fichier modifié",
+                                MB_YESNOCANCEL | MB_ICONWARNING);
+
+                            if (choice == IDYES)
+                            {
+                                Orion::Editor *ed = GetEditorForTab(idx);
+                                if (ed)
+                                {
+                                    bool ok = ed->SaveToFile(ed->GetFilePath());
+                                    if (ok)
+                                    {
+                                        tabBar_.SetTabDirty(idx, false);
+                                        tabBar_.CloseTab(idx);
+                                        CloseEditorForTabIndex(idx);
+                                    }
+                                }
+                            }
+                            else if (choice == IDNO)
+                            {
+                                tabBar_.CloseTab(idx);
+                                CloseEditorForTabIndex(idx);
+                            }
+                            else
+                            {
+                                // Cancel: do nothing
+                            }
+                        }
+                        else
+                        {
+                            tabBar_.CloseTab(idx);
+                            CloseEditorForTabIndex(idx);
+                        }
+
+                        InvalidateRect(hwnd_, nullptr, FALSE);
+                        return 0;
+                    }
+                }
+
                 InvalidateRect(hwnd_, nullptr, FALSE);
                 return 0;
             }
         }
-
-        
 
         int hoveredMenu = GetHoveredMenuItem(hwnd_, pt);
         if (hoveredMenu >= 0)
@@ -743,347 +815,21 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     }
     case WM_CHAR:
     {
-        // PRIORITÉ 0: Si l'Explorer a un inline input actif, lui donner les caractères
-        if (GetExplorerManager().IsInlineInputVisible())
-        {
-            GetExplorerManager().OnCharInline((wchar_t)wParam);
-            InvalidateRect(hwnd_, nullptr, FALSE);
+        if (keyboard_.OnChar(wParam))
             return 0;
-        }
 
-        // PRIORITÉ 0.5: Si l'Explorer est en mode Search, lui donner les caractères
-        if (GetExplorerManager().IsSearchMode())
-        {
-            GetExplorerManager().OnCharSearch((wchar_t)wParam);
-            InvalidateRect(hwnd_, nullptr, FALSE);
-            return 0;
-        }
-
-        // PRIORITÉ 1: Si le SearchPanel est actif et son input est focalisé
-        if (GetPanelManager().IsPanelActive(PanelId::Search))
-        {
-            SearchPanel *searchPanel = GetPanelManager().GetPanelAs<SearchPanel>(PanelId::Search);
-            if (searchPanel && searchPanel->IsInputFocused())
-            {
-                searchPanel->OnChar((wchar_t)wParam);
-                InvalidateRect(hwnd_, nullptr, FALSE);
-                return 0;
-            }
-        }
-
-        // PRIORITÉ 1.5: Si le terminal est visible, initialisé ET focalisé
-        {
-            TerminalPanel &terminal = GetTerminalPanel();
-            if (terminal.IsVisible() && terminal.IsInitialized() && terminal.IsFocused())
-            {
-                terminal.OnChar((wchar_t)wParam);
-                InvalidateRect(hwnd_, nullptr, FALSE);
-                return 0;
-            }
-        }
-
-        // No global input overlay — inline Explorer input handled separately.
-
-        // PRIORITÉ 2: Sinon, envoyer à l'éditeur
-        Orion::Editor *editor = GetEditor();
-        if (editor)
-        {
-            editor->OnChar((wchar_t)wParam);
-            InvalidateRect(hwnd_, nullptr, FALSE);
-        }
         return 0;
     }
     case WM_KEYDOWN:
     {
-        // 🔍 DEBUG : Log Ctrl+Key pour tracer le problème
-        {
-            bool ctrlPressed = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-            if (ctrlPressed)
-            {
-                wchar_t buf[128];
-                swprintf_s(buf, L"WM_KEYDOWN: Ctrl pressed - wParam=%d (char='%c')",
-                           (int)wParam, (wParam >= 'A' && wParam <= 'Z') ? (char)wParam : '?');
-                Logger::Instance().Log(std::wstring(buf));
-            }
-        }
-        // PRIORITÉ -1: Toggle terminal avec Ctrl+` (backtick)
-        bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-        if (ctrl && wParam == VK_OEM_3) // VK_OEM_3 is the backtick key
-        {
-            TerminalPanel &terminal = GetTerminalPanel();
-            Logger::Instance().Log(L"Window::WM_KEYDOWN - toggle terminal requested");
-            if (!terminal.IsVisible())
-            {
-                Logger::Instance().Log(L"Window::WM_KEYDOWN - calling TerminalPanel::Initialize");
-                terminal.Initialize();
-                Logger::Instance().Log(L"Window::WM_KEYDOWN - returned from TerminalPanel::Initialize");
-            }
-            terminal.ToggleVisible();
-
-            // **AJOUT : Auto-focus le terminal quand il devient visible**
-            if (terminal.IsVisible())
-            {
-                terminal.SetFocused(true);
-                Logger::Instance().Log(L"Window::WM_KEYDOWN - terminal focused");
-            }
-
-            Logger::Instance().Log(L"Window::WM_KEYDOWN - terminal.ToggleVisible() done");
-            InvalidateRect(hwnd_, nullptr, FALSE);
+        // ✅ Toute la logique est dans KeyboardManager
+        if (keyboard_.OnKeyDown(wParam))
             return 0;
-        }
 
-        // Ctrl+Plus/Minus/0 zoom shortcuts removed
-
-        // PRIORITÉ 0: Explorer inline input
-        if (GetExplorerManager().IsInlineInputVisible())
-        {
-            GetExplorerManager().OnKeyDownInline(wParam);
-            InvalidateRect(hwnd_, nullptr, FALSE);
-            return 0;
-        }
-
-        // PRIORITÉ 0.5: Explorer search mode keyboard handling
-        if (GetExplorerManager().IsSearchMode())
-        {
-            GetExplorerManager().OnKeyDownSearch(wParam);
-            // If user pressed Enter, open first search result (if any)
-            if (wParam == VK_RETURN)
-            {
-                const auto &results = GetExplorerManager().GetSearchResults();
-                if (!results.empty())
-                {
-                    // Send the same open-file message used by mouse-open
-                    SendMessageW(hwnd_, WM_USER + 100, 0, (LPARAM)results[0].filePath.c_str());
-                    // exit search mode after opening
-                    GetExplorerManager().ExitSearchMode();
-                }
-            }
-            InvalidateRect(hwnd_, nullptr, FALSE);
-            return 0;
-        }
-
-        // PRIORITÉ 1: Si le SearchPanel est actif et son input est focalisé
-        if (GetPanelManager().IsPanelActive(PanelId::Search))
-        {
-            SearchPanel *searchPanel = GetPanelManager().GetPanelAs<SearchPanel>(PanelId::Search);
-            if (searchPanel && searchPanel->IsInputFocused())
-            {
-                searchPanel->OnKeyDown(wParam);
-                InvalidateRect(hwnd_, nullptr, FALSE);
-                return 0;
-            }
-        }
-
-        // PRIORITÉ 1.5: Si le terminal est visible, initialisé ET focalisé
-        {
-            TerminalPanel &terminal = GetTerminalPanel();
-            if (terminal.IsVisible() && terminal.IsInitialized() && terminal.IsFocused())
-            {
-                terminal.OnKeyDown(wParam);
-                InvalidateRect(hwnd_, nullptr, FALSE);
-                return 0;
-            }
-        }
-
-        // No global input overlay — inline Explorer input handled separately.
-
-        // Ctrl+N -> Nouveau fichier
-        // Note: ctrl already declared above for terminal toggle
-        if (ctrl && (wParam == 'N' || wParam == 'n'))
-        {
-            Logger::Instance().Log(L"Shortcut: Ctrl+N pressed - showing new-file input");
-            // Ensure explorer visible then show inline input
-            if (!GetExplorerManager().IsVisible())
-                GetExplorerManager().SetVisible(true);
-            GetExplorerManager().ShowInlineInput(Input::Type::File);
-            InvalidateRect(hwnd_, nullptr, FALSE);
-            return 0;
-        }
-
-        // Ctrl+Shift+N -> Nouveau dossier
-        bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-        if (ctrl && shift && (wParam == 'N' || wParam == 'n'))
-        {
-            Logger::Instance().Log(L"Shortcut: Ctrl+Shift+N pressed - showing new-folder input");
-            if (!GetExplorerManager().IsVisible())
-                GetExplorerManager().SetVisible(true);
-            GetExplorerManager().ShowInlineInput(Input::Type::Folder);
-            InvalidateRect(hwnd_, nullptr, FALSE);
-            return 0;
-        }
-
-        // Ctrl+O -> Open file dialog
-        if (ctrl && !shift && (wParam == 'O' || wParam == 'o'))
-        {
-            wchar_t fileName[MAX_PATH] = {0};
-            OPENFILENAMEW ofn = {};
-            ofn.lStructSize = sizeof(ofn);
-            ofn.hwndOwner = hwnd_;
-            ofn.lpstrFile = fileName;
-            ofn.nMaxFile = MAX_PATH;
-            ofn.lpstrFilter = L"All Files\0*.*\0Text Files\0*.txt\0\0";
-            ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-            if (GetOpenFileNameW(&ofn))
-            {
-                OpenFileInNewTab(std::wstring(fileName), -1);
-                InvalidateRect(hwnd_, nullptr, FALSE);
-            }
-            return 0;
-        }
-
-        // Ctrl+Shift+O -> Open Project (pick folder)
-        if (ctrl && shift && (wParam == 'O' || wParam == 'o'))
-        {
-            IFileOpenDialog *pFileOpen = nullptr;
-            HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFileOpen));
-            if (SUCCEEDED(hr) && pFileOpen)
-            {
-                DWORD options = 0;
-                if (SUCCEEDED(pFileOpen->GetOptions(&options)))
-                {
-                    pFileOpen->SetOptions(options | FOS_PICKFOLDERS);
-                }
-                if (SUCCEEDED(pFileOpen->Show(hwnd_)))
-                {
-                    IShellItem *pItem = nullptr;
-                    if (SUCCEEDED(pFileOpen->GetResult(&pItem)) && pItem)
-                    {
-                        PWSTR pszPath = nullptr;
-                        if (SUCCEEDED(pItem->GetDisplayName(SIGDN_FILESYSPATH, &pszPath)) && pszPath)
-                        {
-                            std::wstring selectedFolder = pszPath;
-                            CoTaskMemFree(pszPath);
-                            GetExplorerManager().Initialize(selectedFolder);
-                            GetExplorerManager().SetVisible(true);
-                            InvalidateRect(hwnd_, nullptr, FALSE);
-                        }
-                        pItem->Release();
-                    }
-                }
-                pFileOpen->Release();
-            }
-            return 0;
-        }
-
-        // Handle global shortcuts (Ctrl+W to close tab)
-        if (ctrl && (wParam == 'W' || wParam == 'w'))
-        {
-            int active = tabBar_.GetActiveTabIndex();
-            if (active >= 0)
-            {
-                // Close tab in tab bar
-                tabBar_.CloseTab(active);
-
-                // Delete and remove editor for this tab if exists
-                auto it = editors_.find(active);
-                if (it != editors_.end())
-                {
-                    delete it->second;
-                    editors_.erase(it);
-                }
-
-                // Reindex editors with keys greater than the removed index
-                if (!editors_.empty())
-                {
-                    std::map<int, Orion::Editor *> newEditors;
-                    for (auto &p : editors_)
-                    {
-                        int key = p.first;
-                        Orion::Editor *ed = p.second;
-                        if (key > active)
-                            newEditors[key - 1] = ed;
-                        else
-                            newEditors[key] = ed;
-                    }
-                    editors_.swap(newEditors);
-                }
-
-                InvalidateRect(hwnd_, nullptr, FALSE);
-            }
-            return 0;
-        }
-
-        // Ctrl+S -> save (or Save As if untitled)
-        if (ctrl && (wParam == 'S' || wParam == 's'))
-        {
-            int active = tabBar_.GetActiveTabIndex();
-            if (active >= 0)
-            {
-                Orion::Editor *editor = GetEditorForTab(active);
-                if (editor)
-                {
-                    std::wstring currentPath = editor->GetFilePath();
-                    if (currentPath.empty() || currentPath.rfind(L"__untitled__", 0) == 0)
-                    {
-                        // Prompt Save As
-                        wchar_t fileName[MAX_PATH] = {0};
-                        OPENFILENAMEW ofn = {};
-                        ofn.lStructSize = sizeof(ofn);
-                        ofn.hwndOwner = hwnd_;
-                        ofn.lpstrFile = fileName;
-                        ofn.nMaxFile = MAX_PATH;
-                        ofn.lpstrFilter = L"All Files\0*.*\0Text Files\0*.txt\0\0";
-                        ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
-                        ofn.lpstrDefExt = L"txt";
-                        if (GetSaveFileNameW(&ofn))
-                        {
-                            std::wstring chosen = fileName;
-                            if (editor->SaveToFile(chosen))
-                            {
-                                // update tab path/display name
-                                size_t lastSlash = chosen.find_last_of(L"\\/");
-                                std::wstring fileDisplay = (lastSlash != std::wstring::npos) ? chosen.substr(lastSlash + 1) : chosen;
-                                tabBar_.UpdateTabPath(active, chosen, fileDisplay);
-                                InvalidateRect(hwnd_, nullptr, FALSE);
-                            }
-                        }
-                    }
-                    else
-                    {
-                        // Normal save overwrite
-                        editor->SaveToFile(currentPath);
-                        InvalidateRect(hwnd_, nullptr, FALSE);
-                    }
-                }
-            }
-            return 0;
-        }
-
-        {
-            bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-            if (ctrl && (wParam == 'F' || wParam == 'f'))
-            {
-                // Si un éditeur est actif, ouvrir son SearchBox
-                Orion::Editor* editor = GetEditor();
-                if (editor)
-                {
-                    editor->ShowSearch();
-                    InvalidateRect(hwnd_, nullptr, FALSE);
-                    return 0;
-                }
-            }
-        }
-
-        Orion::Editor *editor = GetEditor();
-        if (editor)
-        {
-            {
-                wchar_t buf[128];
-                bool ctrl2 = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-                swprintf_s(buf, L"Window::WM_KEYDOWN - forwarding to Editor: wParam=%d ctrl=%d", (int)wParam, ctrl2 ? 1 : 0);
-                Logger::Instance().Log(std::wstring(buf));
-            }
-            try {
-                editor->OnKeyDown(wParam);
-            } catch (...) {
-                wchar_t buf[256];
-                swprintf_s(buf, L"Window::WM_KEYDOWN - C++ exception in Editor::OnKeyDown wParam=%d", (int)wParam);
-                Logger::Instance().Log(std::wstring(buf));
-            }
-            InvalidateRect(hwnd_, nullptr, FALSE);
-        }
+        // fallback
         return 0;
     }
+
     case WM_MOUSEWHEEL:
     {
         POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
@@ -1234,16 +980,28 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             }
         }
 
-        // Tab bar hover
         RECT tbRect = win32_titlebar_rect(hwnd_);
-        if (pt.y >= tbRect.bottom && pt.y < tbRect.bottom + tabBar_.GetHeight())
+        int tabTop = tbRect.bottom;
+        int tabBottom = tbRect.bottom + (int)tabBar_.GetHeight();
+
+        if (pt.y >= tabTop && pt.y < tabBottom)
         {
             int result = tabBar_.OnMouseMove(pt);
+
             if (result != -2)
             {
+                // optionnel: si tu veux éviter que l'explorer garde un hover pendant tabbar
                 GetExplorerManager().ClearHover(hwnd_);
-                needsRedraw = true;
+                ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
             }
+
+            return 0; // ✅ CRITIQUE : sinon le code plus bas va appeler ClearAllHoverStates()
+        }
+
+        // On vient de sortir de la TabBar -> reset hover TabBar
+        if (tabBar_.ClearHover())
+        {
+            ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
         }
 
         // Menu dropdown handling
@@ -1440,6 +1198,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     {
         // Clear all hover states when mouse leaves the window entirely
         ClearAllHoverStates();
+        tabBar_.ClearHover(); // ✅ ici c'est le bon endroit
         return 0;
     }
     case WM_COMMAND:
@@ -1508,14 +1267,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 
                     if (editors_.count(tabIndex) == 0)
                     {
-                        Orion::Editor *newEditor = new Orion::Editor();
+                        Orion::Editor *editor = new Orion::Editor();
+
                         if (!customFontPath_.empty() && skia_)
-                        {
-                            newEditor->LoadCustomFont(skia_->GetDWriteFactory(), customFontPath_);
-                        }
-                        newEditor->CreateEmpty();
-                        editors_[tabIndex] = newEditor;
+                            editor->LoadCustomFont(skia_->GetDWriteFactory(), customFontPath_);
+
+                        // "New" should create an empty editor
+                        editor->CreateEmpty();
+
+                        editors_[tabIndex] = editor;
                     }
+
                     InvalidateRect(hwnd_, nullptr, FALSE);
                     return 0;
                 }
@@ -1676,8 +1438,16 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                     MessageBoxW(hwnd_, L"Toggle Comment not implemented", L"Edit", MB_OK);
                     return 0;
                 case 13: // Format Document
-                    MessageBoxW(hwnd_, L"Format Document not implemented", L"Edit", MB_OK);
+                {
+                    Orion::Editor *editor = GetEditor();
+                    if (editor)
+                    {
+                        editor->FormatDocument();
+                        InvalidateRect(hwnd_, nullptr, FALSE);
+                        GetPanelManager().UpdateLayout(hwnd_);
+                    }
                     return 0;
+                }
                 default:
                     break;
                 }
@@ -1859,4 +1629,82 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         return 0;
     }
     return DefWindowProcW(hwnd_, uMsg, wParam, lParam);
+}
+
+Window::Window(HINSTANCE hInstance)
+    : hInstance_(hInstance), hwnd_(nullptr), skia_(nullptr)
+{
+    untitledCounter_ = 1;
+}
+
+Window::~Window()
+{
+    for (auto &p : editors_)
+    {
+        delete p.second;
+    }
+    editors_.clear();
+    if (skia_)
+        delete skia_;
+}
+
+Orion::Editor *Window::GetEditor()
+{
+    int idx = tabBar_.GetActiveTabIndex();
+    return GetEditorForTab(idx);
+}
+
+Orion::Editor *Window::GetEditorForTab(int tabIndex)
+{
+    auto it = editors_.find(tabIndex);
+    if (it != editors_.end())
+        return it->second;
+    return nullptr;
+}
+
+void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber)
+{
+    std::wstring display;
+    size_t lastSlash = filePath.find_last_of(L"\\/");
+    if (lastSlash != std::wstring::npos)
+        display = filePath.substr(lastSlash + 1);
+    else
+        display = filePath;
+
+    int tabIndex = tabBar_.AddTab(filePath, display);
+    if (editors_.count(tabIndex) == 0)
+    {
+        Orion::Editor *editor = new Orion::Editor();
+
+        if (!customFontPath_.empty() && skia_)
+            editor->LoadCustomFont(skia_->GetDWriteFactory(), customFontPath_);
+
+        if (!filePath.empty())
+            editor->LoadFileAsync(hwnd_, filePath, tabIndex);
+        else
+            editor->CreateEmpty();
+
+        editors_[tabIndex] = editor;
+        // Wire document-changed callback so TabBar is updated when editor becomes dirty
+        editor->onDocumentChanged = [this, tabIndex]()
+        {
+            tabBar_.SetTabDirty(tabIndex, true);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        };
+    }
+}
+
+void Window::ClearAllHoverStates()
+{
+    hoveredButton_ = Hovered_None;
+    for (int i = 0; i < 8; ++i)
+        SetMenuItemHovered(i, false);
+    HideMenuDropdown(hwnd_);
+
+    GetExplorerManager().ClearHover(hwnd_);
+    GetPanelManager().ClearResizeHover(hwnd_);
+    Footer_ClearHover(hwnd_);
+
+    // tabbar hover se clear ailleurs (WM_MOUSELEAVE / sortie tabbar)
+    ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
 }

@@ -169,20 +169,7 @@ namespace Orion::Geometry
                 [](const IndentGuide &g){ return g.endLine < g.startLine; }),
             out.end());
 
-        // debug throttle
-        static auto lastLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
-        auto now = std::chrono::steady_clock::now();
-        if (now - lastLog > std::chrono::seconds(1))
-        {
-            lastLog = now;
-            for (int gi = 0; gi < (int)out.size() && gi < 5; ++gi)
-            {
-                std::wstringstream ss;
-                ss << L"ComputeCppBraceGuides: guide[" << gi << L"] col=" << out[gi].visualCol
-                   << L" start=" << out[gi].startLine << L" end=" << out[gi].endLine;
-                Logger::Instance().Log(ss.str());
-            }
-        }
+        // no logging here (avoid spamming logs on every render)
 
         return out;
     }

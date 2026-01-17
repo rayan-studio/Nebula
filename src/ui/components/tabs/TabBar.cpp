@@ -23,6 +23,7 @@ int TabBar::AddTab(const std::wstring &filePath, const std::wstring &displayName
     Tab tab;
     tab.filePath = filePath;
     tab.displayName = displayName;
+    tab.isDirty = false;
     tab.isActive = false;
     tabs_.push_back(tab);
 
@@ -120,6 +121,81 @@ const Tab *TabBar::GetTab(int index) const
     return nullptr;
 }
 
+void TabBar::SetTabDirty(int index, bool dirty)
+{
+    if (index < 0 || index >= (int)tabs_.size())
+        return;
+    tabs_[index].isDirty = dirty;
+}
+
+bool TabBar::IsTabDirty(int index) const
+{
+    if (index < 0 || index >= (int)tabs_.size())
+        return false;
+    return tabs_[index].isDirty;
+}
+
+void TabBar::DrawCloseOrDirty(ID2D1RenderTarget *ctx, const D2D1_RECT_F &rect, bool hovered, bool dirty) const
+{
+    // mêmes couleurs que ton X
+    D2D1_COLOR_F normal = D2D1::ColorF(0.5f, 0.5f, 0.5f, 0.6f);
+    D2D1_COLOR_F hover = D2D1::ColorF(0.95f, 0.95f, 0.95f, 1.0f);
+    D2D1_COLOR_F ring = D2D1::ColorF(0.22f, 0.22f, 0.22f, 0.95f);
+
+    ID2D1SolidColorBrush *ringBrush = nullptr;
+    ID2D1SolidColorBrush *fgBrush = nullptr;
+
+    if (hovered)
+    {
+        float cx = (rect.left + rect.right) * 0.5f;
+        float cy = (rect.top + rect.bottom) * 0.5f;
+        float radius = (rect.right - rect.left) * 0.5f;
+        ctx->CreateSolidColorBrush(ring, &ringBrush);
+        ctx->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), radius, radius), ringBrush);
+        ctx->CreateSolidColorBrush(hover, &fgBrush);
+    }
+    else
+    {
+        ctx->CreateSolidColorBrush(normal, &fgBrush);
+    }
+
+    if (!fgBrush)
+    {
+        if (ringBrush)
+            ringBrush->Release();
+        return;
+    }
+
+    float cx = (rect.left + rect.right) * 0.5f;
+    float cy = (rect.top + rect.bottom) * 0.5f;
+
+    if (dirty)
+    {
+        // ● point (remplace la croix)
+        float r = (rect.right - rect.left) * 0.22f; // taille du point
+        ctx->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r), fgBrush);
+    }
+    else
+    {
+        // X (ton code existant)
+        float pad = 4.0f;
+        float thickness = hovered ? 1.5f : 1.1f;
+
+        D2D1_POINT_2F a = D2D1::Point2F(rect.left + pad, rect.top + pad);
+        D2D1_POINT_2F b = D2D1::Point2F(rect.right - pad, rect.bottom - pad);
+        D2D1_POINT_2F c = D2D1::Point2F(rect.left + pad, rect.bottom - pad);
+        D2D1_POINT_2F d = D2D1::Point2F(rect.right - pad, rect.top + pad);
+
+        ctx->DrawLine(a, b, fgBrush, thickness);
+        ctx->DrawLine(c, d, fgBrush, thickness);
+    }
+
+    if (ringBrush)
+        ringBrush->Release();
+    if (fgBrush)
+        fgBrush->Release();
+}
+
 void TabBar::UpdateLayout(float left, float top, float right)
 {
     leftEdge_ = left;
@@ -135,7 +211,7 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
     ID2D1SolidColorBrush *bgBrush = nullptr;
     ctx->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.08f), &bgBrush);
 
-        D2D1_RECT_F barRect = D2D1::RectF(leftEdge_, topEdge_, rightEdge_, topEdge_ + GetHeight());
+    D2D1_RECT_F barRect = D2D1::RectF(leftEdge_, topEdge_, rightEdge_, topEdge_ + GetHeight());
     ctx->FillRectangle(barRect, bgBrush);
 
     // Draw bottom border matching the titlebar border color only when there are tabs
@@ -144,10 +220,11 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
         ID2D1SolidColorBrush *tabBorderBrush = nullptr;
         ctx->CreateSolidColorBrush(D2D1::ColorF(48.0f / 255.0f, 48.0f / 255.0f, 48.0f / 255.0f), &tabBorderBrush);
         // draw the border inside the tab bar's rect so layout and hit-tests include it
-            D2D1_POINT_2F bl = D2D1::Point2F(leftEdge_, topEdge_ + GetHeight() - 0.5f);
-            D2D1_POINT_2F br = D2D1::Point2F(rightEdge_, topEdge_ + GetHeight() - 0.5f);
+        D2D1_POINT_2F bl = D2D1::Point2F(leftEdge_, topEdge_ + GetHeight() - 0.5f);
+        D2D1_POINT_2F br = D2D1::Point2F(rightEdge_, topEdge_ + GetHeight() - 0.5f);
         ctx->DrawLine(bl, br, tabBorderBrush, 1.0f);
-        if (tabBorderBrush) tabBorderBrush->Release();
+        if (tabBorderBrush)
+            tabBorderBrush->Release();
     }
 
     // Dessiner chaque tab
@@ -259,7 +336,22 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
                 }
             }
 
-            D2D1_RECT_F textRect = D2D1::RectF(textLeft, topEdge_, x + tabWidth_ - 20, topEdge_ + tabHeight_);
+            // --- réserve la place du bouton close/dot même quand il est caché ---
+            const float gapToClose = 6.0f; // petit espace entre texte et bouton
+
+            D2D1_RECT_F closeRect = CloseRectForTab(i);
+            float textRight = closeRect.left - gapToClose;
+
+            // sécurité si onglet trop petit
+            float minTextWidth = 10.0f;
+            if (textRight < textLeft + minTextWidth)
+                textRight = textLeft + minTextWidth;
+
+            D2D1_RECT_F textRect = D2D1::RectF(
+                textLeft,
+                topEdge_,
+                textRight,
+                topEdge_ + tabHeight_);
 
             // Create a text layout to prevent wrapping and enable ellipsis trimming
             IDWriteTextLayout *textLayout = nullptr;
@@ -298,10 +390,14 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
             format->Release();
         }
 
-        // Close button: always visible but styled differently when hovered
-        D2D1_RECT_F closeRect = CloseRectForTab(i);
-        bool isHoveredClose = (hoveredCloseIndex_ == i);
-        DrawCloseButton(ctx, closeRect, isHoveredClose);
+        bool showClose = (tab.isActive || hoveredTabIndex_ == i || hoveredCloseIndex_ == i);
+
+        if (showClose)
+        {
+            D2D1_RECT_F closeRect = CloseRectForTab(i);
+            bool isHoveredClose = (hoveredCloseIndex_ == i);
+            DrawCloseOrDirty(ctx, closeRect, isHoveredClose, tab.isDirty);
+        }
 
         x += tabWidth_;
     }
@@ -312,101 +408,103 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
 int TabBar::OnLeftButtonDown(POINT pt)
 {
     float x = leftEdge_;
+
     for (int i = 0; i < (int)tabs_.size(); ++i)
     {
         D2D1_RECT_F tabRect = D2D1::RectF(x, topEdge_, x + tabWidth_, topEdge_ + tabHeight_);
-        // Check close button area first (use helper)
+
+        // 1) Close button has priority -> signal close request (UI only)
         if (IsPointInCloseRect(i, pt))
         {
-            CloseTab(i);
-            return -1;
+            lastCloseRequestIndex_ = i;
+            hoveredCloseIndex_ = -1;
+            hoveredTabIndex_ = -1;
+            return TAB_CLICKED_CLOSE; // -3 : signal to Window that user requested close
         }
 
+        // 2) Sinon : click sur tab
         if (pt.x >= tabRect.left && pt.x < tabRect.right &&
             pt.y >= tabRect.top && pt.y < tabRect.bottom)
         {
             SetActiveTab(i);
-            return i;
+            return i; // ✅ handled: tab activated
         }
+
         x += tabWidth_;
     }
-    return -1;
+
+    return -1; // not handled
 }
-int TabBar::OnMouseMove(POINT pt) {
+
+int TabBar::OnMouseMove(POINT pt)
+{
     int prevTab = hoveredTabIndex_;
     int prevClose = hoveredCloseIndex_;
-    
+
     // Reset hover states
     int newTab = -1;
     int newClose = -1;
 
     // Tolérance horizontale pour éviter les pertes de hover
     const float horizTolerance = 4.0f;
-    
+
     float x = leftEdge_;
-    for (int i = 0; i < (int)tabs_.size(); ++i) {
+    for (int i = 0; i < (int)tabs_.size(); ++i)
+    {
         // Zone étendue de l'onglet pour le hover
         D2D1_RECT_F tabRect = D2D1::RectF(
-            x - horizTolerance, 
-            topEdge_, 
-            x + tabWidth_ + horizTolerance, 
-            topEdge_ + tabHeight_
-        );
-        
+            x - horizTolerance,
+            topEdge_,
+            x + tabWidth_ + horizTolerance,
+            topEdge_ + tabHeight_);
+
         // Vérifier si le pointeur est dans la zone de l'onglet
         if (pt.x >= tabRect.left && pt.x < tabRect.right &&
-            pt.y >= tabRect.top && pt.y < tabRect.bottom) {
-            
+            pt.y >= tabRect.top && pt.y < tabRect.bottom)
+        {
+
             newTab = i;
-            
+
             // ✨ NOUVELLE LOGIQUE : Sticky close avec zone élargie
             // Une fois qu'on survole le bouton close, il reste visible
             // tant qu'on reste dans l'onglet
             D2D1_RECT_F closeRect = CloseRectForTab(i);
             const float closeTolerance = 8.0f; // Zone élargie pour le hover
-            
-            bool inCloseZone = (
-                pt.x >= closeRect.left - closeTolerance && 
-                pt.x <= closeRect.right + closeTolerance && 
-                pt.y >= closeRect.top - closeTolerance && 
-                pt.y <= closeRect.bottom + closeTolerance
-            );
-            
+
+            bool inCloseZone = (pt.x >= closeRect.left - closeTolerance &&
+                                pt.x <= closeRect.right + closeTolerance &&
+                                pt.y >= closeRect.top - closeTolerance &&
+                                pt.y <= closeRect.bottom + closeTolerance);
+
             if (inCloseZone)
             {
-                // On est directement sur le bouton close
                 newClose = i;
             }
-            else if (prevClose == i)
-            {
-                // Le bouton était déjà hover : on le garde visible
-                // tant qu'on reste dans l'onglet (comportement sticky)
-                newClose = i;
-            }
-            
+
             break; // On a trouvé l'onglet survolé
         }
-        
+
         x += tabWidth_;
     }
-    
+
     // ✨ OPTIMISATION : Ne redessiner QUE si quelque chose a vraiment changé
-    if (newTab != prevTab || newClose != prevClose) {
+    if (newTab != prevTab || newClose != prevClose)
+    {
         hoveredTabIndex_ = newTab;
         hoveredCloseIndex_ = newClose;
         return newTab; // Signal qu'il faut redessiner
     }
-    
+
     return -2; // Pas de changement, pas besoin de redessiner
 }
 
-void TabBar::ClearHover()
+bool TabBar::ClearHover()
 {
     bool hadHover = (hoveredTabIndex_ >= 0 || hoveredCloseIndex_ >= 0);
     hoveredTabIndex_ = -1;
     hoveredCloseIndex_ = -1;
+    return hadHover;
 }
-
 
 int TabBar::FindTabIndexByFilePath(const std::wstring &filePath) const
 {
@@ -435,14 +533,14 @@ bool TabBar::IsPointInCloseRect(int index, POINT pt) const
 {
     if (index < 0 || index >= (int)tabs_.size())
         return false;
-        
+
     D2D1_RECT_F r = CloseRectForTab(index);
-    
+
     const float tolerance = 2.0f;
-    
-    return (pt.x >= r.left - tolerance && 
-            pt.x <= r.right + tolerance && 
-            pt.y >= r.top - tolerance && 
+
+    return (pt.x >= r.left - tolerance &&
+            pt.x <= r.right + tolerance &&
+            pt.y >= r.top - tolerance &&
             pt.y <= r.bottom + tolerance);
 }
 
@@ -462,11 +560,11 @@ void TabBar::DrawCloseButton(ID2D1RenderTarget *ctx, const D2D1_RECT_F &rect, bo
         float cx = (rect.left + rect.right) * 0.5f;
         float cy = (rect.top + rect.bottom) * 0.5f;
         float radius = (rect.right - rect.left) * 0.5f;
-        
+
         ctx->CreateSolidColorBrush(ringColor, &ringBrush);
         D2D1_ELLIPSE ellipse = D2D1::Ellipse(D2D1::Point2F(cx, cy), radius, radius);
         ctx->FillEllipse(ellipse, ringBrush);
-        
+
         ctx->CreateSolidColorBrush(xColorHover, &xBrush);
     }
     else
@@ -477,17 +575,19 @@ void TabBar::DrawCloseButton(ID2D1RenderTarget *ctx, const D2D1_RECT_F &rect, bo
     // Dessiner le X avec épaisseur variable
     float pad = 4.0f;
     float thickness = hovered ? 1.5f : 1.1f;
-    
+
     D2D1_POINT_2F a = D2D1::Point2F(rect.left + pad, rect.top + pad);
     D2D1_POINT_2F b = D2D1::Point2F(rect.right - pad, rect.bottom - pad);
     D2D1_POINT_2F c = D2D1::Point2F(rect.left + pad, rect.bottom - pad);
     D2D1_POINT_2F d = D2D1::Point2F(rect.right - pad, rect.top + pad);
-    
+
     ctx->DrawLine(a, b, xBrush, thickness);
     ctx->DrawLine(c, d, xBrush, thickness);
 
-    if (ringBrush) ringBrush->Release();
-    if (xBrush) xBrush->Release();
+    if (ringBrush)
+        ringBrush->Release();
+    if (xBrush)
+        xBrush->Release();
 }
 
 void TabBar::UpdateTabPath(int index, const std::wstring &filePath, const std::wstring &displayName)

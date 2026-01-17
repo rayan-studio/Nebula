@@ -7,6 +7,7 @@
 #include <memory>
 #include <windows.h>
 #include "ui/components/scrollbar/Scrollbar.h"
+#include <functional>
 #include "orion/font/CustomFontLoader.h"
 #include "../search/SearchBox.h"
 #include "../syntax/Highlighter.h"
@@ -208,6 +209,7 @@ namespace Orion
         void UpdateLayout(HWND hwnd, float left, float top, float right, float bottom);
         bool HasFile() const { return !state_.lines.empty(); }
         bool LoadCustomFont(IDWriteFactory *dwrite, const std::wstring &fontPath);
+        void FormatDocument();
 
         // Événements
         void OnLeftButtonDown(HWND hwnd, POINT pt);
@@ -227,6 +229,23 @@ namespace Orion
         void CreateEmpty();
         // Save buffer to file (UTF-8). Returns true on success.
         bool SaveToFile(const std::wstring &filePath);
+        // Dirty state API
+        bool IsDirty() const { return isDirty_; }
+        void MarkDirty()
+        {
+            isDirty_ = true;
+            if (onDocumentChanged)
+                onDocumentChanged();
+        }
+        void ClearDirty()
+        {
+            isDirty_ = false;
+            if (onDocumentChanged)
+                onDocumentChanged();
+        }
+
+        // Callback invoked when document dirty state changes
+        std::function<void()> onDocumentChanged;
         // Accessors for external UI (footer)
         CaretPosition GetCaret() const { return state_.caret; }
         std::wstring GetFilePath() const { return state_.filePath; }
@@ -243,9 +262,16 @@ namespace Orion
         void SetSelectionStyle(Rendering::SelectionStyle style);
         void SetSelectionColor(float r, float g, float b, float a);
         void CancelInteraction();
-        void Undo();
+        bool Undo();
 
         friend void Caret::SetCaret(Editor &editor, int line, int column);
+
+        void LoadFileAsync(HWND hwnd, const std::wstring &filePath, int tabIndex);
+
+        // appelé UNIQUEMENT sur le thread UI
+        void ApplyLoadedFile(std::wstring filePath,
+                             std::wstring encoding,
+                             std::vector<std::wstring> lines);
 
     private:
         CustomFontCollectionLoader *fontLoader_ = nullptr;
@@ -290,6 +316,8 @@ namespace Orion
         std::wstring pendingCompletionTemplate_;
 
         bool suppressNextChar_ = false;
+        // Dirty flag: true when document has unsaved changes
+        bool isDirty_ = false;
         void DrawSearchMatches(ID2D1RenderTarget *ctx);
         void DrawWhitespaceIndicators(ID2D1RenderTarget *ctx);
         std::vector<EditorState> undoStack_;

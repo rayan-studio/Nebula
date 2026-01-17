@@ -321,8 +321,16 @@ namespace Orion
                     IDWriteTypography *typography = nullptr;
                     if (SUCCEEDED(pDWriteFactory_->CreateTypography(&typography)) && typography)
                     {
-                        DWRITE_FONT_FEATURE ff = {DWRITE_MAKE_FONT_FEATURE_TAG('l', 'i', 'g', 'a'), 0};
-                        typography->AddFontFeature(ff);
+                        // JetBrains Mono ligatures = souvent via 'calt'
+                        DWRITE_FONT_FEATURE features[] = {
+                            {DWRITE_MAKE_FONT_FEATURE_TAG('l', 'i', 'g', 'a'), 1}, // standard ligatures
+                            {DWRITE_MAKE_FONT_FEATURE_TAG('c', 'a', 'l', 't'), 1}, // contextual alternates (IMPORTANT)
+                            {DWRITE_MAKE_FONT_FEATURE_TAG('d', 'l', 'i', 'g'), 1}, // discretionary ligatures (optionnel)
+                        };
+
+                        for (auto &f : features)
+                            typography->AddFontFeature(f);
+
                         DWRITE_TEXT_RANGE fullRange = {0, (UINT32)line.size()};
                         layout->SetTypography(typography, fullRange);
                         typography->Release();

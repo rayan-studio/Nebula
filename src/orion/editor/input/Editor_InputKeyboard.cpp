@@ -11,6 +11,8 @@ namespace Orion
     // --- OnChar (complete) ---
     void Editor::OnChar(wchar_t ch)
     {
+        bool contentChanged = false;
+
         if (searchBox_.IsVisible() && searchBox_.IsInputFocused())
         {
             searchBox_.OnChar(ch);
@@ -49,12 +51,9 @@ namespace Orion
 
             if (ext == L".html" || ext == L".htm")
             {
-                // Do not block insertion of the '!' — instead store a pending
-                // short label and the full template to insert when accepted.
                 pendingCompletionLabel_ = L"HTML5 boilerplate";
                 pendingCompletionTemplate_ = L"<!DOCTYPE html>\n<html>\n<head>\n  <meta charset=\"utf-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n  <title>Document</title>\n</head>\n<body>\n\n</body>\n</html>";
                 pendingCompletionShow_ = true;
-                // allow normal insertion of '!'
             }
         }
 
@@ -82,6 +81,7 @@ namespace Orion
         if (state_.hasSelection)
         {
             DeleteSelection();
+            contentChanged = true;
         }
 
         // Compute current file extension for language-specific behaviors
@@ -205,7 +205,8 @@ namespace Orion
                                 state_.caretVisible = true;
                                 Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
                                 state_.lastBlinkTime = GetTickCount();
-                                return;
+                                contentChanged = true;
+                                goto ONCHAR_FINISH;
                             }
                         }
                     }
@@ -278,6 +279,7 @@ namespace Orion
                             state_.caret.line++;
                             state_.caret.column = (int)innerIndent.size();
                             didSpecial = true;
+                            contentChanged = true;
                         }
                     }
                 }
@@ -289,6 +291,7 @@ namespace Orion
 
                     state_.caret.line++;
                     state_.caret.column = 0;
+                    contentChanged = true;
                 }
             }
             else
@@ -358,7 +361,8 @@ namespace Orion
                             {
                                 const std::wstring &l = state_.lines[ln];
                                 int p = 0;
-                                while (p < (int)l.size() && iswspace(l[p])) p++;
+                                while (p < (int)l.size() && iswspace(l[p]))
+                                    p++;
                                 if (p < (int)l.size() && l[p] == expectedClose)
                                 {
                                     closingExists = true;
@@ -444,16 +448,17 @@ namespace Orion
 
                     state_.caret.line++;
                     state_.caret.column = 0;
+                    contentChanged = true;
                 }
             }
         }
         else if (ch == L'\t')
         {
-            // Tab = indent size from configuration
             int tabSize = GetIndentConfig().tabSize;
-            std::wstring spaces = std::wstring(tabSize, L' ');
+            std::wstring spaces(tabSize, L' ');
             state_.lines[state_.caret.line].insert(state_.caret.column, spaces);
             state_.caret.column += tabSize;
+            contentChanged = true;
         }
         else
         {
@@ -503,6 +508,7 @@ namespace Orion
                             state_.hasSelection = false;
                             state_.caret.line = b.line;
                             state_.caret.column = b.column + 1;
+                            contentChanged = true;
                         }
                         else
                         {
@@ -512,6 +518,7 @@ namespace Orion
                             pairStr.push_back(ch);
                             state_.lines[state_.caret.line].insert(state_.caret.column, pairStr);
                             state_.caret.column += 1;
+                            contentChanged = true;
                         }
                     }
                     else
@@ -531,6 +538,7 @@ namespace Orion
                             {
                                 state_.lines[state_.caret.line].insert(state_.caret.column, 1, ch);
                                 state_.caret.column++;
+                                contentChanged = true;
                             }
                         }
                         else
@@ -540,6 +548,7 @@ namespace Orion
                             pairStr.push_back(ch);
                             state_.lines[state_.caret.line].insert(state_.caret.column, pairStr);
                             state_.caret.column += 1;
+                            contentChanged = true;
                         }
                     }
                 }
@@ -561,6 +570,7 @@ namespace Orion
                             state_.hasSelection = false;
                             state_.caret.line = b.line;
                             state_.caret.column = b.column + 1;
+                            contentChanged = true;
                         }
                         else
                         {
@@ -569,6 +579,7 @@ namespace Orion
                             pairStr.push_back(closeForOpen);
                             state_.lines[state_.caret.line].insert(state_.caret.column, pairStr);
                             state_.caret.column += 1;
+                            contentChanged = true;
                         }
                     }
                     else
@@ -578,6 +589,7 @@ namespace Orion
                         pairStr.push_back(closeForOpen);
                         state_.lines[state_.caret.line].insert(state_.caret.column, pairStr);
                         state_.caret.column += 1;
+                        contentChanged = true;
                     }
                 }
             }
@@ -593,6 +605,7 @@ namespace Orion
                 {
                     state_.lines[state_.caret.line].insert(state_.caret.column, 1, ch);
                     state_.caret.column++;
+                    contentChanged = true;
                 }
             }
             else
@@ -600,6 +613,7 @@ namespace Orion
                 // Caractère normal
                 state_.lines[state_.caret.line].insert(state_.caret.column, 1, ch);
                 state_.caret.column++;
+                contentChanged = true;
 
                 // HTML: after typing '>' on an opening tag, auto-insert closing tag
                 if ((ext == L".html" || ext == L".htm") && ch == L'>')
@@ -607,26 +621,37 @@ namespace Orion
                     std::wstring &line = state_.lines[state_.caret.line];
                     int col = state_.caret.column;
                     int lt = col - 2;
+
                     while (lt >= 0 && line[lt] != L'<')
                         lt--;
-                    if (lt >= 0 && lt + 1 < (int)line.size() && line[lt + 1] != L'/' &&
+
+                    if (lt >= 0 && lt + 1 < (int)line.size() &&
+                        line[lt + 1] != L'/' &&
                         !(lt + 3 < (int)line.size() && line.substr(lt + 1, 3) == L"!--"))
                     {
                         int tstart = lt + 1;
                         int tpos = tstart;
-                        while (tpos < (int)line.size() && (iswalpha(line[tpos]) || iswdigit(line[tpos]) ||
-                                                           line[tpos] == L':' || line[tpos] == L'-'))
+
+                        while (tpos < (int)line.size() &&
+                               (iswalpha(line[tpos]) || iswdigit(line[tpos]) ||
+                                line[tpos] == L':' || line[tpos] == L'-'))
+                        {
                             tpos++;
+                        }
+
                         if (tpos > tstart)
                         {
                             std::wstring tag = line.substr(tstart, tpos - tstart);
+
                             int beforeGt = col - 2;
                             while (beforeGt > lt && iswspace(line[beforeGt]))
                                 beforeGt--;
+
                             if (beforeGt >= lt && line[beforeGt] != L'/')
                             {
                                 std::wstring closing = L"</" + tag + L">";
                                 state_.lines[state_.caret.line].insert(state_.caret.column, closing);
+                                contentChanged = true;
                             }
                         }
                     }
@@ -646,9 +671,12 @@ namespace Orion
             }
         }
 
+    ONCHAR_FINISH:
         state_.caretVisible = true;
         Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
         state_.lastBlinkTime = GetTickCount();
+        if (contentChanged)
+            MarkDirty();
     } // end OnChar
 
     // --- OnKeyDown (complete) ---
@@ -656,6 +684,8 @@ namespace Orion
     {
         // Save initial caret to detect whether a key actually moved it.
         CaretPosition prevCaret = state_.caret;
+
+        bool contentChanged = false;
 
         {
             wchar_t buf[128];
@@ -797,6 +827,7 @@ namespace Orion
                     {
                         state_.lines[state_.caret.line].insert(state_.caret.column, parts[0]);
                         state_.caret.column += (int)parts[0].size();
+                        contentChanged = true;
 
                         if (ext == L".html" || ext == L".htm")
                         {
@@ -806,6 +837,7 @@ namespace Orion
                             {
                                 line.insert(nextPos, 1, L'>');
                                 state_.caret.column = nextPos + 1;
+                                contentChanged = true;
                             }
                             else
                             {
@@ -832,6 +864,7 @@ namespace Orion
 
                         state_.caret.line = insertAt - 1;
                         state_.caret.column = (int)(state_.lines[state_.caret.line].size() - after.size());
+                        contentChanged = true;
                     }
 
                     if (usePendingTemplate)
@@ -885,8 +918,7 @@ namespace Orion
 
         if (ctrl && (key == 'Z' || key == 'z'))
         {
-            Undo();
-            return;
+            contentChanged = Undo();
         }
 
         // NOTE: don't start a selection just by pressing Shift alone.
@@ -956,11 +988,15 @@ namespace Orion
             }
 
             if (state_.hasSelection)
+            {
                 DeleteSelection();
+                contentChanged = true;
+            }
             else if (state_.caret.column > 0)
             {
                 state_.lines[state_.caret.line].erase(state_.caret.column - 1, 1);
                 state_.caret.column--;
+                contentChanged = true;
             }
             else if (state_.caret.line > 0)
             {
@@ -969,6 +1005,7 @@ namespace Orion
                 state_.lines.erase(state_.lines.begin() + state_.caret.line);
                 state_.caret.line--;
                 state_.caret.column = prevLineLen;
+                contentChanged = true;
             }
             break;
 
@@ -983,13 +1020,20 @@ namespace Orion
             }
 
             if (state_.hasSelection)
+            {
                 DeleteSelection();
+                contentChanged = true;
+            }
             else if (state_.caret.column < (int)state_.lines[state_.caret.line].size())
+            {
                 state_.lines[state_.caret.line].erase(state_.caret.column, 1);
+                contentChanged = true;
+            }
             else if (state_.caret.line < (int)state_.lines.size() - 1)
             {
                 state_.lines[state_.caret.line] += state_.lines[state_.caret.line + 1];
                 state_.lines.erase(state_.lines.begin() + state_.caret.line + 1);
+                contentChanged = true;
             }
             break;
 
@@ -1113,6 +1157,7 @@ namespace Orion
                 }
 
                 DeleteSelection();
+                contentChanged = true;
             }
             break;
 
@@ -1149,7 +1194,10 @@ namespace Orion
                             }
 
                             if (state_.hasSelection)
+                            {
                                 DeleteSelection();
+                                contentChanged = true;
+                            }
 
                             std::vector<std::wstring> parts;
                             size_t start = 0;
@@ -1169,6 +1217,7 @@ namespace Orion
                             {
                                 state_.lines[state_.caret.line].insert(state_.caret.column, parts[0]);
                                 state_.caret.column += (int)parts[0].size();
+                                contentChanged = true;
                             }
                             else if (!parts.empty())
                             {
@@ -1189,6 +1238,7 @@ namespace Orion
 
                                 state_.caret.line = insertAt - 1;
                                 state_.caret.column = (int)(state_.lines[state_.caret.line].size() - after.size());
+                                contentChanged = true;
                             }
                         }
                     }
@@ -1214,5 +1264,8 @@ namespace Orion
         }
         state_.caretVisible = true;
         state_.lastBlinkTime = GetTickCount();
+        // Mark document dirty for typed characters (only if content actually changed)
+        if (contentChanged)
+            MarkDirty();
     }
 } // namespace Orion
