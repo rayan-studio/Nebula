@@ -1,11 +1,3 @@
-Parfait 👍
-Je vais te faire un **README.md propre, professionnel, crédible**, dans le style des gros projets open-source (clair, structuré, lisible, sans bullshit).
-
-Tu pourras **copier-coller tel quel** dans ton repo.
-
----
-
-````md
 # Nebula [![Nebula](assets/badge.svg)](https://github.com/sindresorhus/awesome#readme)
 
 <img src="assets/favicon.ico" align="right" width="96" height="96"/>
