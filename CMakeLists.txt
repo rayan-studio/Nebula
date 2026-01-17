@@ -12,10 +12,10 @@ set(LIBVTERM_DIR ${CMAKE_SOURCE_DIR}/external/libvterm)
 
 # Vérifier que libvterm existe
 if(NOT EXISTS ${LIBVTERM_DIR}/include/vterm.h)
-  message(FATAL_ERROR "❌ libvterm not found. Clone it with:\n  git clone https://github.com/neovim/libvterm.git external/libvterm")
+  message(FATAL_ERROR "libvterm not found. Clone it with:\n  git clone https://github.com/neovim/libvterm.git external/libvterm")
 endif()
 
-message(STATUS "✅ Using libvterm from: ${LIBVTERM_DIR}")
+message(STATUS "Using libvterm from: ${LIBVTERM_DIR}")
 
 # Sources de libvterm
 file(GLOB LIBVTERM_SOURCES 
@@ -75,10 +75,10 @@ set(GGWAVE_DIR ${CMAKE_SOURCE_DIR}/external/ggwave)
 
 # Vérifier que ggwave existe
 if(NOT EXISTS ${GGWAVE_DIR}/include/ggwave/ggwave.h)
-  message(FATAL_ERROR "❌ ggwave not found in ${GGWAVE_DIR}. Clone it with: git submodule update --init --recursive")
+  message(FATAL_ERROR "ggwave not found in ${GGWAVE_DIR}. Clone it with: git submodule update --init --recursive")
 endif()
 
-message(STATUS "✅ Using ggwave from: ${GGWAVE_DIR}")
+message(STATUS "Using ggwave from: ${GGWAVE_DIR}")
 
 # Ajouter ggwave comme sous-projet
 add_subdirectory(${GGWAVE_DIR} EXCLUDE_FROM_ALL)

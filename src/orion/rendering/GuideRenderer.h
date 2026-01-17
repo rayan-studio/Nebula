@@ -3,7 +3,7 @@
 #include <dwrite.h>
 #include <vector>
 #include <string>
-#include "../geometry/IndentationHelper.h"
+#include "orion/geometry/IndentationHelper.h"
 
 namespace Orion::Rendering
 {

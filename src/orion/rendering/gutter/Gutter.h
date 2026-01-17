@@ -2,7 +2,7 @@
 
 #include <d2d1.h>
 #include <dwrite.h>
-#include "../../OrionEditor.h"
+#include "orion/editor/Editor.h"
 
 namespace Orion
 {

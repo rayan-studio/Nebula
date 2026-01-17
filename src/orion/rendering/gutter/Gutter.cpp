@@ -111,6 +111,8 @@ namespace Orion
         }
 
         float padding = 16.0f; // left/right padding inside gutter
-        return digits * metrics.characterWidth + padding;
+        float computedWidth = digits * metrics.characterWidth + padding;
+        // Ensure we never go below the configured gutter width
+        return (std::max)(metrics.gutterWidth, computedWidth);
     }
 }

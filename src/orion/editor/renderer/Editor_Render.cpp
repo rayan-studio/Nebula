@@ -1,0 +1,428 @@
+#include "orion/editor/Editor.h"
+#include "orion/editor/internal/Editor_Internal.h"
+#include "orion/completion/popup/Popup.h"
+
+#include <algorithm>
+#include <cmath>
+
+#include "orion/rendering/gutter/Gutter.h"
+#include "orion/rendering/GuideRenderer.h"
+#include "orion/geometry/IndentationHelper.h"
+#include "orion/selection/Selection.h"
+#include "orion/caret/Caret.h"
+
+// Ensure Windows min/max macros don't interfere with std::min/std::max
+#ifdef max
+#undef max
+#endif
+#ifdef min
+#undef min
+#endif
+
+namespace Orion
+{
+    void Editor::UpdateLayout(HWND hwnd, float left, float top, float right, float bottom)
+    {
+        (void)hwnd;
+        state_.leftEdge = left;
+        state_.topEdge = top;
+        state_.rightEdge = right;
+        state_.bottomEdge = bottom;
+
+        float width = state_.rightEdge - state_.leftEdge;
+        float height = state_.bottomEdge - state_.topEdge;
+
+        float baseContentHeight = (float)state_.lines.size() * metrics_.lineHeight;
+
+        float extra = height - metrics_.lineHeight;
+        if (extra < 0.0f)
+            extra = 0.0f;
+
+        float contentHeight = baseContentHeight + extra;
+
+        scrollbar_.UpdateLayout(state_.leftEdge, state_.topEdge, width, height, contentHeight);
+
+        state_.scrollOffsetY = scrollbar_.GetScrollOffset();
+
+        float availableWidth = (right - left) - metrics_.gutterWidth;
+        if (scrollbar_.IsVisible())
+            availableWidth -= 14.0f;
+
+        size_t maxLen = 0;
+        for (const auto &ln : state_.lines)
+            maxLen = (std::max)(maxLen, ln.size());
+
+        float contentWidth = maxLen * metrics_.characterWidth + 20.0f;
+        hContentWidth_ = contentWidth;
+        hViewportWidth_ = availableWidth;
+        hScrollbarVisible_ = contentWidth > availableWidth;
+
+        if (hScrollbarVisible_)
+        {
+            float ratio = hViewportWidth_ / hContentWidth_;
+            hThumbWidth_ = (std::max)(hViewportWidth_ * ratio, 30.0f);
+
+            float maxScroll = hContentWidth_ - hViewportWidth_;
+            float availableTrack = hViewportWidth_ - hThumbWidth_;
+            if (maxScroll > 0.0f)
+                hThumbPos_ = (state_.scrollOffsetX / maxScroll) * availableTrack;
+            else
+                hThumbPos_ = 0.0f;
+        }
+
+        float editorWidth = right - left - metrics_.gutterWidth;
+        searchBox_.UpdateLayout(left + metrics_.gutterWidth, top, editorWidth);
+
+        if (completionPopup_ && state_.caret.line >= 0 && state_.caret.line < (int)state_.lines.size())
+        {
+            D2D1_POINT_2F screen = TextToScreenPosition(state_.caret);
+            completionPopup_->UpdateLayout(screen.x, screen.y + metrics_.lineHeight, 400.0f, metrics_.lineHeight);
+        }
+    }
+
+    void Editor::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
+    {
+        if (!ctx || !dwrite)
+            return;
+
+        pDWriteFactory_ = dwrite;
+
+        if (!cachedTextFormat_)
+        {
+            HRESULT hr = pDWriteFactory_->CreateTextFormat(
+                L"JetBrains Mono",
+                customFontCollection_,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                14.0f,
+                L"en-us",
+                &cachedTextFormat_);
+
+            if (SUCCEEDED(hr) && cachedTextFormat_)
+            {
+                cachedTextFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                cachedTextFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                cachedTextFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            }
+        }
+
+        D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
+        D2D1_TEXT_ANTIALIAS_MODE oldTextAA = ctx->GetTextAntialiasMode();
+
+        D2D1_RECT_F editorClip = D2D1::RectF(
+            state_.leftEdge,
+            state_.topEdge,
+            state_.rightEdge,
+            state_.bottomEdge);
+
+        ctx->PushAxisAlignedClip(editorClip, D2D1_ANTIALIAS_MODE_ALIASED);
+
+        {
+            ID2D1SolidColorBrush *bg = nullptr;
+            ctx->CreateSolidColorBrush(theme_.background, &bg);
+            if (bg)
+            {
+                ctx->FillRectangle(editorClip, bg);
+                bg->Release();
+            }
+        }
+
+        Orion::Gutter gutter;
+        metrics_.gutterWidth = gutter.CalculateGutterWidth(state_, metrics_);
+        gutter.DrawGutter(ctx, state_, theme_, metrics_);
+        gutter.DrawLineNumbers(ctx, dwrite, state_, theme_, metrics_, customFontCollection_);
+
+        float contentLeft = state_.leftEdge + metrics_.gutterWidth + metrics_.leftPadding;
+        float contentRight = state_.rightEdge - (scrollbar_.IsVisible() ? 14.0f : 0.0f);
+        float contentBottom = state_.bottomEdge - (hScrollbarVisible_ ? 14.0f : 0.0f);
+        D2D1_RECT_F contentClip = D2D1::RectF(contentLeft, state_.topEdge, contentRight, contentBottom);
+        ctx->PushAxisAlignedClip(contentClip, D2D1_ANTIALIAS_MODE_ALIASED);
+
+        DrawActiveLine(ctx);
+        DrawSelection(ctx);
+        DrawTextContent(ctx, dwrite);
+        DrawSearchMatches(ctx);
+        DrawCaret(ctx);
+
+        if (completionPopup_ && completionPopup_->IsVisible())
+        {
+            completionPopup_->Draw(ctx, dwrite);
+        }
+
+        ctx->PopAxisAlignedClip();
+
+        scrollbar_.Draw(ctx);
+
+        if (hScrollbarVisible_)
+        {
+            float hLeft = state_.leftEdge + metrics_.gutterWidth;
+            float hRight = state_.rightEdge - (scrollbar_.IsVisible() ? 14.0f : 0.0f);
+            float hTop = state_.bottomEdge - 14.0f;
+            float hBottom = state_.bottomEdge;
+
+            ID2D1SolidColorBrush *trackBrush = nullptr;
+            D2D1_COLOR_F trackColor = theme_.gutterBackground;
+            trackColor.a = 1.0f;
+            ctx->CreateSolidColorBrush(trackColor, &trackBrush);
+            if (trackBrush)
+            {
+                ctx->FillRectangle(D2D1::RectF(hLeft, hTop, hRight, hBottom), trackBrush);
+                trackBrush->Release();
+            }
+
+            D2D1_COLOR_F thumbColor = theme_.text;
+            thumbColor.a = hIsDragging_ ? 0.9f : 0.4f;
+
+            ID2D1SolidColorBrush *thumbBrush = nullptr;
+            ctx->CreateSolidColorBrush(thumbColor, &thumbBrush);
+
+            float thumbLeft = hLeft + hThumbPos_;
+            float thumbRight = thumbLeft + hThumbWidth_;
+            D2D1_ROUNDED_RECT thumbRect = D2D1::RoundedRect(
+                D2D1::RectF(thumbLeft + 4.0f, hTop + 2.0f, thumbRight - 4.0f, hBottom - 2.0f),
+                3.0f, 3.0f);
+
+            if (thumbBrush)
+            {
+                ctx->FillRoundedRectangle(thumbRect, thumbBrush);
+                thumbBrush->Release();
+            }
+        }
+
+        ctx->PopAxisAlignedClip();
+
+        if (searchBox_.IsVisible())
+        {
+            searchBox_.Draw(ctx, dwrite);
+        }
+
+        ctx->SetAntialiasMode(oldAA);
+        ctx->SetTextAntialiasMode(oldTextAA);
+    }
+
+    void Editor::DrawActiveLine(ID2D1RenderTarget *ctx)
+    {
+        if (state_.hasSelection)
+            return;
+
+        ID2D1SolidColorBrush *brush = nullptr;
+        ctx->CreateSolidColorBrush(theme_.activeLineBackground, &brush);
+
+        float contentLeft = state_.leftEdge + metrics_.gutterWidth + metrics_.leftPadding;
+        float lineY = state_.topEdge + (state_.caret.line * metrics_.lineHeight) - state_.scrollOffsetY;
+
+        D2D1_RECT_F rect = D2D1::RectF(
+            contentLeft - metrics_.leftPadding,
+            lineY,
+            state_.rightEdge,
+            lineY + metrics_.lineHeight);
+
+        ctx->FillRectangle(rect, brush);
+
+        if (brush)
+            brush->Release();
+    }
+
+    void Editor::DrawSelection(ID2D1RenderTarget *ctx)
+    {
+        if (!state_.hasSelection)
+            return;
+        if (!selection_)
+            return;
+
+        float contentLeft = state_.leftEdge + metrics_.gutterWidth + metrics_.leftPadding;
+
+        Orion::CaretPosition start = {state_.selectionStart.line, state_.selectionStart.column};
+        Orion::CaretPosition end = {state_.caret.line, state_.caret.column};
+
+        auto regions = Rendering::Selection::CalculateRegions(
+            start,
+            end,
+            state_.lines,
+            contentLeft,
+            state_.topEdge,
+            state_.scrollOffsetX,
+            state_.scrollOffsetY,
+            metrics_.lineHeight,
+            4,
+            metrics_.characterWidth,
+            3.0f,
+            pDWriteFactory_,
+            cachedTextFormat_);
+
+        std::vector<D2D1_ROUNDED_RECT> valid;
+        for (const auto &r : regions)
+        {
+            const D2D1_RECT_F &rc = r.rect;
+            if (!std::isfinite(rc.left) || !std::isfinite(rc.top) || !std::isfinite(rc.right) || !std::isfinite(rc.bottom))
+                continue;
+            if (rc.right <= rc.left || rc.bottom <= rc.top)
+                continue;
+            valid.push_back(r);
+        }
+
+        if (!valid.empty())
+            selection_->Draw(ctx, valid);
+    }
+
+    void Editor::DrawCaret(ID2D1RenderTarget *ctx)
+    {
+        if (!state_.caretVisible)
+            return;
+
+        ID2D1SolidColorBrush *brush = nullptr;
+        ctx->CreateSolidColorBrush(theme_.caret, &brush);
+
+        D2D1_POINT_2F caretPos = TextToScreenPosition(state_.caret);
+
+        D2D1_RECT_F rect = D2D1::RectF(
+            caretPos.x,
+            caretPos.y,
+            caretPos.x + metrics_.caretWidth,
+            caretPos.y + metrics_.lineHeight);
+
+        ctx->FillRectangle(rect, brush);
+
+        if (brush)
+            brush->Release();
+    }
+
+    // ---- Search UI ----
+    void Editor::ShowSearch()
+    {
+        searchBox_.Show();
+        if (state_.hasSelection)
+        {
+            std::wstring sel = GetSelectionText();
+            if (!sel.empty() && sel.find(L'\n') == std::wstring::npos)
+                searchBox_.SetSearchText(sel);
+        }
+    }
+
+    void Editor::HideSearch()
+    {
+        searchBox_.Hide();
+    }
+
+    void Editor::DrawSearchMatches(ID2D1RenderTarget *ctx)
+    {
+        if (!searchBox_.IsVisible())
+            return;
+
+        const auto &matches = searchBox_.GetMatches();
+        if (matches.empty())
+            return;
+
+        int currentMatchIdx = searchBox_.GetCurrentMatchIndex();
+
+        ID2D1SolidColorBrush *matchBrush = nullptr;
+        ID2D1SolidColorBrush *currentMatchBrush = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.8f, 0.6f, 0.0f, 0.4f), &matchBrush);
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.9f, 0.4f, 0.0f, 0.6f), &currentMatchBrush);
+
+        float contentLeft = state_.leftEdge + metrics_.gutterWidth + metrics_.leftPadding;
+
+        for (size_t i = 0; i < matches.size(); ++i)
+        {
+            const auto &match = matches[i];
+
+            float lineY = state_.topEdge + (match.line * metrics_.lineHeight) - state_.scrollOffsetY;
+            if (lineY + metrics_.lineHeight < state_.topEdge || lineY > state_.bottomEdge)
+                continue;
+
+            float startX = contentLeft - state_.scrollOffsetX;
+            float endX = contentLeft - state_.scrollOffsetX;
+
+            if (pDWriteFactory_ && match.line >= 0 && match.line < (int)state_.lines.size())
+            {
+                const std::wstring &line = state_.lines[match.line];
+                IDWriteTextFormat *format = cachedTextFormat_;
+                IDWriteTextFormat *tmpFmt = nullptr;
+
+                if (!format)
+                {
+                    pDWriteFactory_->CreateTextFormat(
+                        L"JetBrains Mono", customFontCollection_,
+                        DWRITE_FONT_WEIGHT_NORMAL,
+                        DWRITE_FONT_STYLE_NORMAL,
+                        DWRITE_FONT_STRETCH_NORMAL,
+                        14.0f, L"en-us",
+                        &tmpFmt);
+                    if (tmpFmt)
+                        format = tmpFmt;
+                }
+
+                if (format)
+                {
+                    if (match.startColumn > 0)
+                    {
+                        std::wstring textBefore = line.substr(0, match.startColumn);
+                        IDWriteTextLayout *layout1 = nullptr;
+                        if (SUCCEEDED(pDWriteFactory_->CreateTextLayout(
+                                textBefore.c_str(),
+                                (UINT32)textBefore.size(),
+                                format,
+                                10000.0f,
+                                metrics_.lineHeight,
+                                &layout1)) &&
+                            layout1)
+                        {
+                            DWRITE_TEXT_METRICS tm1 = {};
+                            layout1->GetMetrics(&tm1);
+                            startX = contentLeft + tm1.width - state_.scrollOffsetX;
+                            layout1->Release();
+                        }
+                    }
+
+                    if (match.endColumn > 0 && match.endColumn <= (int)line.size())
+                    {
+                        std::wstring textBeforeEnd = line.substr(0, match.endColumn);
+                        IDWriteTextLayout *layout2 = nullptr;
+                        if (SUCCEEDED(pDWriteFactory_->CreateTextLayout(
+                                textBeforeEnd.c_str(),
+                                (UINT32)textBeforeEnd.size(),
+                                format,
+                                10000.0f,
+                                metrics_.lineHeight,
+                                &layout2)) &&
+                            layout2)
+                        {
+                            DWRITE_TEXT_METRICS tm2 = {};
+                            layout2->GetMetrics(&tm2);
+                            endX = contentLeft + tm2.width - state_.scrollOffsetX;
+                            layout2->Release();
+                        }
+                    }
+
+                    if (tmpFmt)
+                        tmpFmt->Release();
+                }
+            }
+
+            D2D1_RECT_F matchRect = D2D1::RectF(startX, lineY, endX, lineY + metrics_.lineHeight);
+
+            bool isCurrent = (currentMatchIdx >= 0 && (int)i == currentMatchIdx);
+            ID2D1SolidColorBrush *brush = isCurrent ? currentMatchBrush : matchBrush;
+
+            if (brush)
+                ctx->FillRectangle(matchRect, brush);
+
+            if (isCurrent)
+            {
+                ID2D1SolidColorBrush *borderBrush = nullptr;
+                ctx->CreateSolidColorBrush(D2D1::ColorF(1.0f, 0.5f, 0.0f), &borderBrush);
+                if (borderBrush)
+                {
+                    ctx->DrawRectangle(matchRect, borderBrush, 1.5f);
+                    borderBrush->Release();
+                }
+            }
+        }
+
+        if (matchBrush)
+            matchBrush->Release();
+        if (currentMatchBrush)
+            currentMatchBrush->Release();
+    }
+}

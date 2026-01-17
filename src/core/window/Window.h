@@ -1,6 +1,6 @@
 #pragma once
 #include <Windows.h>
-#include "orion/OrionEditor.h"
+#include "orion/editor/Editor.h"
 #include "ui/components/tabs/TabBar.h"
 #include <string>
 #include <map>

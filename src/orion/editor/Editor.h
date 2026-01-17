@@ -8,14 +8,14 @@
 #include <windows.h>
 #include "ui/components/scrollbar/Scrollbar.h"
 #include "orion/font/CustomFontLoader.h"
-#include "./search/SearchBox.h"
-#include "syntax/Highlighter.h"
-#include "orion/completion/CompletionService.h"
+#include "../search/SearchBox.h"
+#include "../syntax/Highlighter.h"
+#include "../completion/CompletionService.h"
 // New helpers
-#include "geometry/IndentationHelper.h"
-#include "rendering/GuideRenderer.h"
+#include "orion/geometry/IndentationHelper.h"
+#include "../rendering/GuideRenderer.h"
 // Selection rendering
-#include "selection/Selection.h"
+#include "../selection/Selection.h"
 #include "orion/caret/CaretPosition.h"
 
 // ============================================================================
@@ -29,7 +29,7 @@ namespace Orion
     // ========================================================================
     // CONVERSION GAMMA : sRGB → Linear (pour Direct2D)
     // ========================================================================
-    
+
     inline float SRGBToLinear(float srgb)
     {
         // Formule officielle sRGB → Linear
@@ -38,17 +38,17 @@ namespace Orion
         else
             return powf((srgb + 0.055f) / 1.055f, 2.4f);
     }
-    
+
     // ========================================================================
     // CONVERSION HEX → D2D1_COLOR_F avec correction gamma
     // ========================================================================
-    
+
     inline D2D1_COLOR_F ColorFromHex(uint32_t hex, float alpha = 1.0f, bool applyGamma = true)
     {
         float r = ((hex >> 16) & 0xFF) / 255.0f;
         float g = ((hex >> 8) & 0xFF) / 255.0f;
         float b = (hex & 0xFF) / 255.0f;
-        
+
         // ⚠️ IMPORTANT : Appliquer la correction gamma sRGB
         if (applyGamma)
         {
@@ -56,7 +56,7 @@ namespace Orion
             g = SRGBToLinear(g);
             b = SRGBToLinear(b);
         }
-        
+
         return D2D1::ColorF(r, g, b, alpha);
     }
 
@@ -73,11 +73,10 @@ namespace Orion
 
 } // namespace Orion
 
-// Macro pour convertir hex → Direct2D SANS correction gamma (Direct2D gère déjà sRGB)
-#define HEX_TO_D2D(hex) Orion::ColorFromHex(0x##hex, 1.0f, false)
+#define HEX_TO_D2D(hex) Orion::ColorFromHex(0x##hex, 1.0f, true)
 
-// Macro avec correction gamma (si besoin)
-#define HEX_TO_D2D_LINEAR(hex) Orion::ColorFromHex(0x##hex, 1.0f, true)
+// Macro SANS correction gamma (uniquement si tu veux forcer du sRGB brut)
+#define HEX_TO_D2D_SRGB(hex) Orion::ColorFromHex(0x##hex, 1.0f, false)
 
 namespace Orion
 {
@@ -92,27 +91,76 @@ namespace Orion
     {
         void SetCaret(Editor &editor, int line, int column);
     }
-    
+
     struct EditorTheme
     {
-        // 🎨 Couleurs avec correction gamma sRGB pour match parfait avec le web
-        D2D1_COLOR_F background = HEX_TO_D2D(121212);           // #121212
-        D2D1_COLOR_F text = HEX_TO_D2D(E6E6E6);                 // #E6E6E6
-        D2D1_COLOR_F gutterBackground = HEX_TO_D2D(0D0D0D);     // #0D0D0D
-        D2D1_COLOR_F caret = HEX_TO_D2D(FFFFFF);                // #FFFFFF
-        D2D1_COLOR_F lineNumberText = HEX_TO_D2D(737373);       // #737373
-        D2D1_COLOR_F activeLineBackground = HEX_TO_D2D(1A1A1A); // #1A1A1A
-        D2D1_COLOR_F selection = ColorFromHex(0x1F7AEB, 0.3f);  // #1F7AEB avec 30% alpha
+        // =============================
+        // UI / Background
+        // =============================
+        // Harmonized with titlebar (#121212)
+        D2D1_COLOR_F background =
+            D2D1::ColorF(18.0f / 255.0f, 18.0f / 255.0f, 18.0f / 255.0f, 1.0f);
 
-        // Couleurs de syntaxe (identiques à VS Code Dark+)
-        D2D1_COLOR_F keyword = HEX_TO_D2D(569CD6);   // #569CD6 - Bleu
-        D2D1_COLOR_F string = HEX_TO_D2D(CE9178);    // #CE9178 - Orange
-        D2D1_COLOR_F comment = HEX_TO_D2D(6A9955);   // #6A9955 - Vert
-        D2D1_COLOR_F number = HEX_TO_D2D(B5CEA8);    // #B5CEA8 - Vert clair
-        D2D1_COLOR_F function = HEX_TO_D2D(DCDCAA);  // #DCDCAA - Jaune
-        D2D1_COLOR_F type = HEX_TO_D2D(4EC9B0);      // #4EC9B0 - Cyan
-        D2D1_COLOR_F operator_ = HEX_TO_D2D(D4D4D4); // #D4D4D4 - Gris clair
-        D2D1_COLOR_F variable = HEX_TO_D2D(9CDCFE);  // #9CDCFE - Bleu clair
+        // #ECECEC
+        D2D1_COLOR_F text =
+            D2D1::ColorF(0.925490f, 0.925490f, 0.925490f, 1.0f);
+
+        // Match editor background so gutter blends with editor (#121212)
+        D2D1_COLOR_F gutterBackground =
+            D2D1::ColorF(18.0f / 255.0f, 18.0f / 255.0f, 18.0f / 255.0f, 1.0f);
+
+        // #FFFFFF
+        D2D1_COLOR_F caret =
+            D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
+
+        // #8A8A8A
+        D2D1_COLOR_F lineNumberText =
+            D2D1::ColorF(0.541176f, 0.541176f, 0.541176f, 1.0f);
+
+        // Active line uses a faint contrast aligned with the dark theme
+        D2D1_COLOR_F activeLineBackground =
+            D2D1::ColorF(0.145098f, 0.145098f, 0.149019f, 1.0f);
+
+        // #1F7AEB @ 22%
+        D2D1_COLOR_F selection =
+            D2D1::ColorF(0.121568f, 0.478431f, 0.921568f, 0.22f);
+
+        // =============================
+        // Syntax highlighting
+        // (VS Code Dark+ inspired)
+        // =============================
+
+        // #62A0E8
+        D2D1_COLOR_F keyword =
+            D2D1::ColorF(0.384314f, 0.627451f, 0.909804f, 1.0f);
+
+        // #DF9E80
+        D2D1_COLOR_F string =
+            D2D1::ColorF(0.874510f, 0.619608f, 0.501961f, 1.0f);
+
+        // #7FB66A
+        D2D1_COLOR_F comment =
+            D2D1::ColorF(0.498039f, 0.713725f, 0.415686f, 1.0f);
+
+        // #C6D9B0
+        D2D1_COLOR_F number =
+            D2D1::ColorF(0.776471f, 0.850980f, 0.690196f, 1.0f);
+
+        // #E6E39A
+        D2D1_COLOR_F function =
+            D2D1::ColorF(0.901961f, 0.890196f, 0.603921f, 1.0f);
+
+        // #59D0BC
+        D2D1_COLOR_F type =
+            D2D1::ColorF(0.349019f, 0.815686f, 0.737255f, 1.0f);
+
+        // #E0E0E0
+        D2D1_COLOR_F operator_ =
+            D2D1::ColorF(0.878431f, 0.878431f, 0.878431f, 1.0f);
+
+        // #A8E0FF
+        D2D1_COLOR_F variable =
+            D2D1::ColorF(0.658824f, 0.878431f, 1.0f, 1.0f);
     };
 
     struct EditorMetrics
@@ -253,6 +301,9 @@ namespace Orion
         std::unique_ptr<Rendering::Selection> selection_;
 
         Geometry::IndentConfig GetIndentConfig() const;
+        // Brush cache for syntax highlighting (color -> brush)
+        ID2D1SolidColorBrush *GetOrCreateBrush(ID2D1RenderTarget *ctx, const D2D1_COLOR_F &color);
+        std::vector<std::pair<D2D1_COLOR_F, ID2D1SolidColorBrush *>> brushCache_;
 
         std::wstring GetFileExtension() const;
 
@@ -323,9 +374,13 @@ namespace Orion
             IUnknown *clientDrawingEffect) override
         {
             ID2D1Brush *brush = defaultBrush_;
+            ID2D1Brush *effectBrush = nullptr;
             if (clientDrawingEffect)
             {
-                clientDrawingEffect->QueryInterface(&brush);
+                if (SUCCEEDED(clientDrawingEffect->QueryInterface(__uuidof(ID2D1Brush), (void **)&effectBrush)) && effectBrush)
+                {
+                    brush = effectBrush;
+                }
             }
 
             renderTarget_->DrawGlyphRun(
@@ -334,8 +389,8 @@ namespace Orion
                 brush,
                 measuringMode);
 
-            if (brush != defaultBrush_)
-                brush->Release();
+            if (effectBrush)
+                effectBrush->Release();
             return S_OK;
         }
         HRESULT STDMETHODCALLTYPE DrawUnderline(void *, FLOAT, FLOAT, DWRITE_UNDERLINE const *, IUnknown *) override { return S_OK; }

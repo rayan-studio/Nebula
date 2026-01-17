@@ -7,7 +7,7 @@
 #include <d2d1helper.h>
 
 #include "CaretPosition.h"
-#include "../OrionEditor.h"
+#include "orion/editor/Editor.h"
 
 #include "../geometry/TextColumns.h" // pour Orion::Geometry::AdvanceVisualCol
 

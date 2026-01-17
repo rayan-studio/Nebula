@@ -1,7 +1,9 @@
-#include "OrionEditor.h"
-#include "CompletionPopup.h"
+#include "../Editor.h"
+
+#include "orion/completion/popup/Popup.h"
 #include "utils/logger/Logger.h"
-#include "caret/Caret.h"
+#include "orion/caret/Caret.h"
+
 #include <algorithm>
 
 namespace Orion
@@ -380,52 +382,45 @@ namespace Orion
                         int tabSize = GetIndentConfig().tabSize;
                         std::wstring innerIndent = baseIndent + std::wstring(tabSize, L' ');
 
-                            // Determine whether the open char should be moved to its own line.
-                            // Consider patterns like "foo(" or "foo ()" or "foo () {" —
-                            // we want to split when the open char is logically attached
-                            // to an identifier or a closing paren, even if spaces exist.
-                            bool splitOpenToOwnLine = false;
-                            if (openChar == L'(' || openChar == L'{' || openChar == L'[')
+                        // Determine whether the open char should be moved to its own line.
+                        bool splitOpenToOwnLine = false;
+                        if (openChar == L'(' || openChar == L'{' || openChar == L'[')
+                        {
+                            int k = lb - 1;
+                            while (k >= 0 && iswspace(before[k]))
+                                k--;
+                            if (k >= 0)
                             {
-                                int k = lb - 1;
-                                // skip any spaces before the open char
-                                while (k >= 0 && iswspace(before[k]))
-                                    k--;
-                                if (k >= 0)
-                                {
-                                    wchar_t beforeOpen = before[k];
-                                    if (iswalnum(beforeOpen) || beforeOpen == L'_' || beforeOpen == L')')
-                                        splitOpenToOwnLine = true;
-                                }
+                                wchar_t beforeOpen = before[k];
+                                if (iswalnum(beforeOpen) || beforeOpen == L'_' || beforeOpen == L')')
+                                    splitOpenToOwnLine = true;
                             }
+                        }
 
                         std::wstring left;
-                        // right content: after from first non-space (keep rest)
                         std::wstring right = after.substr(fa);
 
                         if (splitOpenToOwnLine)
                         {
-                            // keep identifier on previous line, put '(' on its own line
                             left = before.substr(0, lb);
                             state_.lines[state_.caret.line] = left;
-                            // insert a line containing the opening bracket at base indent
+
                             std::wstring openLine = baseIndent + std::wstring(1, openChar);
                             state_.lines.insert(state_.lines.begin() + state_.caret.line + 1, openLine);
-                            // insert inner indent and the closing/right line
+
                             state_.lines.insert(state_.lines.begin() + state_.caret.line + 2, innerIndent);
-                            // if closing doesn't exist, append it to the final line
+
                             std::wstring finalLine = baseIndent + right;
                             if (!closingExists)
                                 finalLine += std::wstring(1, expectedClose);
                             state_.lines.insert(state_.lines.begin() + state_.caret.line + 3, finalLine);
 
-                            state_.caret.line += 2; // move caret to innerIndent line
+                            state_.caret.line += 2;
                             state_.caret.column = (int)innerIndent.size();
                             didSpecial = true;
                         }
                         else
                         {
-                            // default: keep open char on the left line
                             left = before.substr(0, lb + 1);
                             state_.lines[state_.caret.line] = left;
                             state_.lines.insert(state_.lines.begin() + state_.caret.line + 1, innerIndent);
@@ -534,14 +529,12 @@ namespace Orion
                             }
                             else
                             {
-                                // insert escaped quote normally
                                 state_.lines[state_.caret.line].insert(state_.caret.column, 1, ch);
                                 state_.caret.column++;
                             }
                         }
                         else
                         {
-                            // insert pair and place caret between
                             std::wstring pairStr;
                             pairStr.push_back(ch);
                             pairStr.push_back(ch);
@@ -598,7 +591,6 @@ namespace Orion
                 }
                 else
                 {
-                    // Otherwise insert normally
                     state_.lines[state_.caret.line].insert(state_.caret.column, 1, ch);
                     state_.caret.column++;
                 }
@@ -613,39 +605,35 @@ namespace Orion
                 if ((ext == L".html" || ext == L".htm") && ch == L'>')
                 {
                     std::wstring &line = state_.lines[state_.caret.line];
-                    int col = state_.caret.column; // position after '>'
-                    // scan back to find the '<' of the opening tag
+                    int col = state_.caret.column;
                     int lt = col - 2;
                     while (lt >= 0 && line[lt] != L'<')
                         lt--;
-                    if (lt >= 0 && lt + 1 < (int)line.size() && line[lt + 1] != L'/' && !(lt + 3 < (int)line.size() && line.substr(lt + 1, 3) == L"!--"))
+                    if (lt >= 0 && lt + 1 < (int)line.size() && line[lt + 1] != L'/' &&
+                        !(lt + 3 < (int)line.size() && line.substr(lt + 1, 3) == L"!--"))
                     {
                         int tstart = lt + 1;
                         int tpos = tstart;
-                        while (tpos < (int)line.size() && (iswalpha(line[tpos]) || iswdigit(line[tpos]) || line[tpos] == L':' || line[tpos] == L'-'))
+                        while (tpos < (int)line.size() && (iswalpha(line[tpos]) || iswdigit(line[tpos]) ||
+                                                           line[tpos] == L':' || line[tpos] == L'-'))
                             tpos++;
                         if (tpos > tstart)
                         {
                             std::wstring tag = line.substr(tstart, tpos - tstart);
-                            // ensure not a self-closing tag (check char before '>')
                             int beforeGt = col - 2;
                             while (beforeGt > lt && iswspace(line[beforeGt]))
                                 beforeGt--;
                             if (beforeGt >= lt && line[beforeGt] != L'/')
                             {
-                                // insert closing tag right after caret
                                 std::wstring closing = L"</" + tag + L">";
                                 state_.lines[state_.caret.line].insert(state_.caret.column, closing);
-                                // leave caret between open and close
-                                // do not advance caret further
                             }
                         }
                     }
                 }
             }
 
-            // If we prepared a pending completion (e.g. user typed '!'), show a
-            // compact label in the popup now that the '!' has been inserted.
+            // show pending completion label
             if (pendingCompletionShow_ && completionPopup_)
             {
                 std::vector<std::wstring> items;
@@ -654,7 +642,6 @@ namespace Orion
                 D2D1_POINT_2F p = TextToScreenPosition(state_.caret);
                 completionPopup_->UpdateLayout(p.x, p.y + metrics_.lineHeight, 520.0f, metrics_.lineHeight);
                 completionPopup_->Show();
-                // keep pendingCompletionTemplate_ until accepted; only clear the show flag
                 pendingCompletionShow_ = false;
             }
         }
@@ -677,6 +664,7 @@ namespace Orion
             swprintf_s(buf, L"Editor::OnKeyDown - key=%d ctrl=%d shift=%d", (int)key, ctrl ? 1 : 0, shift ? 1 : 0);
             Logger::Instance().Log(std::wstring(buf));
         }
+
         bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
         bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
 
@@ -696,19 +684,16 @@ namespace Orion
         // Ctrl+Space -> trigger completion via CompletionService
         if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0 && key == VK_SPACE && completionService_)
         {
-            // Build context
             Completion::CompletionContext ctx{state_.filePath, state_.lines, state_.caret.line, state_.caret.column, ext};
 
             auto items = completionService_->GetCompletions(ctx);
             if (!items.empty())
             {
-                // Convert to labels for CompletionPopup
                 std::vector<std::wstring> labels;
                 labels.reserve(items.size());
                 for (const auto &it : items)
                     labels.push_back(it.label);
 
-                // If first item is a snippet, store pending template
                 if (items[0].isSnippet)
                 {
                     pendingCompletionLabel_ = items[0].label;
@@ -729,13 +714,11 @@ namespace Orion
         {
             completionPopup_->OnKeyDown(key);
 
-            // If user accepted the selection, insert the chosen snippet/template
             if (key == VK_RETURN)
             {
                 std::wstring chosen = completionPopup_->GetSelectedItem();
                 if (!chosen.empty())
                 {
-                    // Determine if we should insert a pending template
                     std::wstring toInsert = chosen;
                     bool usePendingTemplate = false;
                     if (!pendingCompletionTemplate_.empty() && !pendingCompletionLabel_.empty() && chosen == pendingCompletionLabel_)
@@ -744,7 +727,6 @@ namespace Orion
                         usePendingTemplate = true;
                     }
 
-                    // push undo snapshot before mutating
                     if (undoStack_.empty() || undoStack_.back().lines != state_.lines ||
                         undoStack_.back().caret.line != state_.caret.line ||
                         undoStack_.back().caret.column != state_.caret.column)
@@ -754,7 +736,6 @@ namespace Orion
                             undoStack_.erase(undoStack_.begin());
                     }
 
-                    // Normalize CRLF and split into lines
                     std::wstring tmp;
                     tmp.reserve(toInsert.size());
                     for (wchar_t c : toInsert)
@@ -775,11 +756,9 @@ namespace Orion
                         start = pos + 1;
                     }
 
-                    // If selection active, remove it first
                     if (state_.hasSelection)
                         DeleteSelection();
 
-                    // If using pending template, remove the triggering '!' before inserting
                     if (usePendingTemplate)
                     {
                         if (state_.caret.column > 0)
@@ -793,8 +772,6 @@ namespace Orion
                         }
                     }
 
-                    // HTML tag insertion: if we're inserting a single tag name after '<',
-                    // remove the existing partial name so we replace it rather than duplicate.
                     if (!usePendingTemplate && (ext == L".html" || ext == L".htm") && parts.size() == 1)
                     {
                         std::wstring &line = state_.lines[state_.caret.line];
@@ -804,11 +781,9 @@ namespace Orion
                             lt--;
                         if (lt >= 0 && lt + 1 < caretCol)
                         {
-                            // avoid replacing for closing tags like </...
                             if (line[lt + 1] != L'/')
                             {
                                 int startPos = lt + 1;
-                                // erase the partial name between '<' and caret
                                 if (caretCol > startPos)
                                 {
                                     line.erase(startPos, caretCol - startPos);
@@ -818,35 +793,27 @@ namespace Orion
                         }
                     }
 
-                    if (parts.empty())
-                    {
-                        // nothing
-                    }
-                    else if (parts.size() == 1)
+                    if (parts.size() == 1)
                     {
                         state_.lines[state_.caret.line].insert(state_.caret.column, parts[0]);
-                        // move caret after inserted text
                         state_.caret.column += (int)parts[0].size();
 
-                        // If HTML tag insertion, ensure a closing '>' exists after the tag name
                         if (ext == L".html" || ext == L".htm")
                         {
                             std::wstring &line = state_.lines[state_.caret.line];
                             int nextPos = state_.caret.column;
                             if (nextPos >= (int)line.size() || line[nextPos] != L'>')
                             {
-                                // insert '>' and keep caret after it
                                 line.insert(nextPos, 1, L'>');
                                 state_.caret.column = nextPos + 1;
                             }
                             else
                             {
-                                // there is already '>', place caret after it
                                 state_.caret.column = nextPos + 1;
                             }
                         }
                     }
-                    else
+                    else if (!parts.empty())
                     {
                         std::wstring curLine = state_.lines[state_.caret.line];
                         std::wstring before = curLine.substr(0, state_.caret.column);
@@ -867,7 +834,6 @@ namespace Orion
                         state_.caret.column = (int)(state_.lines[state_.caret.line].size() - after.size());
                     }
 
-                    // Clear pending template if we used it
                     if (usePendingTemplate)
                     {
                         pendingCompletionTemplate_.clear();
@@ -876,17 +842,13 @@ namespace Orion
                 }
             }
 
-            // Intercept navigation/accept/escape keys so editor doesn't also handle them
             if (key == VK_RETURN || key == VK_ESCAPE || key == VK_UP || key == VK_DOWN)
                 return;
         }
 
-        // ✨ NOUVEAU : Ctrl+F pour ouvrir la recherche
-        // ✨ NOUVEAU : Ctrl+F pour ouvrir la recherche
         if (ctrl && (key == 'F' || key == 'f'))
         {
             ShowSearch();
-            // Effectuer une recherche initiale si du texte est déjà présent
             if (!searchBox_.GetSearchText().empty())
             {
                 searchBox_.PerformSearch(state_.lines);
@@ -894,17 +856,14 @@ namespace Orion
             return;
         }
 
-        // ✨ NOUVEAU : Si le SearchBox est visible et focalisé, gérer ses touches
         if (searchBox_.IsVisible() && searchBox_.IsInputFocused())
         {
             searchBox_.OnKeyDown(key);
 
-            // Re-effectuer la recherche après certaines touches
             if (key == VK_BACK || key == VK_DELETE || key == VK_RETURN)
             {
                 searchBox_.PerformSearch(state_.lines);
 
-                // Scroller vers le match courant
                 if (!searchBox_.GetMatches().empty())
                 {
                     int idx = searchBox_.GetCurrentMatchIndex();
@@ -918,32 +877,24 @@ namespace Orion
                 }
             }
 
-            // Si Échap a été pressé, le SearchBox s'est fermé, on sort
             if (!searchBox_.IsVisible())
                 return;
 
-            // Ne pas propager les touches au reste de l'éditeur
             return;
         }
 
-        // Ctrl+Z -> Undo
         if (ctrl && (key == 'Z' || key == 'z'))
         {
             Undo();
             return;
         }
 
-        // Commencer/continuer une sélection si Shift est enfoncé
-        if (shift && !state_.hasSelection)
-        {
-            state_.selectionStart = state_.caret;
-            state_.hasSelection = true;
-        }
-        else if (!shift && state_.hasSelection &&
-                 key != VK_BACK && key != VK_DELETE &&
-                 key != 'C' && key != 'X' && key != 'V' &&
-                 // Do not clear selection on modifier-only key presses (e.g. pressing Ctrl alone)
-                 key != VK_CONTROL && key != VK_MENU)
+        // NOTE: don't start a selection just by pressing Shift alone.
+        // We'll enable selection only if Shift is held while a movement actually occurs.
+        if (!shift && state_.hasSelection &&
+            key != VK_BACK && key != VK_DELETE &&
+            key != 'C' && key != 'X' && key != 'V' &&
+            key != VK_CONTROL && key != VK_MENU)
         {
             state_.hasSelection = false;
         }
@@ -952,9 +903,7 @@ namespace Orion
         {
         case VK_LEFT:
             if (state_.caret.column > 0)
-            {
                 state_.caret.column--;
-            }
             else if (state_.caret.line > 0)
             {
                 state_.caret.line--;
@@ -964,9 +913,7 @@ namespace Orion
 
         case VK_RIGHT:
             if (state_.caret.column < (int)state_.lines[state_.caret.line].size())
-            {
                 state_.caret.column++;
-            }
             else if (state_.caret.line < (int)state_.lines.size() - 1)
             {
                 state_.caret.line++;
@@ -978,8 +925,7 @@ namespace Orion
             if (state_.caret.line > 0)
             {
                 state_.caret.line--;
-                state_.caret.column = (std::min)(state_.caret.column,
-                                                 (int)state_.lines[state_.caret.line].size());
+                state_.caret.column = (std::min)(state_.caret.column, (int)state_.lines[state_.caret.line].size());
             }
             break;
 
@@ -987,8 +933,7 @@ namespace Orion
             if (state_.caret.line < (int)state_.lines.size() - 1)
             {
                 state_.caret.line++;
-                state_.caret.column = (std::min)(state_.caret.column,
-                                                 (int)state_.lines[state_.caret.line].size());
+                state_.caret.column = (std::min)(state_.caret.column, (int)state_.lines[state_.caret.line].size());
             }
             break;
 
@@ -1001,7 +946,6 @@ namespace Orion
             break;
 
         case VK_BACK:
-            // push undo snapshot before mutating
             if (undoStack_.empty() || undoStack_.back().lines != state_.lines ||
                 undoStack_.back().caret.line != state_.caret.line ||
                 undoStack_.back().caret.column != state_.caret.column)
@@ -1012,9 +956,7 @@ namespace Orion
             }
 
             if (state_.hasSelection)
-            {
                 DeleteSelection();
-            }
             else if (state_.caret.column > 0)
             {
                 state_.lines[state_.caret.line].erase(state_.caret.column - 1, 1);
@@ -1022,7 +964,6 @@ namespace Orion
             }
             else if (state_.caret.line > 0)
             {
-                // Fusionner avec la ligne précédente
                 int prevLineLen = (int)state_.lines[state_.caret.line - 1].size();
                 state_.lines[state_.caret.line - 1] += state_.lines[state_.caret.line];
                 state_.lines.erase(state_.lines.begin() + state_.caret.line);
@@ -1032,7 +973,6 @@ namespace Orion
             break;
 
         case VK_DELETE:
-            // push undo snapshot before mutating
             if (undoStack_.empty() || undoStack_.back().lines != state_.lines ||
                 undoStack_.back().caret.line != state_.caret.line ||
                 undoStack_.back().caret.column != state_.caret.column)
@@ -1043,16 +983,11 @@ namespace Orion
             }
 
             if (state_.hasSelection)
-            {
                 DeleteSelection();
-            }
             else if (state_.caret.column < (int)state_.lines[state_.caret.line].size())
-            {
                 state_.lines[state_.caret.line].erase(state_.caret.column, 1);
-            }
             else if (state_.caret.line < (int)state_.lines.size() - 1)
             {
-                // Fusionner avec la ligne suivante
                 state_.lines[state_.caret.line] += state_.lines[state_.caret.line + 1];
                 state_.lines.erase(state_.lines.begin() + state_.caret.line + 1);
             }
@@ -1061,10 +996,8 @@ namespace Orion
         case 'A':
             if (ctrl)
             {
-                // Select All
                 state_.selectionStart = {0, 0};
-                state_.caret = {(int)state_.lines.size() - 1,
-                                (int)state_.lines.back().size()};
+                state_.caret = {(int)state_.lines.size() - 1, (int)state_.lines.back().size()};
                 state_.hasSelection = true;
             }
             break;
@@ -1072,7 +1005,6 @@ namespace Orion
         case 'C':
             if (ctrl && state_.hasSelection)
             {
-                // Copier la sélection dans le presse-papier (Unicode)
                 auto getSelectionText = [this]() -> std::wstring
                 {
                     CaretPosition start = state_.selectionStart;
@@ -1087,7 +1019,6 @@ namespace Orion
                         return out;
                     }
 
-                    // multiple lines
                     out += state_.lines[start.line].substr(start.column);
                     out += L"\r\n";
                     for (int L = start.line + 1; L < end.line; ++L)
@@ -1130,7 +1061,6 @@ namespace Orion
         case 'X':
             if (ctrl && state_.hasSelection)
             {
-                // Couper: copier puis supprimer la sélection
                 auto getSelectionText = [this]() -> std::wstring
                 {
                     CaretPosition start = state_.selectionStart;
@@ -1189,7 +1119,6 @@ namespace Orion
         case 'V':
             if (ctrl)
             {
-                // snapshot before paste
                 if (undoStack_.empty() || undoStack_.back().lines != state_.lines ||
                     undoStack_.back().caret.line != state_.caret.line ||
                     undoStack_.back().caret.column != state_.caret.column)
@@ -1199,7 +1128,6 @@ namespace Orion
                         undoStack_.erase(undoStack_.begin());
                 }
 
-                // Coller depuis le presse-papier (Unicode)
                 if (OpenClipboard(NULL))
                 {
                     HANDLE hData = GetClipboardData(CF_UNICODETEXT);
@@ -1211,25 +1139,18 @@ namespace Orion
                             std::wstring text(clip);
                             GlobalUnlock(hData);
 
-                            // Normaliser les sauts de ligne: supprimer \r puis splitter sur \n
                             std::wstring tmp;
                             tmp.reserve(text.size());
                             for (size_t i = 0; i < text.size(); ++i)
                             {
                                 if (text[i] == L'\r')
-                                {
                                     continue;
-                                }
                                 tmp.push_back(text[i]);
                             }
 
-                            // Si sélection active, la supprimer avant insertion
                             if (state_.hasSelection)
-                            {
                                 DeleteSelection();
-                            }
 
-                            // Split par '\n'
                             std::vector<std::wstring> parts;
                             size_t start = 0;
                             while (start <= tmp.size())
@@ -1244,27 +1165,19 @@ namespace Orion
                                 start = pos + 1;
                             }
 
-                            if (parts.empty())
+                            if (parts.size() == 1)
                             {
-                                // nothing to paste
-                            }
-                            else if (parts.size() == 1)
-                            {
-                                // simple insert in current line
                                 state_.lines[state_.caret.line].insert(state_.caret.column, parts[0]);
                                 state_.caret.column += (int)parts[0].size();
                             }
-                            else
+                            else if (!parts.empty())
                             {
-                                // Insert multi-line
                                 std::wstring currentLine = state_.lines[state_.caret.line];
                                 std::wstring before = currentLine.substr(0, state_.caret.column);
                                 std::wstring after = currentLine.substr(state_.caret.column);
 
-                                // first line becomes before + parts[0]
                                 state_.lines[state_.caret.line] = before + parts[0];
 
-                                // insert middle parts
                                 int insertAt = state_.caret.line + 1;
                                 for (size_t i = 1; i < parts.size(); ++i)
                                 {
@@ -1272,10 +1185,8 @@ namespace Orion
                                     insertAt++;
                                 }
 
-                                // append the original 'after' to the last inserted line
                                 state_.lines[insertAt - 1] += after;
 
-                                // Move caret to end of the inserted content
                                 state_.caret.line = insertAt - 1;
                                 state_.caret.column = (int)(state_.lines[state_.caret.line].size() - after.size());
                             }
@@ -1287,7 +1198,16 @@ namespace Orion
             break;
         }
 
-        // Only ensure caret visibility when the caret actually moved.
+        // If caret moved while Shift is held, start (or update) selection
+        if (shift)
+        {
+            if (!state_.hasSelection && (prevCaret.line != state_.caret.line || prevCaret.column != state_.caret.column))
+            {
+                state_.selectionStart = prevCaret;
+                state_.hasSelection = true;
+            }
+        }
+
         if (prevCaret.line != state_.caret.line || prevCaret.column != state_.caret.column)
         {
             Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
@@ -1295,5 +1215,4 @@ namespace Orion
         state_.caretVisible = true;
         state_.lastBlinkTime = GetTickCount();
     }
-
 } // namespace Orion

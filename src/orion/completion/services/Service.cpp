@@ -1,4 +1,4 @@
-#include "CompletionService.h"
+#include "../CompletionService.h"
 
 namespace Orion::Completion
 {

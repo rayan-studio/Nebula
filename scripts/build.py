@@ -1,145 +1,165 @@
-#!/usr/bin/env python3
-"""
-build.py — lightweight wrapper to configure+build the project via CMake
-
-Features:
-- Uses `rich` for pretty, modern logs if available (falls back to simple ANSI logging).
-- Configures a `build/` directory, runs CMake configure and build steps.
-- Streams subprocess output live into the console.
-
-Usage:
-    python scripts\build.py [--generator "Visual Studio 17 2022"] [--arch x64] [--config Release]
-
-"""
-from __future__ import annotations
-import argparse
-import os
-import shutil
 import subprocess
 import sys
+import shutil
+import re
 from pathlib import Path
+from datetime import datetime
 
-try:
-    from rich.console import Console
-    from rich.panel import Panel
-    from rich.live import Live
-    from rich.text import Text
-    RICH_AVAILABLE = True
-except Exception:
-    RICH_AVAILABLE = False
+# ═══════════════════════════════════════════════════════════════════════════
+# Colors
+# ═══════════════════════════════════════════════════════════════════════════
+class C:
+    R = '\033[0m'
+    B = '\033[1m'
+    D = '\033[2m'
+    G = '\033[32m'
+    Y = '\033[33m'
+    RED = '\033[31m'
+    C = '\033[36m'
 
+if sys.platform == 'win32':
+    import os
+    os.system('')
 
-def run(cmd, cwd=None, console=None, live=None):
-    """Run command and stream stdout/stderr."""
-    if console is None:
-        console = Console() if RICH_AVAILABLE else None
+# ═══════════════════════════════════════════════════════════════════════════
+# Config
+# ═══════════════════════════════════════════════════════════════════════════
+ROOT = Path(__file__).parent.parent
+BUILD = ROOT / "build"
+EXE = BUILD / "Release" / "Nebula.exe"
 
-    process = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, shell=False)
-    assert process.stdout is not None
-    for line in process.stdout:
-        line = line.rstrip("\n")
-        if RICH_AVAILABLE and console:
-            console.print(line)
+# ═══════════════════════════════════════════════════════════════════════════
+# Utils
+# ═══════════════════════════════════════════════════════════════════════════
+def log(msg, color=''):
+    print(f"{color}{msg}{C.R}")
+
+def run_stream(cmd, filter_fn=None, cwd=None):
+    """Run command and stream output with optional filtering"""
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        cwd=cwd
+    )
+    
+    for line in proc.stdout:
+        line = line.rstrip()
+        if filter_fn:
+            filtered = filter_fn(line)
+            if filtered:
+                print(filtered)
         else:
             print(line)
-    process.wait()
-    return process.returncode
+    
+    proc.wait()
+    return proc.returncode
 
-
-def detect_generator() -> str:
-    # Try to detect an available CMake generator by parsing `cmake --help` output.
-    candidates = [
-        "Visual Studio 17 2022",
-        "Visual Studio 16 2019",
-        "Ninja",
-        "NMake Makefiles",
-        "MinGW Makefiles",
+def parse_msbuild(line):
+    """Filter and format MSBuild output"""
+    # Skip noise
+    skip = [
+        'Version MSBuild',
+        'Checking File Globs',
+        'Checking Build System',
+        'Building Custom Rule',
+        'Génération de code',
+        'compiler le fichier source',
+        'with [',
+        'warnings',
     ]
-    try:
-        p = subprocess.run(["cmake", "--help"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=True)
-        out = p.stdout
-        for c in candidates:
-            if c in out:
-                return c
-    except Exception:
-        pass
-    return "Visual Studio 17 2022"
+    if any(s in line for s in skip):
+        return None
+    
+    # Extract building files
+    if '.vcxproj ->' in line:
+        match = re.search(r'(\w+)\.vcxproj -> .*[/\\](\w+\.\w+)$', line)
+        if match:
+            project, output = match.groups()
+            return f"{C.D}→{C.R} {project} {C.D}→{C.R} {output}"
+    
+    # Extract compilation progress
+    if re.match(r'^\s+\w+\.(cpp|c)$', line):
+        fname = line.strip()
+        return f"{C.D}[building]{C.R} {fname}"
+    
+    # Keep important messages
+    if 'error' in line.lower():
+        return f"{C.RED}✗{C.R} {line}"
+    
+    if 'warning C4' in line:
+        # Simplify warnings
+        match = re.search(r'warning (C\d+):', line)
+        if match:
+            return f"{C.Y}⚠{C.R} {match.group(1)}"
+    
+    return None
 
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Generate and build the Nebula project with CMake (pretty logs)")
-    parser.add_argument("--generator", default=None, help="CMake generator")
-    parser.add_argument("--arch", default="x64", help="Architecture for generator (e.g. x64)")
-    parser.add_argument("--config", default="Release", help="Build configuration")
-    parser.add_argument("--build-dir", default="build", help="Build directory")
-    parser.add_argument("--no-configure", action="store_true", help="Skip CMake configure step")
-    args = parser.parse_args(argv)
-
-    project_root = Path(__file__).resolve().parents[1]
-    build_dir = project_root / args.build_dir
-
-    console = Console() if RICH_AVAILABLE else None
-    if RICH_AVAILABLE:
-        console.print(Panel.fit(Text("Nebula CMake Builder", style="bold white on blue")))
+# ═══════════════════════════════════════════════════════════════════════════
+# Main
+# ═══════════════════════════════════════════════════════════════════════════
+def main():
+    log(f"{C.B}nebula{C.R} {C.D}cmake builder{C.R}")
+    log(f"{C.D}{datetime.now().strftime('%H:%M:%S')}{C.R}\n")
+    
+    BUILD.mkdir(exist_ok=True)
+    
+    # Handle clean
+    if len(sys.argv) > 1 and sys.argv[1] in ("clean", "--clean", "-c"):
+        log(f"{C.D}→ cleaning build/{C.R}")
+        shutil.rmtree(BUILD, ignore_errors=True)
+        BUILD.mkdir(exist_ok=True)
+        log(f"{C.G}✓ done{C.R}\n")
+        return
+    
+    # Configure
+    log(f"{C.D}→ configuring{C.R}")
+    r = subprocess.run(
+        ["cmake", str(ROOT), "-G", "Visual Studio 17 2022", "-A", "x64"],
+        cwd=BUILD,
+        capture_output=True,
+        text=True
+    )
+    
+    if r.returncode != 0:
+        log(f"{C.RED}✗ cmake configuration failed{C.R}\n")
+        print(r.stderr)
+        sys.exit(1)
+    
+    # Show brief config summary
+    for line in r.stdout.split('\n'):
+        if 'Windows SDK' in line or 'Using' in line:
+            log(f"{C.D}  {line.strip()}{C.R}")
+    
+    # Build
+    log(f"\n{C.D}→ building (release){C.R}")
+    
+    ret = run_stream(
+        ["cmake", "--build", ".", "--config", "Release"],
+        cwd=BUILD,
+        filter_fn=parse_msbuild
+    )
+    
+    if ret != 0:
+        log(f"\n{C.RED}✗ build failed{C.R}\n")
+        sys.exit(ret)
+    
+    # Success
+    if EXE.exists():
+        size = EXE.stat().st_size / 1024
+        log(f"\n{C.G}✓{C.R} {EXE.name} {C.D}({size:.1f}kb){C.R}")
+        log(f"{C.D}  {EXE.absolute()}{C.R}\n")
     else:
-        print("== Nebula CMake Builder ==")
-
-    if not build_dir.exists():
-        build_dir.mkdir(parents=True, exist_ok=True)
-
-    # Configure step
-    if not args.no_configure:
-        generator = args.generator or os.environ.get("CMAKE_GENERATOR") or detect_generator()
-        cmake_cmd = [
-            "cmake",
-            str(project_root),
-            "-G",
-            generator,
-        ]
-        # Only pass -A when the generator supports architectures (Visual Studio)
-        if args.arch and "Visual Studio" in generator:
-            cmake_cmd += ["-A", args.arch]
-        if RICH_AVAILABLE:
-            console.print(f"[cyan]Configuring with:[/cyan] {cmake_cmd}")
-        else:
-            print("Configuring:", " ".join(cmake_cmd))
-
-        rc = run(cmake_cmd, cwd=str(build_dir), console=console)
-        if rc != 0:
-            if RICH_AVAILABLE:
-                console.print(Panel(Text("CMake configure failed", style="bold red")))
-            else:
-                print("CMake configure failed")
-            return rc
-
-    # Build step
-    build_cmd = [
-        "cmake",
-        "--build",
-        ".",
-        "--config",
-        args.config,
-    ]
-    if RICH_AVAILABLE:
-        console.print(f"[green]Building ({args.config})...[/green]")
-    else:
-        print("Building:", " ".join(build_cmd))
-
-    rc = run(build_cmd, cwd=str(build_dir), console=console)
-    if rc != 0:
-        if RICH_AVAILABLE:
-            console.print(Panel(Text("Build failed", style="bold red")))
-        else:
-            print("Build failed")
-        return rc
-
-    if RICH_AVAILABLE:
-        console.print(Panel(Text("Build succeeded", style="bold green")))
-    else:
-        print("Build succeeded")
-
-    return 0
-
+        log(f"\n{C.Y}⚠ build completed but executable not found{C.R}\n")
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        main()
+    except KeyboardInterrupt:
+        log(f"\n{C.Y}⚠ interrupted{C.R}\n")
+        sys.exit(1)
+    except Exception as e:
+        log(f"\n{C.RED}✗ {e}{C.R}\n")
+        sys.exit(1)

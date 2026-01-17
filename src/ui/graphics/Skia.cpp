@@ -7,7 +7,7 @@
 #include "ui/panels/PanelManager.h"
 #include "ui/panels/terminal/TerminalPanel.h"
 #include "ui/panels/ggwave/GGWavePanel.h"
-#include "orion/OrionEditor.h"
+#include "orion/editor/Editor.h"
 #include "core/window/Window.h"
 #include "ui/components/footer/Footer.h"
 #include "helpers/window_helpers.h"

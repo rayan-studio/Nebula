@@ -1,7 +1,7 @@
 #pragma once
 
 #include <windows.h>
-#include "../OrionEditor.h"
+#include "orion/editor/Editor.h"
 #include "CaretPosition.h"
 
 namespace Orion
