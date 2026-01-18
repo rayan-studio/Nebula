@@ -96,7 +96,7 @@ bool Window::Create(int nCmdShow)
 {
     WNDCLASSEXW wcex = {};
     wcex.cbSize = sizeof(WNDCLASSEXW);
-    wcex.style = CS_HREDRAW | CS_VREDRAW;
+    wcex.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
     wcex.lpfnWndProc = Window::WndProc;
     wcex.hInstance = hInstance_;
     wcex.hCursor = LoadCursor(NULL, IDC_ARROW);
@@ -771,6 +771,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     case WM_LBUTTONDBLCLK:
     {
         POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+
+        // PRIORITÉ : Explorer double-click
+        if (GetExplorerManager().IsVisible() && GetExplorerManager().IsPointInExplorer(pt))
+        {
+            GetExplorerManager().OnLeftButtonDoubleClick(hwnd_, pt);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
         RECT tbRect = win32_titlebar_rect(hwnd_);
         RECT clientRect;
         GetClientRect(hwnd_, &clientRect);

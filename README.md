@@ -2,7 +2,7 @@
 
 <img src="assets/favicon.ico" align="right" width="96" height="96"/>
 
-> **Nebula is fast.**  
+> **Nebula is fast **  
 > A lightweight, native code editor focused on performance, simplicity, and control.
 
 Nebula is a **native code editor for Windows**, written primarily in **C++ (Win32 + Direct2D/DirectWrite)**.  

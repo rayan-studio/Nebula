@@ -245,6 +245,22 @@ namespace Orion
         ID2D1SolidColorBrush *defaultBrush = nullptr;
         ctx->CreateSolidColorBrush(theme_.text, &defaultBrush);
 
+        // ------------------------------------------------------------
+        // ✅ Markdown state (fix bug when scrolling into middle of file)
+        // ------------------------------------------------------------
+        bool mdInCodeBlock = false;
+        std::wstring mdFenceLang;
+
+        if (ext == L".md" && highlighter_)
+        {
+            // Recompute fence state up to the first visible line so scrolling doesn't break markdown
+            int scanEnd = (std::min)(firstVisibleLine, (int)state_.lines.size());
+            for (int li = 0; li < scanEnd; ++li)
+            {
+                highlighter_->AdvanceMarkdownState(state_.lines[li], mdInCodeBlock, mdFenceLang);
+            }
+        }
+
         // Guides
         {
             Geometry::IndentConfig indentConfig = GetIndentConfig();
@@ -280,9 +296,12 @@ namespace Orion
             if (ext == L".c" || ext == L".cpp" || ext == L".h" || ext == L".hpp")
             {
                 // Scan slightly beyond the visible window to capture opening braces
-                const int margin = 200; // adjust if needed for typical file sizes
+                const int margin = 200;
                 int scanFirst = (std::max)(0, firstVisibleLine - margin);
                 int scanLast = (std::min)((int)state_.lines.size(), lastVisibleLine + margin);
+
+                (void)scanFirst;
+                (void)scanLast;
 
                 auto guides = Orion::Geometry::ComputeCppBraceGuides(
                     state_.lines,
@@ -321,11 +340,11 @@ namespace Orion
                     IDWriteTypography *typography = nullptr;
                     if (SUCCEEDED(pDWriteFactory_->CreateTypography(&typography)) && typography)
                     {
-                        // JetBrains Mono ligatures = souvent via 'calt'
+                        // JetBrains Mono ligatures (liga/calt/dlig)
                         DWRITE_FONT_FEATURE features[] = {
-                            {DWRITE_MAKE_FONT_FEATURE_TAG('l', 'i', 'g', 'a'), 1}, // standard ligatures
-                            {DWRITE_MAKE_FONT_FEATURE_TAG('c', 'a', 'l', 't'), 1}, // contextual alternates (IMPORTANT)
-                            {DWRITE_MAKE_FONT_FEATURE_TAG('d', 'l', 'i', 'g'), 1}, // discretionary ligatures (optionnel)
+                            {DWRITE_MAKE_FONT_FEATURE_TAG('l', 'i', 'g', 'a'), 1},
+                            {DWRITE_MAKE_FONT_FEATURE_TAG('c', 'a', 'l', 't'), 1},
+                            {DWRITE_MAKE_FONT_FEATURE_TAG('d', 'l', 'i', 'g'), 1},
                         };
 
                         for (auto &f : features)
@@ -351,7 +370,14 @@ namespace Orion
                 // Apply syntax highlighting: set drawing effects per token on the layout
                 if (highlighter_)
                 {
-                    auto tokens = highlighter_->TokenizeLine(line, ext);
+                    std::vector<::Orion::Syntax::Token> tokens;
+
+                    // ✅ Markdown uses stateful tokenization driven by editor-side state
+                    if (ext == L".md")
+                        tokens = highlighter_->TokenizeMarkdownLine(line, mdInCodeBlock, mdFenceLang);
+                    else
+                        tokens = highlighter_->TokenizeLine(line, ext);
+
                     for (const auto &t : tokens)
                     {
                         D2D1_COLOR_F col = GetTokenColor(t.type, ext);
@@ -362,6 +388,30 @@ namespace Orion
                             r.startPosition = (UINT32)t.start;
                             r.length = (UINT32)t.length;
                             layout->SetDrawingEffect((IUnknown *)b, r);
+
+                            // ------------------------------------------------------------
+                            // Optional Markdown styling (bold/italic/underline)
+                            // ------------------------------------------------------------
+                            if (ext == L".md")
+                            {
+                                switch (t.type)
+                                {
+                                case ::Orion::Syntax::TokenType::MarkdownHeading:
+                                    layout->SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, r);
+                                    break;
+                                case ::Orion::Syntax::TokenType::MarkdownStrong:
+                                    layout->SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, r);
+                                    break;
+                                case ::Orion::Syntax::TokenType::MarkdownEmphasis:
+                                    layout->SetFontStyle(DWRITE_FONT_STYLE_ITALIC, r);
+                                    break;
+                                case ::Orion::Syntax::TokenType::MarkdownLinkText:
+                                    layout->SetUnderline(TRUE, r);
+                                    break;
+                                default:
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
@@ -420,7 +470,8 @@ namespace Orion
                 return D2D1::ColorF(0.95f, 0.9f, 0.6f);
             case ::Orion::Syntax::TokenType::MarkdownCode:
                 return D2D1::ColorF(0.8f, 0.8f, 0.85f);
-            case ::Orion::Syntax::TokenType::MarkdownLink:
+            case ::Orion::Syntax::TokenType::MarkdownLinkText:
+            case ::Orion::Syntax::TokenType::MarkdownLinkUrl:
                 return D2D1::ColorF(0.5f, 0.75f, 0.95f);
             default:
                 return theme_.text;

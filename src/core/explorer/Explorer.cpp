@@ -1098,6 +1098,41 @@ void ExplorerManager::OnLeftButtonUp(HWND hwnd)
     }
 }
 
+void ExplorerManager::OnLeftButtonDoubleClick(HWND hwnd, POINT clientPoint)
+{
+    int idx = HitTestItem(clientPoint);
+    // Double-click in empty area => create new file inline (like Ctrl+N)
+    if (idx < 0)
+    {
+        ShowInlineInput(Input::Type::File);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
+    }
+
+    std::wstring fullPath;
+    bool isDir = false;
+
+    {
+        std::lock_guard<std::mutex> lk(itemsMutex_);
+        if (idx >= (int)state_.items.size())
+            return;
+        fullPath = state_.items[idx].fullPath;
+        isDir = state_.items[idx].isDirectory;
+    }
+
+    if (!isDir)
+    {
+        auto* heapPath = new std::wstring(fullPath);
+        PostMessageW(hwnd, WM_USER + 100, 0, (LPARAM)heapPath);
+    }
+    else
+    {
+        // For directories, reuse existing left-button logic to toggle expansion
+        state_.hoveredItemIndex = idx;
+        OnLeftButtonDown(hwnd, clientPoint);
+    }
+}
+
 void ExplorerManager::OnRightButtonUp(HWND hwnd, POINT clientPoint)
 {
     int idx = HitTestItem(clientPoint);

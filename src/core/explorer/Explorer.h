@@ -99,6 +99,7 @@ public:
     // Gestion des événements souris
     void OnMouseMove(HWND hwnd, POINT clientPoint);
     void OnLeftButtonDown(HWND hwnd, POINT clientPoint);
+    void OnLeftButtonDoubleClick(HWND hwnd, POINT clientPoint);
     void OnLeftButtonUp(HWND hwnd);
     void OnRightButtonUp(HWND hwnd, POINT clientPoint);
     void OnMouseWheel(HWND hwnd, int delta);
