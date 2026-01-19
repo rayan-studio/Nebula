@@ -212,6 +212,15 @@ ExplorerManager::ExplorerManager()
     inlineCursorPos_ = 0;
     inlineType_ = Input::Type::File;
     searchMode_ = false;
+
+    // Configure the "Ouvrir un projet" button
+    openProjectButton_.SetText(L"Ouvrir un projet");
+    openProjectButton_.SetOnClick([]
+    {
+        HWND wnd = FindWindowW(L"NebulaTextWindowClass", NULL);
+        if (wnd)
+            PostMessageW(wnd, WM_COMMAND, 3003, 0);
+    });
 }
 
 ExplorerManager::~ExplorerManager()
@@ -780,6 +789,18 @@ void ExplorerManager::UpdateLayout(HWND hwnd)
 
     UpdateItemPositions();
 
+    // Bouton "Ouvrir un projet" (affiché seulement si rootPath vide)
+    {
+        float left  = state_.leftEdge + state_.leftPadding;
+        float right = state_.rightEdge - state_.leftPadding;
+
+        float top = state_.topEdge + state_.titleHeight + 10.0f;
+        float h   = 34.0f;
+
+        openProjectButtonRect_ = D2D1::RectF(left, top, right, top + h);
+        openProjectButton_.SetRect(openProjectButtonRect_);
+    }
+
     // If invisible, effectively collapse to zero width so layout uses 0
     if (!visible_)
     {
@@ -853,6 +874,17 @@ void ExplorerManager::OnMouseMove(HWND hwnd, POINT clientPoint)
         return;
     }
 
+    // Hover bouton "Ouvrir un projet" quand pas de projet
+    if (state_.rootPath.empty() && !searchMode_)
+    {
+        bool changed = openProjectButton_.OnMouseMove(clientPoint);
+        if (changed)
+            InvalidateRect(hwnd, nullptr, FALSE);
+
+        // if mouse over the button we could early-return to avoid item hover
+        // but keep current behavior (just visual)
+    }
+
     // PRIORITÉ 2 : Mode normal - vérifier hover
     int oldHovered = state_.hoveredItemIndex;
 
@@ -904,6 +936,15 @@ void ExplorerManager::OnMouseMove(HWND hwnd, POINT clientPoint)
 
 void ExplorerManager::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
 {
+    // Click bouton "Ouvrir un projet" quand pas de projet
+    if (state_.rootPath.empty() && !searchMode_)
+    {
+        if (openProjectButton_.OnMouseDown(clientPoint))
+        {
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return;
+        }
+    }
     // Check clicks on title toolbar buttons (new file / new folder)
     float titleTop = state_.topEdge;
     float titleBottom = state_.topEdge + state_.titleHeight;
@@ -1089,7 +1130,25 @@ void ExplorerManager::OnMouseWheel(HWND hwnd, int delta)
 
 void ExplorerManager::OnLeftButtonUp(HWND hwnd)
 {
-    // AJOUTEZ LA GESTION DE LA SCROLLBAR :
+    // bouton open project
+    if (state_.rootPath.empty() && !searchMode_)
+    {
+        POINT pt;
+        GetCursorPos(&pt);
+        ScreenToClient(hwnd, &pt);
+
+        if (openProjectButton_.OnMouseUp(pt))
+        {
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return;
+        }
+        else
+        {
+            openProjectButton_.CancelPress();
+        }
+    }
+
+    // Scrollbar
     if (scrollbar_.OnLeftButtonUp())
     {
         ReleaseCapture();
@@ -1414,23 +1473,36 @@ void ExplorerManager::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     // If no project root set, show a helpful placeholder prompting to open a project
     if (state_.rootPath.empty() && !searchMode_)
     {
-        // Draw a centered message
-        IDWriteTextFormat *fmt = nullptr;
-        dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 14.0f, L"en-us", &fmt);
-        ID2D1SolidColorBrush *msgBrush = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.6f, 0.6f, 0.6f, 1.0f), &msgBrush);
-        if (fmt && msgBrush)
-        {
-            fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            D2D1_RECT_F r = D2D1::RectF(state_.leftEdge + 8.0f, state_.topEdge + state_.titleHeight + 8.0f, state_.rightEdge - 8.0f, state_.bottomEdge - 8.0f);
-            std::wstring msg = L"No project opened. Use File → Open Project to load a folder.";
-            ctx->DrawTextW(msg.c_str(), (UINT32)msg.size(), fmt, r, msgBrush);
-        }
+        // petit texte (optionnel) + bouton en haut
+        IDWriteTextFormat* fmt = nullptr;
+        dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL,
+                                 DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                 12.5f, L"fr-fr", &fmt);
+
+        ID2D1SolidColorBrush* msgBrush = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.60f, 0.60f, 0.60f, 1.0f), &msgBrush);
+
         if (fmt)
+        {
+            fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+
+            D2D1_RECT_F info = D2D1::RectF(
+                state_.leftEdge + state_.leftPadding,
+                openProjectButtonRect_.bottom + 10.0f,
+                state_.rightEdge - state_.leftPadding,
+                openProjectButtonRect_.bottom + 10.0f + 40.0f);
+
+            std::wstring msg = L"Aucun projet ouvert.";
+            if (msgBrush)
+                ctx->DrawTextW(msg.c_str(), (UINT32)msg.size(), fmt, info, msgBrush);
+
             fmt->Release();
-        if (msgBrush)
-            msgBrush->Release();
+        }
+        if (msgBrush) msgBrush->Release();
+
+        // Dessiner le bouton
+        openProjectButton_.Draw(ctx, dwrite);
     }
     else if (searchMode_)
         DrawSearchPanel(ctx, dwrite, hwnd);
@@ -1976,6 +2048,29 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
     UINT dpi = GetDpiForWindow(hwnd);
     float iconPx = (float)win32_dpi_scale((int)state_.iconSize, dpi);
 
+    // Rounded background constants and helper for crisp rounded fills
+    const float corner = 4.0f;           // petit arrondi (réduit)
+    const float insetX = 4.0f;           // marge gauche/droite du fond (réduite)
+    const float insetY = 0.0f;           // marge haut/bas du fond (aucune, couvre toute la hauteur)
+
+    auto DrawRoundedFill = [&](const D2D1_RECT_F& r, ID2D1Brush* brush)
+    {
+        // Snap pour éviter le flou
+        D2D1_RECT_F rr = D2D1::RectF(
+            std::round(r.left),
+            std::round(r.top),
+            std::round(r.right),
+            std::round(r.bottom));
+
+        // AA smooth uniquement pour les arrondis
+        D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
+        ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+        ctx->FillRoundedRectangle(D2D1::RoundedRect(rr, corner, corner), brush);
+
+        ctx->SetAntialiasMode(oldAA);
+    };
+
     for (size_t i = 0; i < state_.items.size(); ++i)
     {
         const auto &item = state_.items[i];
@@ -2079,27 +2174,34 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
         if (isActiveItem)
         {
             D2D1_RECT_F activeRect = D2D1::RectF(
-                state_.leftEdge,
-                std::round(item.yPosition),
-                state_.rightEdge,
-                std::round(item.yPosition + item.height));
-            ID2D1SolidColorBrush *activeBrush = nullptr;
+                state_.leftEdge + insetX,
+                std::round(item.yPosition) + insetY,
+                state_.rightEdge - insetX,
+                std::round(item.yPosition + item.height) - insetY);
+
+            ID2D1SolidColorBrush* activeBrush = nullptr;
             D2D1_COLOR_F activeColor = D2D1::ColorF(0.12f, 0.18f, 0.25f, 1.0f);
             ctx->CreateSolidColorBrush(activeColor, &activeBrush);
-            ctx->FillRectangle(activeRect, activeBrush);
+
             if (activeBrush)
+            {
+                DrawRoundedFill(activeRect, activeBrush);
                 activeBrush->Release();
+            }
         }
 
         if ((int)i == state_.hoveredItemIndex)
         {
             D2D1_RECT_F hoverRect = D2D1::RectF(
-                state_.leftEdge,
-                std::round(item.yPosition),
-                state_.rightEdge,
-                std::round(item.yPosition + item.height));
-            ctx->FillRectangle(hoverRect, hoverBrush);
+                state_.leftEdge + insetX,
+                std::round(item.yPosition) + insetY,
+                state_.rightEdge - insetX,
+                std::round(item.yPosition + item.height) - insetY);
+
+            DrawRoundedFill(hoverRect, hoverBrush);
         }
+
+        float baseLeft = state_.leftEdge + insetX;
 
         float indent = state_.leftPadding + (float)(item.depth * 12);
         float iconWidth = item.isDirectory ? (float)win32_dpi_scale(16, dpi) : iconPx;
@@ -2108,7 +2210,7 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
         {
             float arrowSize = (float)win32_dpi_scale(12, dpi);
             float iconY = std::round(item.yPosition + item.height * 0.5f);
-            float iconLeft = std::round(state_.leftEdge + indent + 2.0f);
+            float iconLeft = std::round(baseLeft + indent + 2.0f);
 
             std::string key = item.expanded ? "chevron_up" : "chevron_right";
 
@@ -2144,18 +2246,18 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
             {
                 float iconY = std::round(item.yPosition + (item.height - iconPx) * 0.5f);
                 D2D1_RECT_F iconRect = D2D1::RectF(
-                    std::round(state_.leftEdge + indent),
+                    std::round(baseLeft + indent),
                     iconY,
-                    std::round(state_.leftEdge + indent + iconPx),
+                    std::round(baseLeft + indent + iconPx),
                     iconY + iconPx);
                 ctx->DrawBitmap(icon, iconRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
             }
         }
 
         D2D1_RECT_F textRect = D2D1::RectF(
-            std::round(state_.leftEdge + indent + iconWidth + 6.0f),
+            std::round(baseLeft + indent + iconWidth + 6.0f),
             std::round(item.yPosition),
-            state_.rightEdge - state_.leftPadding,
+            state_.rightEdge - insetX - state_.leftPadding,
             std::round(item.yPosition + item.height));
 
         IDWriteTextFormat *useFmt = item.isDirectory ? itemFormatBold : itemFormat;

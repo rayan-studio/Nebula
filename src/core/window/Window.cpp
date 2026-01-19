@@ -23,6 +23,8 @@
 #include "ui/panels/PanelManager.h"
 #include "ui/panels/search/SearchPanel.h"
 #include "ui/panels/terminal/TerminalPanel.h"
+#include "orion/font/CustomFontLoader.h"
+#include <dwrite_1.h>
 #include "ui/panels/ggwave/GGWavePanel.h"
 #include "utils/logger/Logger.h"
 #include "orion/caret/Caret.h"
@@ -351,6 +353,39 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                     }
                 }
             }
+        // If we found a custom font path, try to create a custom font collection
+        if (!customFontPath_.empty() && skia_)
+        {
+            IDWriteFactory *dwrite = skia_->GetDWriteFactory();
+            if (dwrite)
+            {
+                IDWriteFactory1 *factory1 = nullptr;
+                if (SUCCEEDED(dwrite->QueryInterface(__uuidof(IDWriteFactory1), (void **)&factory1)))
+                {
+                    CustomFontCollectionLoader *fontLoader = new CustomFontCollectionLoader();
+                    HRESULT regHr = dwrite->RegisterFontCollectionLoader(fontLoader);
+                    if (SUCCEEDED(regHr))
+                    {
+                        const void *collectionKey = customFontPath_.c_str();
+                        UINT32 collectionKeySize = (UINT32)((customFontPath_.size() + 1) * sizeof(wchar_t));
+                        IDWriteFontCollection *fontCollection = nullptr;
+                        HRESULT hr = factory1->CreateCustomFontCollection(fontLoader, collectionKey, collectionKeySize, &fontCollection);
+                        if (SUCCEEDED(hr) && fontCollection)
+                        {
+                            GetTerminalPanel().SetFont(L"JetBrains Mono", 13.0f);
+                            GetTerminalPanel().SetFontCollection(fontCollection);
+                        }
+                        else
+                        {
+                            // If creation failed, unregister loader and release it
+                            dwrite->UnregisterFontCollectionLoader(fontLoader);
+                            fontLoader->Release();
+                        }
+                    }
+                    factory1->Release();
+                }
+            }
+        }
         }
         SetText(L"Bonjour — texte rendu via GPU (Direct2D)");
 
@@ -536,13 +571,20 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         // Posted from TerminalPanel::ReadThread - lParam is heap buffer, wParam is length
         char *buf = reinterpret_cast<char *>(lParam);
         size_t len = (size_t)wParam;
+
         if (buf && len > 0)
         {
             TerminalPanel &terminal = GetTerminalPanel();
             terminal.HandleConPTYOutput(buf, len);
         }
+
+        if (buf)
+            free(buf);
+
+        InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
     }
+    
     case WM_LBUTTONDOWN:
     {
         POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
@@ -909,7 +951,6 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     case WM_MOUSEMOVE:
     {
         POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-        bool needsRedraw = false;
 
         // Ensure we get WM_MOUSELEAVE when the cursor exits the window
         TRACKMOUSEEVENT tme = {};
@@ -918,10 +959,35 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         tme.hwndTrack = hwnd_;
         TrackMouseEvent(&tme);
 
-        // Check if active panel is resizing
-        Panel *activePanel = GetPanelManager().GetActivePanel();
-        bool panelResizing = activePanel && activePanel->IsResizing();
+        // ============================================================
+        // ✅ TABBAR HOVER: always update first (anti hover "stuck")
+        // ============================================================
+        bool tabChanged = UpdateTabBarHover(pt);
+        if (tabChanged)
+        {
+            RECT tabRect = GetTabBarRectClient();
+            InvalidateRect(hwnd_, &tabRect, FALSE); // not throttled for hover
+        }
 
+        // If we're inside the tabbar -> consume the event here
+        RECT tabRect = GetTabBarRectClient();
+        bool inTabBar = (pt.x >= tabRect.left && pt.x < tabRect.right &&
+                         pt.y >= tabRect.top  && pt.y < tabRect.bottom);
+        if (inTabBar)
+        {
+            // Optional: avoid explorer hover while over tabbar
+            GetExplorerManager().ClearHover(hwnd_);
+            return 0;
+        }
+
+        // ============================================================
+        // Rest: normal routing
+        // ============================================================
+        bool needsRedraw = false;
+
+        // Check if active panel is resizing
+        Panel* activePanel = GetPanelManager().GetActivePanel();
+        bool panelResizing = activePanel && activePanel->IsResizing();
         if (panelResizing)
         {
             GetPanelManager().OnMouseMove(hwnd_, pt);
@@ -930,86 +996,58 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 
         bool lmbDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
 
-        // ===== TERMINAL HANDLING - Optimisé pour éviter les redraws =====
-        TerminalPanel &terminal = GetTerminalPanel();
-
+        // ===== TERMINAL HANDLING - Optimized =====
+        TerminalPanel& terminal = GetTerminalPanel();
         if (terminal.IsVisible())
         {
-            // Priority 1: Currently resizing - seulement si on drag vraiment
+            // Priority 1: resizing
             if (terminal.IsResizing())
             {
                 bool changed = terminal.OnMouseMove(hwnd_, pt);
                 if (changed)
                 {
-                    const auto &st = terminal.GetState();
+                    const auto& st = terminal.GetState();
                     RECT tr = {(LONG)st.leftEdge, (LONG)st.topEdge, (LONG)st.rightEdge, (LONG)st.bottomEdge};
                     ThrottledInvalidateRect(hwnd_, &tr, FALSE);
                 }
                 return 0;
             }
 
-            // Priority 2: In resize zone (hover) - SEULEMENT changer le curseur
+            // Priority 2: hover resize zone => just cursor
             if (terminal.IsPointInResizeZone(pt))
             {
-                // OnMouseMove change le curseur mais ne force pas de redraw si pas de changement
                 terminal.OnMouseMove(hwnd_, pt);
                 return 0;
             }
 
-            // Priority 3: Selection in progress - SEULEMENT si bouton gauche enfoncé
+            // Priority 3: selection drag
             if (lmbDown && terminal.IsPointInPanel(pt))
             {
                 bool changed = terminal.OnMouseMove(hwnd_, pt);
                 if (changed)
                 {
-                    const auto &st = terminal.GetState();
+                    const auto& st = terminal.GetState();
                     RECT tr = {(LONG)st.leftEdge, (LONG)st.topEdge, (LONG)st.rightEdge, (LONG)st.bottomEdge};
                     ThrottledInvalidateRect(hwnd_, &tr, FALSE);
                 }
                 return 0;
             }
-
-            // Si on passe juste la souris au-dessus sans rien faire, NE RIEN FAIRE
         }
         // ===== END TERMINAL HANDLING =====
 
-        // GGWave button hover (handles its own state)
+        // GGWave button hover
         GetGGWavePanel().OnMouseMove(hwnd_, pt);
 
-        // If left button is down (dragging selection), prioritize editor handling
+        // If left button is down, prioritize editor dragging selection
         if (lmbDown)
         {
-            Orion::Editor *editor = GetEditor();
+            Orion::Editor* editor = GetEditor();
             if (editor)
             {
                 editor->OnMouseMove(hwnd_, pt);
                 ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
                 return 0;
             }
-        }
-
-        RECT tbRect = win32_titlebar_rect(hwnd_);
-        int tabTop = tbRect.bottom;
-        int tabBottom = tbRect.bottom + (int)tabBar_.GetHeight();
-
-        if (pt.y >= tabTop && pt.y < tabBottom)
-        {
-            int result = tabBar_.OnMouseMove(pt);
-
-            if (result != -2)
-            {
-                // optionnel: si tu veux éviter que l'explorer garde un hover pendant tabbar
-                GetExplorerManager().ClearHover(hwnd_);
-                ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
-            }
-
-            return 0; // ✅ CRITIQUE : sinon le code plus bas va appeler ClearAllHoverStates()
-        }
-
-        // On vient de sortir de la TabBar -> reset hover TabBar
-        if (tabBar_.ClearHover())
-        {
-            ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
         }
 
         // Menu dropdown handling
@@ -1024,14 +1062,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 
             int originMenu = GetActiveDropdown().menuIndex;
             for (size_t i = 0; i < GetMenuItems().size(); ++i)
-            {
                 SetMenuItemHovered((int)i, (int)i == originMenu);
-            }
 
             if (needsRedraw)
-            {
                 ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
-            }
+
             return 0;
         }
 
@@ -1046,16 +1081,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             if (hoveredMenu != lastHoveredMenu)
             {
                 for (int i = 0; i < 8; ++i)
-                {
                     SetMenuItemHovered(i, i == hoveredMenu);
-                }
                 needsRedraw = true;
                 lastHoveredMenu = hoveredMenu;
             }
         }
         else
         {
-            Panel *activePnl = GetPanelManager().GetActivePanel();
+            Panel* activePnl = GetPanelManager().GetActivePanel();
             bool inPanelArea = false;
             bool inPanelResize = false;
 
@@ -1085,28 +1118,24 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 
                 ClearAllHoverStates();
 
-                // If mouse is over Explorer, let it handle hover/drag first
+                // Explorer hover
                 if (GetExplorerManager().IsVisible() && GetExplorerManager().IsPointInExplorer(pt))
                 {
                     GetExplorerManager().OnMouseMove(hwnd_, pt);
                 }
                 else
                 {
-                    Orion::Editor *editor = GetEditor();
+                    Orion::Editor* editor = GetEditor();
                     if (editor)
-                    {
                         editor->OnMouseMove(hwnd_, pt);
-                    }
                 }
             }
         }
 
         if (needsRedraw)
-        {
             ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
-        }
 
-        return DefWindowProc(hwnd_, uMsg, wParam, lParam);
+        return 0;
     }
     case WM_LBUTTONUP:
     {
@@ -1206,7 +1235,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     {
         // Clear all hover states when mouse leaves the window entirely
         ClearAllHoverStates();
-        tabBar_.ClearHover(); // ✅ ici c'est le bon endroit
+
+        // ✅ guarantees tabbar hover is clean
+        tabBar_.ClearHover();
+        RECT tabRect = GetTabBarRectClient();
+        InvalidateRect(hwnd_, &tabRect, FALSE);
+
         return 0;
     }
     case WM_COMMAND:
@@ -1715,4 +1749,45 @@ void Window::ClearAllHoverStates()
 
     // tabbar hover se clear ailleurs (WM_MOUSELEAVE / sortie tabbar)
     ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+RECT Window::GetTabBarRectClient() const
+{
+    RECT tbRect = win32_titlebar_rect(hwnd_);
+    RECT r;
+    r.left   = 0;
+    r.top    = tbRect.bottom;
+    r.right  = 0;
+    r.bottom = tbRect.bottom + (LONG)tabBar_.GetHeight();
+
+    RECT client;
+    GetClientRect(hwnd_, &client);
+
+    // Simple option: full client width
+    r.right = client.right;
+
+    return r;
+}
+
+// Returns true if hover state changed (needs redraw)
+bool Window::UpdateTabBarHover(const POINT& ptClient)
+{
+    RECT r = GetTabBarRectClient();
+
+    const bool inTabBar = (ptClient.x >= r.left && ptClient.x < r.right &&
+                           ptClient.y >= r.top  && ptClient.y < r.bottom);
+
+    if (inTabBar)
+    {
+        int res = tabBar_.OnMouseMove(ptClient);
+        if (res != -2) // real change
+            return true;
+        return false;
+    }
+    else
+    {
+        if (tabBar_.ClearHover())
+            return true;
+        return false;
+    }
 }

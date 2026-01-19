@@ -190,12 +190,17 @@ bool KeyboardManager::HandleGlobalShortcuts(WPARAM wParam, const Mods &m)
     if (m.ctrl && !m.shift && !m.alt && (wParam == VK_OEM_3))
     {
         TerminalPanel &terminal = GetTerminalPanel();
-        Logger::Instance().Log(L"Shortcut: Ctrl+` toggle terminal");
 
-        if (!terminal.IsVisible())
-            terminal.Initialize();
+        if (!terminal.IsInitialized())
+        {
+            terminal.Initialize(window_->GetHwnd(), L"");
+            terminal.SetFont(L"JetBrains Mono", 13.0f);
+        }
 
         terminal.ToggleVisible();
+
+        // ✅ IMPORTANT : recalculer le layout immédiatement
+        GetPanelManager().UpdateLayout(window_->GetHwnd());
 
         if (terminal.IsVisible())
             terminal.SetFocused(true);
@@ -203,6 +208,7 @@ bool KeyboardManager::HandleGlobalShortcuts(WPARAM wParam, const Mods &m)
         InvalidateRect(window_->GetHwnd(), nullptr, FALSE);
         return true;
     }
+
 
     // Ctrl+Shift+O => Open Project
     if (m.ctrl && m.shift && !m.alt && IsLetter(wParam, 'O'))

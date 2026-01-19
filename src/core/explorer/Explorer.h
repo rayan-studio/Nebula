@@ -8,6 +8,7 @@
 #include <mutex>
 #include "ui/components/scrollbar/Scrollbar.h"
 #include "ui/components/input/InputTypeFixed.h"
+#include "ui/components/button/Button.h"
 #include <atomic>
 
 // Structure pour représenter un item de l'explorer
@@ -142,6 +143,8 @@ private:
     ExplorerState state_;
     Scrollbar scrollbar_;
     bool visible_ = true;
+    UI::Button openProjectButton_;
+    D2D1_RECT_F openProjectButtonRect_ = D2D1::RectF(0,0,0,0);
     std::atomic<bool> ignoreNextChange_{false};
     // Helpers internes
     void LoadDirectoryContents();

@@ -37,7 +37,7 @@ public:
     void DrawCloseOrDirty(ID2D1RenderTarget *ctx, const D2D1_RECT_F &rect, bool hovered, bool dirty) const;
 
     // Height of the small path bar shown under the tabs
-    float pathBarHeight_ = 22.0f;
+    float pathBarHeight_ = 35.0f;
 
     // Update tab's file path and display name after Save As
     void UpdateTabPath(int index, const std::wstring &filePath, const std::wstring &displayName);

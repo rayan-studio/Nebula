@@ -24,6 +24,9 @@ private:
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleMessage(UINT, WPARAM, LPARAM);
 
+    bool UpdateTabBarHover(const POINT& ptClient);
+    RECT GetTabBarRectClient() const;
+
     // Reset hover state for all top-level UI controls
     void ClearAllHoverStates();
 

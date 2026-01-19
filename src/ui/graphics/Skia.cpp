@@ -150,11 +150,15 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
                 // Reserve footer area so editor content doesn't overlap it
                 float editorBottom = (float)(client.bottom - footerH);
                 
-                // If terminal is visible, reduce editor space
+                // If terminal is visible, reserve a fixed terminal height and reduce editor space
                 TerminalPanel& terminal = GetTerminalPanel();
                 if (terminal.IsVisible()) {
-                    terminal.UpdateLayout(hwnd, editorLeft, editorBottom, editorRight, editorBottom);
-                    editorBottom = terminal.GetState().topEdge;
+                    float termH = (float)win32_dpi_scale(260, dpiInner);
+                    float termTop = editorBottom - termH;
+                    float termBottom = editorBottom;
+
+                    terminal.UpdateLayout(hwnd, editorLeft, termTop, editorRight, termBottom);
+                    editorBottom = termTop;
                 }
 
                 editor->UpdateLayout(hwnd, editorLeft, editorTop, editorRight, editorBottom);
@@ -187,11 +191,15 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
             int footerH = win32_dpi_scale(footerLogicalH, dpiInner);
             float footerTop = (float)(client.bottom - footerH);
             
-            // If terminal is visible, reduce welcome space
+            // If terminal is visible, reserve a fixed terminal height and reduce welcome space
             TerminalPanel& terminal = GetTerminalPanel();
             if (terminal.IsVisible()) {
-                terminal.UpdateLayout(hwnd, editorLeft, footerTop, editorRight, footerTop);
-                editorBottom = terminal.GetState().topEdge;
+                float termH = (float)win32_dpi_scale(260, dpiInner);
+                float termTop = footerTop - termH;
+                float termBottom = footerTop;
+
+                terminal.UpdateLayout(hwnd, editorLeft, termTop, editorRight, termBottom);
+                editorBottom = termTop;
             }
             
             UI::DrawWelcomeD2D(pRenderTarget_, pDWriteFactory_, hwnd, window->GetCustomFontPath(), editorLeft, editorTop, editorRight, editorBottom);

@@ -4,10 +4,10 @@
 #include <cmath>
 
 Panel::Panel(PanelId id)
-    : id_(id)
-    , title_(L"Panel")
-    , visible_(true)
-    , active_(false)
+    : id_(id),
+      title_(L"Panel"),
+      visible_(true),
+      active_(false)
 {
 }
 
@@ -15,7 +15,7 @@ bool Panel::IsPointInPanel(POINT clientPoint) const
 {
     if (!visible_ || state_.physicalWidth <= 0)
         return false;
-        
+
     return (clientPoint.x >= state_.leftEdge && clientPoint.x <= state_.rightEdge &&
             clientPoint.y >= state_.topEdge && clientPoint.y <= state_.bottomEdge);
 }
@@ -24,13 +24,13 @@ void Panel::UpdateBaseLayout(HWND hwnd, float leftEdge)
 {
     RECT clientRect;
     GetClientRect(hwnd, &clientRect);
-    
+
     UINT dpi = GetDpiForWindow(hwnd);
     float scale = dpi / 96.0f;
-    
+
     RECT tbRect = win32_titlebar_rect(hwnd);
     int footerHeight = win32_dpi_scale(28, dpi);
-    
+
     state_.physicalWidth = static_cast<int>(state_.logicalWidth * scale);
     state_.leftEdge = leftEdge;
     state_.rightEdge = leftEdge + state_.physicalWidth;
@@ -38,11 +38,11 @@ void Panel::UpdateBaseLayout(HWND hwnd, float leftEdge)
     state_.bottomEdge = static_cast<float>(clientRect.bottom - footerHeight);
 }
 
-void Panel::DrawBackground(ID2D1RenderTarget* ctx)
+void Panel::DrawBackground(ID2D1RenderTarget *ctx)
 {
-    ID2D1SolidColorBrush* bgBrush = nullptr;
+    ID2D1SolidColorBrush *bgBrush = nullptr;
     ctx->CreateSolidColorBrush(D2D1::ColorF(18.0f / 255.0f, 18.0f / 255.0f, 18.0f / 255.0f), &bgBrush);
-    
+
     if (bgBrush)
     {
         D2D1_RECT_F rect = D2D1::RectF(state_.leftEdge, state_.topEdge, state_.rightEdge, state_.bottomEdge);
@@ -51,43 +51,48 @@ void Panel::DrawBackground(ID2D1RenderTarget* ctx)
     }
 }
 
-void Panel::DrawTitle(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite)
+void Panel::DrawTitle(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
 {
-    IDWriteTextFormat* titleFormat = nullptr;
+    IDWriteTextFormat *titleFormat = nullptr;
     dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_SEMI_BOLD,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
                              13.0f, L"en-us", &titleFormat);
-    
-    if (titleFormat) {
+
+    if (titleFormat)
+    {
         titleFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         titleFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
     }
-    
-    ID2D1SolidColorBrush* textBrush = nullptr;
+
+    ID2D1SolidColorBrush *textBrush = nullptr;
     ctx->CreateSolidColorBrush(D2D1::ColorF(0.8f, 0.8f, 0.8f), &textBrush);
-    
+
     D2D1_RECT_F titleRect = D2D1::RectF(
         state_.leftEdge + state_.leftPadding,
         state_.topEdge + state_.topPadding,
         state_.rightEdge - state_.leftPadding,
         state_.topEdge + state_.titleHeight);
-    
-    if (titleFormat && textBrush) {
+
+    if (titleFormat && textBrush)
+    {
         ctx->DrawTextW(title_.c_str(), static_cast<UINT32>(title_.length()), titleFormat, titleRect, textBrush);
     }
-    
-    if (titleFormat) titleFormat->Release();
-    if (textBrush) textBrush->Release();
+
+    if (titleFormat)
+        titleFormat->Release();
+    if (textBrush)
+        textBrush->Release();
 }
 
-void Panel::DrawRightBorder(ID2D1RenderTarget* ctx)
+void Panel::DrawRightBorder(ID2D1RenderTarget *ctx)
 {
-    // Base border color
-    ID2D1SolidColorBrush* brush = nullptr;
-    D2D1_COLOR_F borderColor = (state_.isHoveringResizeZone || state_.isResizing)
-        ? D2D1::ColorF(0x00ccff)  // Cyan on hover/resize
-        : D2D1::ColorF(48.0f / 255.0f, 48.0f / 255.0f, 48.0f / 255.0f);
-    
+    ID2D1SolidColorBrush *brush = nullptr;
+
+    D2D1_COLOR_F borderColor =
+        (state_.isHoveringResizeZone || state_.isResizing)
+            ? D2D1::ColorF(0x00ccff) // Cyan
+            : D2D1::ColorF(48.0f / 255.0f, 48.0f / 255.0f, 48.0f / 255.0f);
+
     ctx->CreateSolidColorBrush(borderColor, &brush);
 
     if (brush)
@@ -98,10 +103,11 @@ void Panel::DrawRightBorder(ID2D1RenderTarget* ctx)
 
         D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
         ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+
         float thickness = (state_.isHoveringResizeZone || state_.isResizing) ? 2.0f : 1.0f;
         ctx->DrawLine(p1, p2, brush, thickness);
+
         ctx->SetAntialiasMode(oldAA);
-        
         brush->Release();
     }
 }
@@ -114,28 +120,29 @@ bool Panel::IsPointInResizeZone(POINT clientPoint) const
 {
     if (!visible_ || state_.physicalWidth <= 0)
         return false;
-    
+
     float rightEdge = state_.rightEdge;
-    float contentTop = state_.topEdge + state_.titleHeight + state_.topPadding;
-    
-    return (clientPoint.x >= (int)(rightEdge - RESIZE_ZONE_WIDTH) &&
-            clientPoint.x <= (int)(rightEdge + RESIZE_ZONE_WIDTH) &&
-            clientPoint.y >= (int)contentTop &&
-            clientPoint.y <= (int)state_.bottomEdge);
+
+    // Zone active sur toute la hauteur du panel (IMPORTANT)
+    float top = state_.topEdge;
+    float bottom = state_.bottomEdge;
+
+    return (clientPoint.x >= (int)std::floor(rightEdge - RESIZE_ZONE_WIDTH) &&
+            clientPoint.x <= (int)std::ceil(rightEdge + RESIZE_ZONE_WIDTH) &&
+            clientPoint.y >= (int)top &&
+            clientPoint.y <= (int)bottom);
 }
 
 bool Panel::HandleResizeMouseMove(HWND hwnd, POINT clientPoint)
 {
     bool stateChanged = false;
-    
+
     if (state_.isResizing)
     {
-        // Active resize mode
-        POINT screenPoint;
-        GetCursorPos(&screenPoint);
-
+        // Resize actif: utiliser clientPoint.x (stable)
         UINT dpi = GetDpiForWindow(hwnd);
-        int deltaPhysical = screenPoint.x - state_.resizeStartX;
+
+        int deltaPhysical = clientPoint.x - state_.resizeStartClientX;
         int deltaLogical = MulDiv(deltaPhysical, 96, (int)dpi);
 
         int newWidth = state_.resizeStartWidth + deltaLogical;
@@ -144,7 +151,6 @@ bool Panel::HandleResizeMouseMove(HWND hwnd, POINT clientPoint)
         if (newWidth > state_.maxWidth)
             newWidth = state_.maxWidth;
 
-        // Only update and invalidate if width actually changed
         if (newWidth != state_.logicalWidth)
         {
             state_.logicalWidth = newWidth;
@@ -154,13 +160,18 @@ bool Panel::HandleResizeMouseMove(HWND hwnd, POINT clientPoint)
         }
 
         SetCursor(LoadCursor(NULL, IDC_SIZEWE));
-        return stateChanged;  // Return true only if width changed
+        return stateChanged;
     }
-    
-    // Check hover state
+
+    // Hover resize zone
     bool wasHovering = state_.isHoveringResizeZone;
+
+    // (Optionnel mais stable): assure rightEdge correct
+    // Si UpdateLayout est lourd chez toi, tu peux enlever cette ligne.
+    // UpdateLayout(hwnd);
+
     state_.isHoveringResizeZone = IsPointInResizeZone(clientPoint);
-    
+
     if (state_.isHoveringResizeZone)
     {
         SetCursor(LoadCursor(NULL, IDC_SIZEWE));
@@ -175,24 +186,31 @@ bool Panel::HandleResizeMouseMove(HWND hwnd, POINT clientPoint)
         InvalidateRect(hwnd, nullptr, FALSE);
         stateChanged = true;
     }
-    
+
     return stateChanged;
 }
 
 bool Panel::HandleResizeLeftButtonDown(HWND hwnd, POINT clientPoint)
 {
+    // IMPORTANT: rightEdge correct avant hit-test
+    UpdateLayout(hwnd);
+
     if (IsPointInResizeZone(clientPoint))
     {
         state_.isResizing = true;
-        POINT cursorPos;
-        GetCursorPos(&cursorPos);
-        state_.resizeStartX = cursorPos.x;
+
+        state_.resizeStartClientX = clientPoint.x;   // <- stable
         state_.resizeStartWidth = state_.logicalWidth;
+
         SetCapture(hwnd);
-        Logger::Instance().Log(std::wstring(L"Panel::HandleResizeLeftButtonDown - capture set, startWidth=") + std::to_wstring(state_.resizeStartWidth));
+
+        Logger::Instance().Log(std::wstring(L"Panel::HandleResizeLeftButtonDown - capture set, startWidth=") +
+                               std::to_wstring(state_.resizeStartWidth));
+
         SetCursor(LoadCursor(NULL, IDC_SIZEWE));
         return true;
     }
+
     return false;
 }
 
@@ -202,8 +220,14 @@ bool Panel::HandleResizeLeftButtonUp(HWND hwnd)
     {
         state_.isResizing = false;
         ReleaseCapture();
+
         Logger::Instance().Log(L"Panel::HandleResizeLeftButtonUp - capture released");
+
+        // Ne force pas forcément la flèche ici: Window::WM_SETCURSOR peut gérer
+        // mais OK de le mettre:
         SetCursor(LoadCursor(NULL, IDC_ARROW));
+
+        InvalidateRect(hwnd, nullptr, FALSE);
         return true;
     }
     return false;

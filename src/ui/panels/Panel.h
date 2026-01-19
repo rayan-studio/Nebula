@@ -61,9 +61,15 @@ struct PanelState {
     // Resize state
     bool isResizing = false;
     bool isHoveringResizeZone = false;
+
+    // Ancien (screen coords) - tu peux le garder si tu veux
     int resizeStartX = 0;
+
+    // Nouveau (client coords) - requis par le Panel.cpp corrigé
+    int resizeStartClientX = 0;
+
     int resizeStartWidth = 0;
-    
+
     // Layout constants
     float titleHeight = 40.0f;
     float leftPadding = 12.0f;
