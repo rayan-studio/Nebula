@@ -5,10 +5,12 @@
 #include <dwrite.h>
 #include <string>
 #include <vector>
-#include <atomic>
+#include <memory>
 
-// Ton scrollbar (adapte include si besoin)
+// Scrollbar (toujours dispo si besoin ailleurs)
 #include "ui/components/scrollbar/Scrollbar.h"
+
+class TerminalSession;
 
 class TerminalPanel
 {
@@ -36,13 +38,21 @@ public:
     bool IsFocused() const { return focused_; }
 
     bool IsResizing() const { return resizing_; }
-    bool IsInitialized() const { return initialized_; }
+    bool IsInitialized() const; // true si au moins une session initialisée
 
     const State& GetState() const { return state_; }
 
-    // Init / shutdown
-    bool Initialize(HWND hwnd, const std::wstring& startDir);
-    void Shutdown();
+    // Multi-terminal API
+    int  GetTerminalCount() const;
+    int  GetActiveIndex() const { return activeIndex_; }
+    void SetActiveIndex(int idx);
+    void NewTerminal(HWND hwnd, const std::wstring& startDir);
+    void CloseTerminal(int idx);
+    void CloseAll();
+
+    // Public helpers to ensure sessions (wrap private helpers)
+    void EnsureSessionExists(HWND hwnd);
+    void EnsureActiveInit(HWND hwnd);
 
     // Layout
     void UpdateLayout(HWND hwnd, float left, float top, float right, float bottom);
@@ -71,23 +81,24 @@ public:
     void HandleConPTYOutput(const char* data, size_t len);
 
 private:
-    // ConPTY
-    bool StartShellProcess(const std::wstring& startDir);
-    void StartReadThread(HWND hwnd);
-    static DWORD WINAPI ReadThreadProc(LPVOID p);
-    void CloseConPTY();
+    // UI helpers
+    float TabsBarHeightPx() const { return 28.0f; }
+
+    RECT  TabsBarRectClient() const;
+    RECT  PlusButtonRectClient() const;
+    RECT  TabRectClient(int idx) const;
+    int   HitTestTabIndex(POINT pt) const;
+    bool  HitTestPlus(POINT pt) const;
+
+    // Active session helpers
+    TerminalSession* ActiveSession();
+    const TerminalSession* ActiveSession() const;
+
+    void EnsureAtLeastOneSession(HWND hwnd);
+    void EnsureActiveInitialized(HWND hwnd);
 
     // Sizing
-    void UpdatePseudoConsoleSizeFromPixels();
-
-    // VTerm (opaque, caché dans .cpp)
-    void InitVTerm();
-    void DestroyVTerm();
-    void SetVTermSize(int rows, int cols);
-
-    // Write to PTY
-    void WriteUtf8(const char* bytes, DWORD len);
-    void WriteVtSequence(const char* seq);
+    void UpdatePseudoConsoleSizeFromPixelsForActive();
 
 private:
     // Panel state
@@ -106,51 +117,18 @@ private:
 
     State state_{};
 
-    // Terminal dimensions
-    int rows_ = 24;
-    int cols_ = 80;
-
     // Fonts
     std::wstring fontFamily_ = L"JetBrains Mono";
     float fontSize_ = 13.0f;
-
-    IDWriteTextFormat* textFormat_ = nullptr;
     IDWriteFontCollection* fontCollection_ = nullptr; // non-owning
 
-    // Metrics
-    float charW_ = 8.0f;
-    float lineH_ = 16.0f;
+    // Multi sessions
+    std::vector<std::unique_ptr<TerminalSession>> sessions_;
+    int activeIndex_ = -1;
 
-    // Scrollback
-    std::vector<std::wstring> scrollback_;
-    bool userScrolling_ = false;
-    bool pendingSnapToBottom_ = false;
-
-    Scrollbar scrollbar_;
-
-    // ConPTY handles
-    bool initialized_ = false;
-    bool conptyLoaded_ = false;
-
-    HANDLE hInR_ = NULL;
-    HANDLE hInW_ = NULL;
-    HANDLE hOutR_ = NULL;
-    HANDLE hOutW_ = NULL;
-    HANDLE hChild_ = NULL;
-
-    HANDLE hReadThread_ = NULL;
-    std::atomic<bool> stopThread_{ false };
-
-    HWND hwndOwner_ = NULL;
-
-    // HPCON opaque
-    void* hPC_ = nullptr;
-
-    // VTerm opaque pointers (vrai type dans cpp)
-    void* vt_ = nullptr;
-    void* screen_ = nullptr;
-
-    std::atomic<bool> hasDamage_{ false };
+    // Tabs hover
+    int hoveredTab_ = -1;
+    bool hoveredPlus_ = false;
 };
 
 // Global accessor

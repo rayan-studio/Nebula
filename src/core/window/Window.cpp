@@ -1497,6 +1497,25 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 
             wchar_t buf[256];
             swprintf_s(buf, sizeof(buf) / sizeof(buf[0]), L"Menu %d item %d selected", menu, index);
+            // Handle some View menu actions (menu == 3)
+            if (menu == 3)
+            {
+                switch (index)
+                {
+                case 0: // New Terminal
+                {
+                    std::wstring dir = GetExplorerManager().GetState().rootPath.empty()
+                        ? L""
+                        : GetExplorerManager().GetState().rootPath;
+                    GetTerminalPanel().NewTerminal(hwnd_, dir);
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                }
+                default:
+                    break;
+                }
+            }
+
             MessageBoxW(hwnd_, buf, L"Menu", MB_OK);
             return 0;
         }

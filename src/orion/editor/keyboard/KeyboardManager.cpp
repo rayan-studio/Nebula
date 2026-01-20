@@ -191,19 +191,32 @@ bool KeyboardManager::HandleGlobalShortcuts(WPARAM wParam, const Mods &m)
     {
         TerminalPanel &terminal = GetTerminalPanel();
 
-        if (!terminal.IsInitialized())
-        {
-            terminal.Initialize(window_->GetHwnd(), L"");
-            terminal.SetFont(L"JetBrains Mono", 13.0f);
-        }
-
+        // Toggle visibility
         terminal.ToggleVisible();
 
-        // ✅ IMPORTANT : recalculer le layout immédiatement
+        // Ensure layout is updated immediately
         GetPanelManager().UpdateLayout(window_->GetHwnd());
 
         if (terminal.IsVisible())
+        {
             terminal.SetFocused(true);
+
+            // If no session exists, create one in the workspace root (or current dir)
+            if (terminal.GetTerminalCount() == 0)
+            {
+                std::wstring dir = GetExplorerManager().GetState().rootPath.empty()
+                    ? L""
+                    : GetExplorerManager().GetState().rootPath;
+                terminal.NewTerminal(window_->GetHwnd(), dir);
+                // NewTerminal already sets visible & focused
+            }
+            else
+            {
+                // Ensure active session initialized (lazy init) via public wrappers
+                terminal.EnsureSessionExists(window_->GetHwnd());
+                terminal.EnsureActiveInit(window_->GetHwnd());
+            }
+        }
 
         InvalidateRect(window_->GetHwnd(), nullptr, FALSE);
         return true;

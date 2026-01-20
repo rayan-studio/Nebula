@@ -5,8 +5,6 @@
 #include <string>
 
 #include <dwrite_1.h>
-// Terminal font sync
-#include "ui/panels/terminal/TerminalPanel.h"
 
 // Ensure Windows min/max macros don't interfere with std::min/std::max
 #ifdef max
@@ -280,13 +278,6 @@ namespace Orion
         hr = customFontCollection_->FindFamilyName(L"JetBrains Mono", &index, &exists);
         if (FAILED(hr))
             return false;
-
-        // If we successfully loaded a custom font collection, sync it to the terminal
-        if (customFontCollection_)
-        {
-            GetTerminalPanel().SetFont(L"JetBrains Mono", 13.0f);
-            GetTerminalPanel().SetFontCollection(customFontCollection_);
-        }
 
         return exists == TRUE;
     }

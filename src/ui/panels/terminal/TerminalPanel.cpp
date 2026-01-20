@@ -1,141 +1,8 @@
 #include "TerminalPanel.h"
+#include "TerminalSession.h"
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
-#include <vector>
-
-#ifdef min
-#undef min
-#endif
-#ifdef max
-#undef max
-#endif
-
-// ---------------------------------------------
-// libvterm include UNIQUEMENT ici (cpp)
-// + macro push/pop pour Windows
-// ---------------------------------------------
-#pragma push_macro("IN")
-#pragma push_macro("OUT")
-#pragma push_macro("DELETE")
-#pragma push_macro("ERROR")
-#pragma push_macro("min")
-#pragma push_macro("max")
-#pragma push_macro("small")
-
-#ifdef IN
-#undef IN
-#endif
-#ifdef OUT
-#undef OUT
-#endif
-#ifdef DELETE
-#undef DELETE
-#endif
-#ifdef ERROR
-#undef ERROR
-#endif
-#ifdef min
-#undef min
-#endif
-#ifdef max
-#undef max
-#endif
-#ifdef small
-#undef small
-#endif
-
-#include "vterm.h"
-
-#pragma pop_macro("small")
-#pragma pop_macro("max")
-#pragma pop_macro("min")
-#pragma pop_macro("ERROR")
-#pragma pop_macro("DELETE")
-#pragma pop_macro("OUT")
-#pragma pop_macro("IN")
-
-#ifndef PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE
-#define PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE 0x00020016
-#endif
-
-// ConPTY dynamic loading
-typedef HRESULT(WINAPI* CreatePseudoConsole_t)(COORD, HANDLE, HANDLE, DWORD, HPCON*);
-typedef HRESULT(WINAPI* ResizePseudoConsole_t)(HPCON, COORD);
-typedef VOID(WINAPI* ClosePseudoConsole_t)(HPCON);
-
-static CreatePseudoConsole_t pCreatePseudoConsole = nullptr;
-static ResizePseudoConsole_t pResizePseudoConsole = nullptr;
-static ClosePseudoConsole_t  pClosePseudoConsole = nullptr;
-
-static bool LoadConPTY()
-{
-    HMODULE hKernel = GetModuleHandleW(L"kernel32.dll");
-    if (!hKernel) return false;
-
-    pCreatePseudoConsole = (CreatePseudoConsole_t)GetProcAddress(hKernel, "CreatePseudoConsole");
-    pResizePseudoConsole = (ResizePseudoConsole_t)GetProcAddress(hKernel, "ResizePseudoConsole");
-    pClosePseudoConsole = (ClosePseudoConsole_t)GetProcAddress(hKernel, "ClosePseudoConsole");
-
-    return pCreatePseudoConsole && pResizePseudoConsole && pClosePseudoConsole;
-}
-
-static float ClampF(float v, float a, float b)
-{
-    return (v < a) ? a : (v > b) ? b : v;
-}
-
-static std::string WideToUtf8Char(wchar_t ch)
-{
-    wchar_t w[2] = { ch, 0 };
-    int len = WideCharToMultiByte(CP_UTF8, 0, w, 1, NULL, 0, NULL, NULL);
-    if (len <= 0) return {};
-    std::string out((size_t)len, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w, 1, out.data(), len, NULL, NULL);
-    return out;
-}
-
-// ---------------- VTerm callbacks (cachés ici) ----------------
-static int VTermDamageCb(VTermRect, void* user)
-{
-    auto* self = (TerminalPanel*)user;
-    self->HandleConPTYOutput(nullptr, 0); // no-op safety
-    return 1;
-}
-static int VTermMoveCursorCb(VTermPos, VTermPos, int, void* user)
-{
-    auto* self = (TerminalPanel*)user;
-    (void)self;
-    return 1;
-}
-static int VTermSetTermPropCb(VTermProp, VTermValue*, void* user)
-{
-    auto* self = (TerminalPanel*)user;
-    (void)self;
-    return 1;
-}
-static int VTermSbPushlineCb(int cols, const VTermScreenCell* cells, void* user)
-{
-    auto* self = (TerminalPanel*)user;
-
-    std::wstring line;
-    line.reserve((size_t)cols);
-    for (int c = 0; c < cols; ++c)
-    {
-        uint32_t cp = cells[c].chars[0];
-        if (cp == 0) cp = L' ';
-        line.push_back((wchar_t)cp);
-    }
-    while (!line.empty() && line.back() == L' ') line.pop_back();
-
-    // ⚠️ on ne peut pas accéder à scrollback_ (private) ici
-    // Donc: on va passer par une méthode (plus bas).
-    // Mais pour rester simple, on va déclarer ces callbacks dans la classe normalement.
-    // -> Du coup: on va pas utiliser ces callbacks free ici.
-    // (NOTE: on va revenir à des callbacks membres, mais dans ce fichier uniquement.)
-    return 1;
-}
 
 // -----------------------------------------------------------
 // Global accessor
@@ -146,19 +13,134 @@ TerminalPanel& GetTerminalPanel()
     return gTerminal;
 }
 
-TerminalPanel::TerminalPanel()
-{
-    fontFamily_ = L"JetBrains Mono";
-    fontSize_ = 13.0f;
-    fontCollection_ = nullptr;
-}
-
+TerminalPanel::TerminalPanel() {}
 TerminalPanel::~TerminalPanel()
 {
-    Shutdown();
+    CloseAll();
+    if (fontCollection_)
+    {
+        fontCollection_->Release();
+        fontCollection_ = nullptr;
+    }
 }
 
-// ---------------- Visible / Focus expected by Window.cpp ----------------
+bool TerminalPanel::IsInitialized() const
+{
+    for (auto& s : sessions_)
+        if (s && s->IsInitialized())
+            return true;
+    return false;
+}
+
+int TerminalPanel::GetTerminalCount() const
+{
+    return (int)sessions_.size();
+}
+
+void TerminalPanel::SetActiveIndex(int idx)
+{
+    if (idx < 0 || idx >= (int)sessions_.size())
+        return;
+    activeIndex_ = idx;
+}
+
+TerminalSession* TerminalPanel::ActiveSession()
+{
+    if (activeIndex_ < 0 || activeIndex_ >= (int)sessions_.size()) return nullptr;
+    return sessions_[activeIndex_].get();
+}
+const TerminalSession* TerminalPanel::ActiveSession() const
+{
+    if (activeIndex_ < 0 || activeIndex_ >= (int)sessions_.size()) return nullptr;
+    return sessions_[activeIndex_].get();
+}
+
+void TerminalPanel::EnsureAtLeastOneSession(HWND hwnd)
+{
+    if (!sessions_.empty()) return;
+
+    // Crée une session par défaut (non initialisée tant que pas visible/focus si tu veux)
+    sessions_.push_back(std::make_unique<TerminalSession>());
+    activeIndex_ = 0;
+
+    // On peut init direct quand on affiche
+    (void)hwnd;
+}
+
+void TerminalPanel::EnsureActiveInitialized(HWND hwnd)
+{
+    TerminalSession* s = ActiveSession();
+    if (!s) return;
+
+    if (!s->IsInitialized())
+    {
+        // startDir vide => current dir, mais normalement tu appelles NewTerminal(startDir) depuis Window
+        s->Initialize(hwnd, L"");
+        UpdatePseudoConsoleSizeFromPixelsForActive();
+        s->SnapToBottomSoon();
+    }
+}
+
+void TerminalPanel::NewTerminal(HWND hwnd, const std::wstring& startDir)
+{
+    if (!hwnd) return;
+
+    // crée
+    sessions_.push_back(std::make_unique<TerminalSession>());
+    activeIndex_ = (int)sessions_.size() - 1;
+
+    // init now
+    sessions_[activeIndex_]->Initialize(hwnd, startDir);
+
+    // resize to current panel content area
+    UpdatePseudoConsoleSizeFromPixelsForActive();
+    sessions_[activeIndex_]->SnapToBottomSoon();
+
+    visible_ = true;
+    focused_ = true;
+}
+
+void TerminalPanel::EnsureSessionExists(HWND hwnd)
+{
+    EnsureAtLeastOneSession(hwnd);
+}
+
+void TerminalPanel::EnsureActiveInit(HWND hwnd)
+{
+    EnsureActiveInitialized(hwnd);
+}
+
+void TerminalPanel::CloseTerminal(int idx)
+{
+    if (idx < 0 || idx >= (int)sessions_.size())
+        return;
+
+    sessions_[idx]->Shutdown();
+    sessions_.erase(sessions_.begin() + idx);
+
+    if (sessions_.empty())
+    {
+        activeIndex_ = -1;
+        visible_ = false;
+        focused_ = false;
+        return;
+    }
+
+    if (activeIndex_ >= (int)sessions_.size())
+        activeIndex_ = (int)sessions_.size() - 1;
+}
+
+void TerminalPanel::CloseAll()
+{
+    for (auto& s : sessions_)
+        if (s) s->Shutdown();
+    sessions_.clear();
+    activeIndex_ = -1;
+    visible_ = false;
+    focused_ = false;
+}
+
+// ---------------- Visible / Focus ----------------
 void TerminalPanel::ToggleVisible()
 {
     visible_ = !visible_;
@@ -183,36 +165,17 @@ void TerminalPanel::SetFont(const std::wstring& family, float sizePx)
 {
     fontFamily_ = family;
     fontSize_ = sizePx;
-
-    if (textFormat_)
-    {
-        textFormat_->Release();
-        textFormat_ = nullptr;
-    }
-
-    if (initialized_)
-        UpdatePseudoConsoleSizeFromPixels();
+    UpdatePseudoConsoleSizeFromPixelsForActive();
 }
 
 void TerminalPanel::SetFontCollection(IDWriteFontCollection* fc)
 {
+    if (fc)
+        fc->AddRef();
+    if (fontCollection_)
+        fontCollection_->Release();
     fontCollection_ = fc;
-
-    if (textFormat_)
-    {
-        textFormat_->Release();
-        textFormat_ = nullptr;
-    }
-
-    if (initialized_)
-        UpdatePseudoConsoleSizeFromPixels();
-}
-
-// --------- Legacy wrapper ----------
-void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwnd)
-{
-    (void)hwnd;
-    Draw(rt, dwrite);
+    UpdatePseudoConsoleSizeFromPixelsForActive();
 }
 
 // ---------------- Layout ----------------
@@ -226,10 +189,21 @@ void TerminalPanel::UpdateLayout(HWND hwnd, float left, float top, float right, 
     state_.topEdge = top;
     state_.rightEdge = right;
     state_.bottomEdge = bottom;
-    state_.physicalWidth = (int)std::max(0.0f, right - left);
+    {
+        float w = right - left;
+        if (w < 0.0f) w = 0.0f;
+        state_.physicalWidth = (int)w;
+    }
 
-    if (initialized_)
-        UpdatePseudoConsoleSizeFromPixels();
+    // Update viewport for active session (content area under tabs bar)
+    TerminalSession* s = ActiveSession();
+    if (s)
+    {
+        float tabsH = TabsBarHeightPx();
+        float contentTop = top_ + tabsH;
+        s->SetViewport(left_, contentTop, right_, bottom_);
+        UpdatePseudoConsoleSizeFromPixelsForActive();
+    }
 }
 
 bool TerminalPanel::IsPointInPanel(POINT pt) const
@@ -246,18 +220,105 @@ bool TerminalPanel::IsPointInResizeZone(POINT pt) const
         && pt.y >= (LONG)top_ && pt.y <= (LONG)(top_ + resizeZoneH_);
 }
 
+// ---------------- Tabs UI rects ----------------
+RECT TerminalPanel::TabsBarRectClient() const
+{
+    RECT r;
+    r.left = (LONG)left_;
+    r.top = (LONG)top_;
+    r.right = (LONG)right_;
+    r.bottom = (LONG)(top_ + TabsBarHeightPx());
+    return r;
+}
+
+RECT TerminalPanel::PlusButtonRectClient() const
+{
+    RECT t = TabsBarRectClient();
+    int size = (int)TabsBarHeightPx();
+    RECT r;
+    r.right = t.right - 8;
+    r.left  = r.right - size;
+    r.top   = t.top + 2;
+    r.bottom= t.bottom - 2;
+    return r;
+}
+
+RECT TerminalPanel::TabRectClient(int idx) const
+{
+    RECT t = TabsBarRectClient();
+    RECT plus = PlusButtonRectClient();
+
+    const int padL = 8;
+    const int tabH = (t.bottom - t.top);
+    const int tabW = 110; // simple fixed width, tu pourras améliorer avec text measure
+
+    int x0 = t.left + padL + idx * tabW;
+    int x1 = x0 + tabW;
+
+    // clamp before plus button
+    if (x1 > (plus.left - 6)) x1 = plus.left - 6;
+    RECT r; r.left = x0; r.top = t.top; r.right = x1; r.bottom = t.bottom;
+    return r;
+}
+
+int TerminalPanel::HitTestTabIndex(POINT pt) const
+{
+    if (!visible_) return -1;
+
+    RECT t = TabsBarRectClient();
+    if (pt.x < t.left || pt.x > t.right || pt.y < t.top || pt.y > t.bottom)
+        return -1;
+
+    for (int i = 0; i < (int)sessions_.size(); ++i)
+    {
+        RECT r = TabRectClient(i);
+        if (pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom)
+            return i;
+    }
+    return -1;
+}
+
+bool TerminalPanel::HitTestPlus(POINT pt) const
+{
+    RECT r = PlusButtonRectClient();
+    return (pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom);
+}
+
 // ---------------- Mouse ----------------
 void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
 {
     if (!visible_) return;
 
-    if (scrollbar_.OnLeftButtonDown(pt))
+    // Tabs click
+    int tab = HitTestTabIndex(pt);
+    if (tab >= 0)
     {
-        SetCapture(hwnd);
-        userScrolling_ = true;
+        SetActiveIndex(tab);
+        focused_ = true;
+        EnsureActiveInitialized(hwnd);
         return;
     }
 
+    // Plus click => NewTerminal (startDir choisi par Window normalement via menu)
+    if (HitTestPlus(pt))
+    {
+        // Ici: fallback current dir
+        NewTerminal(hwnd, L"");
+        return;
+    }
+
+    // Scrollbar capture for active session
+    if (TerminalSession* s = ActiveSession())
+    {
+        if (s->OnScrollbarLButtonDown(pt))
+        {
+            SetCapture(hwnd);
+            focused_ = true;
+            return;
+        }
+    }
+
+    // Resize zone
     if (IsPointInResizeZone(pt))
     {
         resizing_ = true;
@@ -275,10 +336,13 @@ void TerminalPanel::OnLeftButtonUp(HWND hwnd)
 {
     (void)hwnd;
 
-    if (scrollbar_.OnLeftButtonUp())
+    if (TerminalSession* s = ActiveSession())
     {
-        ReleaseCapture();
-        return;
+        if (s->OnScrollbarLButtonUp())
+        {
+            ReleaseCapture();
+            return;
+        }
     }
 
     if (resizing_)
@@ -294,30 +358,57 @@ bool TerminalPanel::OnMouseMove(HWND hwnd, POINT pt)
     (void)hwnd;
     if (!visible_) return false;
 
-    if (scrollbar_.OnMouseMove(pt))
-        return true;
+    bool changed = false;
 
+    // Hover tabs / plus
+    int prevTab = hoveredTab_;
+    bool prevPlus = hoveredPlus_;
+    hoveredTab_ = HitTestTabIndex(pt);
+    hoveredPlus_ = HitTestPlus(pt);
+    if (prevTab != hoveredTab_ || prevPlus != hoveredPlus_)
+        changed = true;
+
+    // Scrollbar hover/drag
+    if (TerminalSession* s = ActiveSession())
+    {
+        if (s->OnScrollbarMouseMove(pt))
+            changed = true;
+    }
+
+    // Resizing drag
     if (resizing_)
     {
         int dy = (pt.y - dragStart_.y);
         float newTop = startTop_ + (float)dy;
 
         float maxTop = bottom_ - minHeight_;
-        newTop = ClampF(newTop, 0.0f, maxTop);
+        if (newTop < 0.0f) newTop = 0.0f;
+        if (newTop > maxTop) newTop = maxTop;
 
         if (newTop != top_)
         {
             top_ = newTop;
-            if (initialized_)
-                UpdatePseudoConsoleSizeFromPixels();
+
+            // update state + viewport
+            state_.topEdge = top_;
+
+            if (TerminalSession* s = ActiveSession())
+            {
+                float tabsH = TabsBarHeightPx();
+                s->SetViewport(left_, top_ + tabsH, right_, bottom_);
+                UpdatePseudoConsoleSizeFromPixelsForActive();
+            }
             return true;
         }
-        return false;
+        return changed;
     }
 
     bool prev = resizeHover_;
     resizeHover_ = IsPointInResizeZone(pt);
-    return (prev != resizeHover_);
+    if (prev != resizeHover_)
+        changed = true;
+
+    return changed;
 }
 
 void TerminalPanel::OnMouseWheel(HWND hwnd, int wheelDelta)
@@ -325,394 +416,75 @@ void TerminalPanel::OnMouseWheel(HWND hwnd, int wheelDelta)
     (void)hwnd;
     if (!visible_) return;
 
-    if (scrollbar_.OnMouseWheel(wheelDelta))
-        userScrolling_ = true;
+    if (TerminalSession* s = ActiveSession())
+        s->OnMouseWheel(wheelDelta);
 }
 
-// ---------------- Keyboard -> ConPTY ----------------
-void TerminalPanel::WriteUtf8(const char* bytes, DWORD len)
-{
-    if (!initialized_ || !hInW_ || !bytes || len == 0) return;
-    DWORD written = 0;
-    WriteFile(hInW_, bytes, len, &written, NULL);
-}
-
-void TerminalPanel::WriteVtSequence(const char* seq)
-{
-    if (!seq) return;
-    WriteUtf8(seq, (DWORD)strlen(seq));
-}
-
+// ---------------- Keyboard ----------------
 void TerminalPanel::OnChar(wchar_t ch)
 {
-    if (!visible_ || !focused_ || !initialized_) return;
+    if (!visible_ || !focused_) return;
+    EnsureActiveInitialized(NULL); // safety if needed
 
-    if (ch == L'\r' || ch == L'\n' || ch == L'\b' || ch == 0x1B || ch == L'\t')
-        return;
-
-    std::string u8 = WideToUtf8Char(ch);
-    if (!u8.empty())
-        WriteUtf8(u8.data(), (DWORD)u8.size());
+    if (TerminalSession* s = ActiveSession())
+        s->OnChar(ch);
 }
 
 void TerminalPanel::OnKeyDown(WPARAM vk)
 {
-    if (!visible_ || !focused_ || !initialized_) return;
+    if (!visible_ || !focused_) return;
+    EnsureActiveInitialized(NULL); // safety if needed
 
-    switch (vk)
-    {
-    case VK_RETURN: WriteUtf8("\r", 1); break;
-    case VK_BACK:   WriteUtf8("\x08", 1); break;
-    case VK_TAB:    WriteUtf8("\t", 1); break;
-
-    case VK_UP:     WriteVtSequence("\x1b[A"); break;
-    case VK_DOWN:   WriteVtSequence("\x1b[B"); break;
-    case VK_RIGHT:  WriteVtSequence("\x1b[C"); break;
-    case VK_LEFT:   WriteVtSequence("\x1b[D"); break;
-
-    case VK_DELETE: WriteVtSequence("\x1b[3~"); break;
-    case VK_HOME:   WriteVtSequence("\x1b[H"); break;
-    case VK_END:    WriteVtSequence("\x1b[F"); break;
-
-    default:
-        break;
-    }
+    if (TerminalSession* s = ActiveSession())
+        s->OnKeyDown(vk);
 }
 
-// ---------------- VTerm init/shutdown (hidden types here) ----------------
-void TerminalPanel::InitVTerm()
-{
-    DestroyVTerm();
-
-    VTerm* vt = vterm_new(rows_, cols_);
-    vterm_set_utf8(vt, 1);
-
-    VTermScreen* screen = vterm_obtain_screen(vt);
-    vterm_screen_reset(screen, 1);
-    vterm_screen_enable_altscreen(screen, 1);
-
-    static VTermScreenCallbacks cb{};
-    cb.damage = [](VTermRect, void* user) -> int {
-        ((TerminalPanel*)user)->hasDamage_.store(true);
-        return 1;
-    };
-    cb.movecursor = [](VTermPos, VTermPos, int, void* user) -> int {
-        ((TerminalPanel*)user)->hasDamage_.store(true);
-        return 1;
-    };
-    cb.settermprop = [](VTermProp, VTermValue*, void* user) -> int {
-        ((TerminalPanel*)user)->hasDamage_.store(true);
-        return 1;
-    };
-    cb.sb_pushline = [](int cols, const VTermScreenCell* cells, void* user) -> int {
-        auto* self = (TerminalPanel*)user;
-
-        std::wstring line;
-        line.reserve((size_t)cols);
-        for (int c = 0; c < cols; ++c)
-        {
-            uint32_t cp = cells[c].chars[0];
-            if (cp == 0) cp = L' ';
-            line.push_back((wchar_t)cp);
-        }
-        while (!line.empty() && line.back() == L' ') line.pop_back();
-
-        self->scrollback_.push_back(std::move(line));
-
-        const size_t MAX_SB = 10000;
-        if (self->scrollback_.size() > MAX_SB)
-        {
-            self->scrollback_.erase(
-                self->scrollback_.begin(),
-                self->scrollback_.begin() + (self->scrollback_.size() - MAX_SB));
-        }
-        return 1;
-    };
-    cb.sb_popline = [](int cols, VTermScreenCell* cells, void* user) -> int {
-        auto* self = (TerminalPanel*)user;
-        if (self->scrollback_.empty()) return 0;
-
-        std::wstring line = std::move(self->scrollback_.back());
-        self->scrollback_.pop_back();
-
-        for (int c = 0; c < cols; ++c)
-        {
-            VTermScreenCell empty{};
-            uint32_t cp = (c < (int)line.size()) ? (uint32_t)line[c] : (uint32_t)' ';
-            cells[c] = empty;
-            cells[c].chars[0] = cp;
-            cells[c].width = 1;
-        }
-        return 1;
-    };
-    cb.sb_clear = [](void* user) -> int {
-        ((TerminalPanel*)user)->scrollback_.clear();
-        return 1;
-    };
-
-    vterm_screen_set_callbacks(screen, &cb, this);
-    vterm_screen_set_damage_merge(screen, VTERM_DAMAGE_SCROLL);
-
-    vt_ = vt;
-    screen_ = screen;
-
-    hasDamage_.store(true);
-}
-
-void TerminalPanel::DestroyVTerm()
-{
-    screen_ = nullptr;
-    if (vt_)
-    {
-        vterm_free((VTerm*)vt_);
-        vt_ = nullptr;
-    }
-}
-
-void TerminalPanel::SetVTermSize(int rows, int cols)
-{
-    rows_ = rows;
-    cols_ = cols;
-    if (vt_)
-        vterm_set_size((VTerm*)vt_, rows_, cols_);
-    hasDamage_.store(true);
-}
-
-// ---------------- Output ConPTY -> VTerm ----------------
+// ---------------- ConPTY -> VTerm feed ----------------
 void TerminalPanel::HandleConPTYOutput(const char* data, size_t len)
 {
-    if (!data || len == 0) return;
-    if (!vt_ || !screen_) return;
-
-    vterm_input_write((VTerm*)vt_, data, (int)len);
-    vterm_screen_flush_damage((VTermScreen*)screen_);
-
-    hasDamage_.store(true);
-
-    if (!userScrolling_)
-        pendingSnapToBottom_ = true;
+    TerminalSession* s = ActiveSession();
+    if (!s) return;
+    s->HandleConPTYOutput(data, len);
 }
 
-// ---------------- ConPTY init/shutdown ----------------
-bool TerminalPanel::Initialize(HWND hwnd, const std::wstring& startDir)
+// ---------------- Resize pseudo console from panel pixels ----------------
+void TerminalPanel::UpdatePseudoConsoleSizeFromPixelsForActive()
 {
-    if (initialized_) return true;
-
-    conptyLoaded_ = LoadConPTY();
-    if (!conptyLoaded_) return false;
-
-    hwndOwner_ = hwnd;
-
-    SECURITY_ATTRIBUTES sa{ sizeof(sa), NULL, TRUE };
-    if (!CreatePipe(&hInR_, &hInW_, &sa, 0)) return false;
-    if (!CreatePipe(&hOutR_, &hOutW_, &sa, 0)) return false;
-
-    COORD sz{ (SHORT)cols_, (SHORT)rows_ };
-    HRESULT hr = pCreatePseudoConsole(sz, hInR_, hOutW_, 0, (HPCON*)&hPC_);
-    if (FAILED(hr) || !hPC_) return false;
-
-    if (!StartShellProcess(startDir)) return false;
-
-    initialized_ = true;
-
-    InitVTerm();
-    StartReadThread(hwnd);
-
-    return true;
-}
-
-bool TerminalPanel::StartShellProcess(const std::wstring& startDir)
-{
-    STARTUPINFOEXW siex{};
-    siex.StartupInfo.cb = sizeof(siex);
-
-    SIZE_T attrListSize = 0;
-    InitializeProcThreadAttributeList(NULL, 1, 0, &attrListSize);
-
-    std::vector<BYTE> attrBuf(attrListSize);
-    siex.lpAttributeList = (PPROC_THREAD_ATTRIBUTE_LIST)attrBuf.data();
-
-    if (!InitializeProcThreadAttributeList(siex.lpAttributeList, 1, 0, &attrListSize))
-        return false;
-
-    if (!UpdateProcThreadAttribute(
-        siex.lpAttributeList,
-        0,
-        (DWORD_PTR)PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-        hPC_, sizeof(hPC_),
-        NULL, NULL))
-    {
-        DeleteProcThreadAttributeList(siex.lpAttributeList);
-        return false;
-    }
-
-    std::wstring workDir = startDir;
-    if (workDir.empty())
-    {
-        wchar_t cur[MAX_PATH];
-        GetCurrentDirectoryW(MAX_PATH, cur);
-        workDir = cur;
-    }
-
-    std::wstring cmd = L"powershell.exe -NoLogo";
-    std::vector<wchar_t> cmdline(cmd.begin(), cmd.end());
-    cmdline.push_back(L'\0');
-
-    PROCESS_INFORMATION pi{};
-    DWORD flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT;
-
-    BOOL ok = CreateProcessW(
-        NULL,
-        cmdline.data(),
-        NULL, NULL,
-        TRUE,
-        flags,
-        NULL,
-        workDir.c_str(),
-        &siex.StartupInfo,
-        &pi);
-
-    DeleteProcThreadAttributeList(siex.lpAttributeList);
-
-    if (!ok) return false;
-
-    CloseHandle(pi.hThread);
-    hChild_ = pi.hProcess;
-    return true;
-}
-
-void TerminalPanel::StartReadThread(HWND hwnd)
-{
-    hwndOwner_ = hwnd;
-    stopThread_ = false;
-
-    if (hReadThread_)
-    {
-        CloseHandle(hReadThread_);
-        hReadThread_ = NULL;
-    }
-
-    hReadThread_ = CreateThread(NULL, 0, ReadThreadProc, this, 0, NULL);
-}
-
-DWORD WINAPI TerminalPanel::ReadThreadProc(LPVOID p)
-{
-    auto* self = (TerminalPanel*)p;
-    if (!self) return 0;
-
-    const DWORD BUF_SZ = 4096;
-
-    while (!self->stopThread_.load())
-    {
-        char* buf = (char*)malloc(BUF_SZ);
-        if (!buf) break;
-
-        DWORD read = 0;
-        BOOL ok = ReadFile(self->hOutR_, buf, BUF_SZ, &read, NULL);
-
-        if (!ok || read == 0)
-        {
-            free(buf);
-            Sleep(1);
-            continue;
-        }
-
-        if (self->hwndOwner_)
-        {
-            PostMessageW(self->hwndOwner_, WM_USER + 201, (WPARAM)read, (LPARAM)buf);
-        }
-        else
-        {
-            self->HandleConPTYOutput(buf, read);
-            free(buf);
-        }
-    }
-
-    return 0;
-}
-
-void TerminalPanel::UpdatePseudoConsoleSizeFromPixels()
-{
-    if (!initialized_ || !pResizePseudoConsole || !hPC_) return;
-
-    // ✅ Guard : pas de resize tant qu’on n’a pas un layout valide
-    if ((right_ - left_) < 50.0f || (bottom_ - top_) < 30.0f)
+    TerminalSession* s = ActiveSession();
+    if (!s || !s->IsInitialized())
         return;
 
-    const float padX = 10.0f;
-    const float padY = 8.0f;
+    float tabsH = TabsBarHeightPx();
 
-    float wPx = (right_ - left_) - padX * 2.0f;
-    float hPx = (bottom_ - top_) - padY * 2.0f;
+    float contentW = (right_ - left_) - 20.0f; // pads approximatifs
+    float contentH = (bottom_ - (top_ + tabsH)) - 16.0f;
 
-    float charW = fontSize_ * 0.60f;
-    float lineH = fontSize_ * 1.35f;
-
-    int cols = (int)(wPx / std::max(4.0f, charW));
-    int rows = (int)(hPx / std::max(8.0f, lineH));
-
-    cols = std::max(20, cols);
-    rows = std::max(5, rows);
-
-    COORD sz{ (SHORT)cols, (SHORT)rows };
-    pResizePseudoConsole((HPCON)hPC_, sz);
-
-    SetVTermSize(rows, cols);
+    s->UpdatePseudoConsoleSizeFromPixels(contentW, contentH, fontFamily_, fontSize_, fontCollection_);
 }
 
-void TerminalPanel::Shutdown()
+// ---------------- Render ----------------
+void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwnd)
 {
-    stopThread_ = true;
-    if (hReadThread_)
-    {
-        WaitForSingleObject(hReadThread_, 200);
-        CloseHandle(hReadThread_);
-        hReadThread_ = NULL;
-    }
-
-    CloseConPTY();
-
-    if (textFormat_)
-    {
-        textFormat_->Release();
-        textFormat_ = nullptr;
-    }
-
-    DestroyVTerm();
-    initialized_ = false;
+    (void)hwnd;
+    Draw(rt, dwrite);
 }
 
-void TerminalPanel::CloseConPTY()
-{
-    if (hChild_) { CloseHandle(hChild_); hChild_ = NULL; }
-
-    if (hPC_ && pClosePseudoConsole)
-    {
-        pClosePseudoConsole((HPCON)hPC_);
-        hPC_ = NULL;
-    }
-
-    if (hInR_) { CloseHandle(hInR_); hInR_ = NULL; }
-    if (hInW_) { CloseHandle(hInW_); hInW_ = NULL; }
-    if (hOutR_) { CloseHandle(hOutR_); hOutR_ = NULL; }
-    if (hOutW_) { CloseHandle(hOutW_); hOutW_ = NULL; }
-}
-
-// ---------------- Render (VTerm grid) ----------------
 void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite)
 {
     if (!visible_ || !rt || !dwrite) return;
 
-    // Brushes (create early so we can always draw chrome even if terminal not ready)
+    EnsureAtLeastOneSession(NULL);
+
+    // Tabs bar background
     ID2D1SolidColorBrush* bg = nullptr;
     ID2D1SolidColorBrush* fg = nullptr;
     ID2D1SolidColorBrush* border = nullptr;
 
-    HRESULT hr1 = rt->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.08f, 0.92f), &bg);
-    HRESULT hr2 = rt->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.92f, 0.92f, 1.0f), &fg);
-    HRESULT hr3 = rt->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f), &border);
+    rt->CreateSolidColorBrush(D2D1::ColorF(0.06f, 0.06f, 0.06f, 1.0f), &bg);
+    rt->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.90f, 0.90f, 1.0f), &fg);
+    rt->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f), &border);
 
-    if (FAILED(hr1) || FAILED(hr2) || FAILED(hr3) || !bg || !fg || !border)
+    if (!bg || !fg || !border)
     {
         if (bg) bg->Release();
         if (fg) fg->Release();
@@ -720,136 +492,88 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite)
         return;
     }
 
-    const D2D1_RECT_F panel = D2D1::RectF(left_, top_, right_, bottom_);
-    rt->FillRectangle(panel, bg);
-    rt->FillRectangle(D2D1::RectF(left_, top_, right_, top_ + 1.0f), border);
+    RECT tabsR = TabsBarRectClient();
+    D2D1_RECT_F tabs = D2D1::RectF((float)tabsR.left, (float)tabsR.top, (float)tabsR.right, (float)tabsR.bottom);
+    rt->FillRectangle(tabs, bg);
+    rt->FillRectangle(D2D1::RectF(left_, tabs.bottom - 1.0f, right_, tabs.bottom), border);
 
-    if (resizeHover_ || resizing_)
+    // Tabs
+    IDWriteTextFormat* fmt = nullptr;
+    dwrite->CreateTextFormat(L"Segoe UI", NULL,
+        DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+        12.0f, L"en-us", &fmt);
+
+    if (fmt)
     {
-        ID2D1SolidColorBrush* rz = nullptr;
-        if (SUCCEEDED(rt->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 0.06f), &rz)) && rz)
+        fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        fmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+
+        for (int i = 0; i < (int)sessions_.size(); ++i)
         {
-            rt->FillRectangle(D2D1::RectF(left_, top_, right_, top_ + resizeZoneH_), rz);
-            rz->Release();
-        }
-    }
+            RECT tr = TabRectClient(i);
+            if (tr.right <= tr.left) break;
 
-    // If terminal internals are not ready, we stop after drawing the chrome
-    if (!vt_ || !screen_)
-    {
-        // Optionally draw a hint here using a lightweight format (skipped for brevity)
-        bg->Release();
-        fg->Release();
-        border->Release();
-        return;
-    }
+            bool active = (i == activeIndex_);
+            bool hover = (i == hoveredTab_);
 
-    // Now safe to flush vterm damage
-    vterm_screen_flush_damage((VTermScreen*)screen_);
+            ID2D1SolidColorBrush* tabBg = nullptr;
+            if (active)
+                rt->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.10f, 0.10f, 1.0f), &tabBg);
+            else if (hover)
+                rt->CreateSolidColorBrush(D2D1::ColorF(0.14f, 0.14f, 0.14f, 1.0f), &tabBg);
+            else
+                rt->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.08f, 1.0f), &tabBg);
 
-    // Text format (create only when terminal ready)
-    if (!textFormat_)
-    {
-        HRESULT hr = dwrite->CreateTextFormat(
-            fontFamily_.c_str(),
-            fontCollection_,
-            DWRITE_FONT_WEIGHT_NORMAL,
-            DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL,
-            fontSize_,
-            L"en-us",
-            &textFormat_);
-
-        if (FAILED(hr) || !textFormat_)
-        {
-            bg->Release();
-            fg->Release();
-            border->Release();
-            return;
-        }
-
-        textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        textFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-        textFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-    }
-
-    const float padX = 10.0f;
-    const float padY = 8.0f;
-
-    const float viewportW = (right_ - left_);
-    const float viewportH = (bottom_ - top_);
-
-    charW_ = fontSize_ * 0.60f;
-    lineH_ = fontSize_ * 1.35f;
-
-    float contentHeight = padY * 2.0f + (float)((int)scrollback_.size() + rows_) * lineH_;
-    scrollbar_.UpdateLayout(left_, top_, viewportW, viewportH, contentHeight);
-
-    if (pendingSnapToBottom_)
-    {
-        float maxScroll = std::max(0.0f, contentHeight - viewportH);
-        scrollbar_.SetScrollOffset(maxScroll);
-        pendingSnapToBottom_ = false;
-    }
-
-    float maxScroll = std::max(0.0f, contentHeight - viewportH);
-    if (scrollbar_.GetScrollOffset() >= maxScroll - 1.0f)
-        userScrolling_ = false;
-
-    float scrollPx = scrollbar_.GetScrollOffset();
-    if (scrollPx < 0) scrollPx = 0;
-
-    int firstRow = (int)(scrollPx / lineH_);
-    float yStart = (top_ + padY) - fmodf(scrollPx, lineH_);
-
-    int totalRows = (int)scrollback_.size() + rows_;
-    int maxRowsToDraw = (int)(viewportH / lineH_) + 3;
-    int endRow = std::min(totalRows, firstRow + maxRowsToDraw);
-
-    rt->PushAxisAlignedClip(panel, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-
-    for (int r = firstRow; r < endRow; ++r)
-    {
-        float y = yStart + (float)(r - firstRow) * lineH_;
-        if (y > bottom_) break;
-
-        std::wstring line;
-        line.reserve((size_t)cols_);
-
-        if (r < (int)scrollback_.size())
-        {
-            line = scrollback_[(size_t)r];
-        }
-        else
-        {
-            int screenRow = r - (int)scrollback_.size();
-            for (int c = 0; c < cols_; ++c)
+            if (tabBg)
             {
-                VTermPos pos{ screenRow, c };
-                VTermScreenCell cell{};
-                if (vterm_screen_get_cell((VTermScreen*)screen_, pos, &cell))
-                {
-                    uint32_t cp = cell.chars[0];
-                    if (cp == 0) cp = L' ';
-                    line.push_back((wchar_t)cp);
-                }
-                else
-                {
-                    line.push_back(L' ');
-                }
+                D2D1_RECT_F rr = D2D1::RectF((float)tr.left, (float)tr.top, (float)tr.right, (float)tr.bottom);
+                rt->FillRectangle(rr, tabBg);
+                tabBg->Release();
             }
+
+            std::wstring title = L"Terminal " + std::to_wstring(i + 1);
+            D2D1_RECT_F tx = D2D1::RectF((float)tr.left + 10.0f, (float)tr.top, (float)tr.right - 6.0f, (float)tr.bottom);
+            rt->DrawTextW(title.c_str(), (UINT32)title.size(), fmt, tx, fg);
         }
 
-        while (!line.empty() && line.back() == L' ') line.pop_back();
-        if (line.empty()) continue;
-
-        D2D1_RECT_F rect = D2D1::RectF(left_ + padX, y, right_ - 8.0f, y + lineH_);
-        rt->DrawTextW(line.c_str(), (UINT32)line.size(), textFormat_, rect, fg, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        fmt->Release();
     }
 
-    rt->PopAxisAlignedClip();
+    // Plus button
+    RECT pr = PlusButtonRectClient();
+    D2D1_RECT_F plus = D2D1::RectF((float)pr.left, (float)pr.top, (float)pr.right, (float)pr.bottom);
 
-    scrollbar_.Draw(rt);
+    ID2D1SolidColorBrush* plusBg = nullptr;
+    if (hoveredPlus_)
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.15f, 0.15f, 0.15f, 1.0f), &plusBg);
+    else
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.10f, 0.10f, 1.0f), &plusBg);
+
+    if (plusBg)
+    {
+        rt->FillRectangle(plus, plusBg);
+        plusBg->Release();
+    }
+
+    // draw "+"
+    float cx = (plus.left + plus.right) * 0.5f;
+    float cy = (plus.top + plus.bottom) * 0.5f;
+    float halfSize = (plus.bottom - plus.top) * 0.25f;
+
+    rt->DrawLine(D2D1::Point2F(cx - halfSize, cy), D2D1::Point2F(cx + halfSize, cy), fg, 1.6f);
+    rt->DrawLine(D2D1::Point2F(cx, cy - halfSize), D2D1::Point2F(cx, cy + halfSize), fg, 1.6f);
+
+    // Content viewport
+    TerminalSession* s = ActiveSession();
+    if (s)
+    {
+        float tabsH = TabsBarHeightPx();
+        s->SetViewport(left_, top_ + tabsH, right_, bottom_);
+
+        // draw session content (chrome + text + scrollbar)
+        s->DrawContent(rt, dwrite, fontFamily_, fontSize_, fontCollection_, (resizeHover_ || resizing_));
+    }
 
     bg->Release();
     fg->Release();
