@@ -149,15 +149,17 @@ namespace Orion
         // Click count logic
         DWORD now = GetTickCount();
         UINT dblTime = GetDoubleClickTime();
-        bool sameTextPos = (clickedPos.line == lastClickTextPos_.line && clickedPos.column == lastClickTextPos_.column);
-        if (now - lastClickTime_ <= dblTime && sameTextPos)
+        int dblWidth = GetSystemMetrics(SM_CXDOUBLECLK);
+        int dblHeight = GetSystemMetrics(SM_CYDOUBLECLK);
+        bool withinDoubleClickArea = std::abs(pt.x - lastClickPos_.x) <= dblWidth
+            && std::abs(pt.y - lastClickPos_.y) <= dblHeight;
+        if (now - lastClickTime_ <= dblTime && withinDoubleClickArea)
             clickCount_ = (clickCount_ < 3) ? clickCount_ + 1 : 1;
         else
             clickCount_ = 1;
 
         lastClickTime_ = now;
         lastClickPos_ = pt;
-        lastClickTextPos_ = clickedPos;
 
         bool shiftPressed = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 
