@@ -30,6 +30,7 @@ private:
     // Reset hover state for all top-level UI controls
     void ClearAllHoverStates();
     void RunActiveProject();
+    void HandleCommandLineArgs();
 
     HINSTANCE hInstance_;
     HWND hwnd_;

@@ -8,6 +8,7 @@
 #include <commdlg.h>
 #include <shlobj.h>
 #include <shobjidl.h>
+#include <shellapi.h>
 #include <vector>
 #include <filesystem>
 #include <thread>
@@ -397,7 +398,7 @@ void Window::CloseEditorForTabIndex(int index)
                 found = p.second;
                 break;
             }
-        }
+      
 
         editors_[i] = found;
         if (found)
@@ -482,6 +483,73 @@ void Window::RunActiveProject()
 
         Logger::Instance().Log(L"Run: Executable launched.");
     }).detach();
+}
+
+void Window::HandleCommandLineArgs()
+{
+    int argc = 0;
+    LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv || argc <= 1)
+        return;
+
+    std::vector<std::wstring> args;
+    for (int i = 1; i < argc; ++i)
+        args.emplace_back(argv[i]);
+
+    LocalFree(argv);
+
+    auto openDirectory = [&](const std::filesystem::path &path)
+    {
+        std::wstring folder = path.wstring();
+        GetExplorerManager().Initialize(folder);
+        GetExplorerManager().SetVisible(true);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    };
+
+    auto openFile = [&](const std::filesystem::path &path)
+    {
+        std::filesystem::path parent = path.parent_path();
+        if (!parent.empty())
+            openDirectory(parent);
+        OpenFileInNewTab(path.wstring(), -1);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    };
+
+    for (size_t i = 0; i < args.size(); ++i)
+    {
+        const std::wstring &arg = args[i];
+
+        if ((arg == L"--project" || arg == L"--folder" || arg == L"-p") && i + 1 < args.size())
+        {
+            std::filesystem::path path(args[i + 1]);
+            if (std::filesystem::exists(path))
+                openDirectory(path);
+            i++;
+            continue;
+        }
+
+        if ((arg == L"--file" || arg == L"-f") && i + 1 < args.size())
+        {
+            std::filesystem::path path(args[i + 1]);
+            if (std::filesystem::exists(path))
+                openFile(path);
+            i++;
+            continue;
+        }
+
+        std::filesystem::path path(arg);
+        if (!std::filesystem::exists(path))
+            continue;
+
+        if (std::filesystem::is_directory(path))
+        {
+            openDirectory(path);
+        }
+        else
+        {
+            openFile(path);
+        }
+    }
 }
 
 LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
@@ -598,6 +666,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         InitializePanelSystem();
         // Initialize keyboard manager when HWND is available
         keyboard_.Init(this);
+        HandleCommandLineArgs();
 
         RECT clientRect;
         GetClientRect(hwnd_, &clientRect);
