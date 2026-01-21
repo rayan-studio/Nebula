@@ -89,6 +89,15 @@ You can already see development previews in the commit history.
 
 Nebula uses a **Python-based build system**.
 
+### 0. Install dependencies (Windows)
+
+You can use the setup script below to install Python, Git, CMake, GCC (via MSYS2),
+install Python requirements, and clone the external dependencies:
+
+```bat
+scripts\setup_dependencies.bat
+```
+
 ### 1. Clone the repository
 
 ```bash

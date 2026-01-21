@@ -9,6 +9,7 @@
 
 // Scrollbar (toujours dispo si besoin ailleurs)
 #include "ui/components/scrollbar/Scrollbar.h"
+#include "ui/components/tabs/TabBar.h"
 
 class TerminalSession;
 
@@ -82,13 +83,15 @@ public:
 
 private:
     // UI helpers
-    float TabsBarHeightPx() const { return 28.0f; }
+    float TabsBarHeightPx() const { return tabBar_.GetHeight(); }
 
     RECT  TabsBarRectClient() const;
     RECT  PlusButtonRectClient() const;
-    RECT  TabRectClient(int idx) const;
-    int   HitTestTabIndex(POINT pt) const;
     bool  HitTestPlus(POINT pt) const;
+    bool  IsPointInTabsBar(POINT pt) const;
+    float TabsBarRightEdge() const;
+
+    void SyncTabBar();
 
     // Active session helpers
     TerminalSession* ActiveSession();
@@ -127,8 +130,9 @@ private:
     int activeIndex_ = -1;
 
     // Tabs hover
-    int hoveredTab_ = -1;
     bool hoveredPlus_ = false;
+
+    TabBar tabBar_;
 };
 
 // Global accessor

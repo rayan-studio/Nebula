@@ -10,6 +10,7 @@
 #include "orion/geometry/IndentationHelper.h"
 #include "orion/rendering/GuideRenderer.h"
 #include "orion/selection/Selection.h"
+#include "orion/caret/Caret.h"
 
 // Ensure Windows min/max macros don't interfere with std::min/std::max
 #ifdef max
@@ -46,6 +47,13 @@ namespace Orion
         selectionConfig.cornerRadius = 3.0f;
         selectionConfig.style = Rendering::SelectionStyle::RoundedSmart;
         selection_ = std::make_unique<Rendering::Selection>(selectionConfig);
+    }
+
+    bool Editor::UpdateCaretBlink()
+    {
+        bool wasVisible = state_.caretVisible;
+        Caret::UpdateCaretBlink(state_);
+        return wasVisible != state_.caretVisible;
     }
 
     Editor::~Editor()
