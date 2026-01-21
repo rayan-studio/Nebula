@@ -4,8 +4,13 @@ setlocal EnableExtensions EnableDelayedExpansion
 echo [Nebula] Installing build dependencies...
 
 echo.
-for %%P in (winget) do where %%P >nul 2>&1
-if errorlevel 1 (
+set "WINGET_CMD="
+for %%P in (winget.exe) do where %%P >nul 2>&1 && set "WINGET_CMD=winget.exe"
+if not defined WINGET_CMD (
+  set "WINGET_LOCAL=%LOCALAPPDATA%\Microsoft\WindowsApps\winget.exe"
+  if exist "%WINGET_LOCAL%" set "WINGET_CMD=%WINGET_LOCAL%"
+)
+if not defined WINGET_CMD (
   echo [Error] winget not found. Install App Installer from the Microsoft Store first.
   exit /b 1
 )
@@ -35,14 +40,14 @@ set "PKG_ID=%~1"
 set "PKG_NAME=%~2"
 
 echo [Nebula] Checking %PKG_NAME%...
-winget list --id %PKG_ID% >nul 2>&1
+%WINGET_CMD% list --id %PKG_ID% >nul 2>&1
 if %errorlevel%==0 (
   echo [Nebula] %PKG_NAME% already installed.
   goto :eof
 )
 
 echo [Nebula] Installing %PKG_NAME%...
-winget install --id %PKG_ID% --exact --accept-source-agreements --accept-package-agreements
+%WINGET_CMD% install --id %PKG_ID% --exact --accept-source-agreements --accept-package-agreements
 if not %errorlevel%==0 (
   echo [Error] Failed to install %PKG_NAME%.
   exit /b 1
