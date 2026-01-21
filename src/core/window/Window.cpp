@@ -398,7 +398,7 @@ void Window::CloseEditorForTabIndex(int index)
                 found = p.second;
                 break;
             }
-        }
+      
 
         editors_[i] = found;
         if (found)
