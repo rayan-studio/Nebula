@@ -57,6 +57,9 @@ CustomTitleBarButtonRects win32_get_title_bar_button_rects(HWND handle, const RE
     button_rects.minimize = button_rects.maximize;
     button_rects.minimize.left -= button_width;
     button_rects.minimize.right -= button_width;
+    button_rects.run = button_rects.minimize;
+    button_rects.run.left -= button_width;
+    button_rects.run.right -= button_width;
     return button_rects;
 }
 

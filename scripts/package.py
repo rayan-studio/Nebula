@@ -291,6 +291,14 @@ Name: "{{group}}\\{{#MyAppName}}"; Filename: "{{app}}\\{{#MyAppExeName}}"
 Name: "{{group}}\\{{cm:UninstallProgram,{{#MyAppName}}}}"; Filename: "{{uninstallexe}}"
 Name: "{{autodesktop}}\\{{#MyAppName}}"; Filename: "{{app}}\\{{#MyAppExeName}}"; Tasks: desktopicon
 
+[Registry]
+Root: HKCR; Subkey: "*\\shell\\Nebula"; ValueType: string; ValueName: ""; ValueData: "Ouvrir avec {{#MyAppName}}"; Flags: uninsdeletekey
+Root: HKCR; Subkey: "*\\shell\\Nebula\\command"; ValueType: string; ValueName: ""; ValueData: "\"{{app}}\\{{#MyAppExeName}}\" \"%1\""
+Root: HKCR; Subkey: "Directory\\shell\\Nebula"; ValueType: string; ValueName: ""; ValueData: "Ouvrir le dossier dans {{#MyAppName}}"; Flags: uninsdeletekey
+Root: HKCR; Subkey: "Directory\\shell\\Nebula\\command"; ValueType: string; ValueName: ""; ValueData: "\"{{app}}\\{{#MyAppExeName}}\" \"%1\""
+Root: HKCR; Subkey: "Directory\\Background\\shell\\Nebula"; ValueType: string; ValueName: ""; ValueData: "Ouvrir {{#MyAppName}} ici"; Flags: uninsdeletekey
+Root: HKCR; Subkey: "Directory\\Background\\shell\\Nebula\\command"; ValueType: string; ValueName: ""; ValueData: "\"{{app}}\\{{#MyAppExeName}}\" \"%V\""
+
 [Run]
 Filename: "{{app}}\\{{#MyAppExeName}}"; Description: "{{cm:LaunchProgram,{{#StringChange(MyAppName, '&', '&&')}}}}"; Flags: nowait postinstall skipifsilent
 """

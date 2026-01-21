@@ -29,6 +29,8 @@ private:
 
     // Reset hover state for all top-level UI controls
     void ClearAllHoverStates();
+    void RunActiveProject();
+    void HandleCommandLineArgs();
 
     HINSTANCE hInstance_;
     HWND hwnd_;
@@ -72,6 +74,7 @@ public:
     enum CustomTitleBarHoveredButton
     {
         Hovered_None = 0,
+        Hovered_Run,
         Hovered_Minimize,
         Hovered_Maximize,
         Hovered_Close,

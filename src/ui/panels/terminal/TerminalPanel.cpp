@@ -42,6 +42,7 @@ void TerminalPanel::SetActiveIndex(int idx)
     if (idx < 0 || idx >= (int)sessions_.size())
         return;
     activeIndex_ = idx;
+    tabBar_.SetActiveTab(idx);
 }
 
 TerminalSession* TerminalPanel::ActiveSession()
@@ -62,6 +63,7 @@ void TerminalPanel::EnsureAtLeastOneSession(HWND hwnd)
     // Crée une session par défaut (non initialisée tant que pas visible/focus si tu veux)
     sessions_.push_back(std::make_unique<TerminalSession>());
     activeIndex_ = 0;
+    SyncTabBar();
 
     // On peut init direct quand on affiche
     (void)hwnd;
@@ -88,6 +90,7 @@ void TerminalPanel::NewTerminal(HWND hwnd, const std::wstring& startDir)
     // crée
     sessions_.push_back(std::make_unique<TerminalSession>());
     activeIndex_ = (int)sessions_.size() - 1;
+    SyncTabBar();
 
     // init now
     sessions_[activeIndex_]->Initialize(hwnd, startDir);
@@ -117,17 +120,20 @@ void TerminalPanel::CloseTerminal(int idx)
 
     sessions_[idx]->Shutdown();
     sessions_.erase(sessions_.begin() + idx);
+    SyncTabBar();
 
     if (sessions_.empty())
     {
         activeIndex_ = -1;
         visible_ = false;
         focused_ = false;
+        SyncTabBar();
         return;
     }
 
     if (activeIndex_ >= (int)sessions_.size())
         activeIndex_ = (int)sessions_.size() - 1;
+    tabBar_.SetActiveTab(activeIndex_);
 }
 
 void TerminalPanel::CloseAll()
@@ -138,6 +144,7 @@ void TerminalPanel::CloseAll()
     activeIndex_ = -1;
     visible_ = false;
     focused_ = false;
+    SyncTabBar();
 }
 
 // ---------------- Visible / Focus ----------------
@@ -195,6 +202,9 @@ void TerminalPanel::UpdateLayout(HWND hwnd, float left, float top, float right, 
         state_.physicalWidth = (int)w;
     }
 
+    SyncTabBar();
+    tabBar_.UpdateLayout(left_, top_, TabsBarRightEdge());
+
     // Update viewport for active session (content area under tabs bar)
     TerminalSession* s = ActiveSession();
     if (s)
@@ -231,6 +241,15 @@ RECT TerminalPanel::TabsBarRectClient() const
     return r;
 }
 
+float TerminalPanel::TabsBarRightEdge() const
+{
+    RECT plus = PlusButtonRectClient();
+    float rightEdge = (float)plus.left - 6.0f;
+    if (rightEdge < left_)
+        rightEdge = left_;
+    return rightEdge;
+}
+
 RECT TerminalPanel::PlusButtonRectClient() const
 {
     RECT t = TabsBarRectClient();
@@ -243,45 +262,43 @@ RECT TerminalPanel::PlusButtonRectClient() const
     return r;
 }
 
-RECT TerminalPanel::TabRectClient(int idx) const
-{
-    RECT t = TabsBarRectClient();
-    RECT plus = PlusButtonRectClient();
-
-    const int padL = 8;
-    const int tabH = (t.bottom - t.top);
-    const int tabW = 110; // simple fixed width, tu pourras améliorer avec text measure
-
-    int x0 = t.left + padL + idx * tabW;
-    int x1 = x0 + tabW;
-
-    // clamp before plus button
-    if (x1 > (plus.left - 6)) x1 = plus.left - 6;
-    RECT r; r.left = x0; r.top = t.top; r.right = x1; r.bottom = t.bottom;
-    return r;
-}
-
-int TerminalPanel::HitTestTabIndex(POINT pt) const
-{
-    if (!visible_) return -1;
-
-    RECT t = TabsBarRectClient();
-    if (pt.x < t.left || pt.x > t.right || pt.y < t.top || pt.y > t.bottom)
-        return -1;
-
-    for (int i = 0; i < (int)sessions_.size(); ++i)
-    {
-        RECT r = TabRectClient(i);
-        if (pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom)
-            return i;
-    }
-    return -1;
-}
-
 bool TerminalPanel::HitTestPlus(POINT pt) const
 {
     RECT r = PlusButtonRectClient();
     return (pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom);
+}
+
+bool TerminalPanel::IsPointInTabsBar(POINT pt) const
+{
+    RECT t = TabsBarRectClient();
+    return (pt.x >= t.left && pt.x <= t.right && pt.y >= t.top && pt.y <= t.bottom);
+}
+
+void TerminalPanel::SyncTabBar()
+{
+    int desired = (int)sessions_.size();
+    int current = tabBar_.GetTabCount();
+
+    while (current < desired)
+    {
+        tabBar_.AddTab(L"", L"");
+        current++;
+    }
+
+    while (current > desired)
+    {
+        tabBar_.CloseTab(current - 1);
+        current--;
+    }
+
+    for (int i = 0; i < desired; ++i)
+    {
+        std::wstring title = L"Terminal " + std::to_wstring(i + 1);
+        tabBar_.UpdateTabPath(i, L"", title);
+    }
+
+    if (activeIndex_ >= 0 && activeIndex_ < desired)
+        tabBar_.SetActiveTab(activeIndex_);
 }
 
 // ---------------- Mouse ----------------
@@ -289,22 +306,31 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
 {
     if (!visible_) return;
 
-    // Tabs click
-    int tab = HitTestTabIndex(pt);
-    if (tab >= 0)
-    {
-        SetActiveIndex(tab);
-        focused_ = true;
-        EnsureActiveInitialized(hwnd);
-        return;
-    }
-
     // Plus click => NewTerminal (startDir choisi par Window normalement via menu)
     if (HitTestPlus(pt))
     {
         // Ici: fallback current dir
         NewTerminal(hwnd, L"");
         return;
+    }
+
+    if (IsPointInTabsBar(pt))
+    {
+        int result = tabBar_.OnLeftButtonDown(pt);
+        if (result == TabBar::TAB_CLICKED_CLOSE)
+        {
+            int closeIndex = tabBar_.GetLastCloseRequestIndex();
+            CloseTerminal(closeIndex);
+            return;
+        }
+
+        if (result >= 0)
+        {
+            SetActiveIndex(result);
+            focused_ = true;
+            EnsureActiveInitialized(hwnd);
+            return;
+        }
     }
 
     // Scrollbar capture for active session
@@ -361,12 +387,22 @@ bool TerminalPanel::OnMouseMove(HWND hwnd, POINT pt)
     bool changed = false;
 
     // Hover tabs / plus
-    int prevTab = hoveredTab_;
     bool prevPlus = hoveredPlus_;
-    hoveredTab_ = HitTestTabIndex(pt);
     hoveredPlus_ = HitTestPlus(pt);
-    if (prevTab != hoveredTab_ || prevPlus != hoveredPlus_)
+    if (prevPlus != hoveredPlus_)
         changed = true;
+
+    if (IsPointInTabsBar(pt) && !hoveredPlus_)
+    {
+        int tabHover = tabBar_.OnMouseMove(pt);
+        if (tabHover != -2)
+            changed = true;
+    }
+    else
+    {
+        if (tabBar_.ClearHover())
+            changed = true;
+    }
 
     // Scrollbar hover/drag
     if (TerminalSession* s = ActiveSession())
@@ -463,17 +499,18 @@ void TerminalPanel::UpdatePseudoConsoleSizeFromPixelsForActive()
 }
 
 // ---------------- Render ----------------
-void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwnd)
+void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite)
 {
-    (void)hwnd;
-    Draw(rt, dwrite);
+    Draw(rt, dwrite, GetActiveWindow());
 }
 
-void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite)
+void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwnd)
 {
     if (!visible_ || !rt || !dwrite) return;
 
     EnsureAtLeastOneSession(NULL);
+    SyncTabBar();
+    tabBar_.UpdateLayout(left_, top_, TabsBarRightEdge());
 
     // Tabs bar background
     ID2D1SolidColorBrush* bg = nullptr;
@@ -495,50 +532,10 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite)
     RECT tabsR = TabsBarRectClient();
     D2D1_RECT_F tabs = D2D1::RectF((float)tabsR.left, (float)tabsR.top, (float)tabsR.right, (float)tabsR.bottom);
     rt->FillRectangle(tabs, bg);
-    rt->FillRectangle(D2D1::RectF(left_, tabs.bottom - 1.0f, right_, tabs.bottom), border);
+    if (!sessions_.empty())
+        rt->FillRectangle(D2D1::RectF(left_, tabs.bottom - 1.0f, right_, tabs.bottom), border);
 
-    // Tabs
-    IDWriteTextFormat* fmt = nullptr;
-    dwrite->CreateTextFormat(L"Segoe UI", NULL,
-        DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-        12.0f, L"en-us", &fmt);
-
-    if (fmt)
-    {
-        fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        fmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-
-        for (int i = 0; i < (int)sessions_.size(); ++i)
-        {
-            RECT tr = TabRectClient(i);
-            if (tr.right <= tr.left) break;
-
-            bool active = (i == activeIndex_);
-            bool hover = (i == hoveredTab_);
-
-            ID2D1SolidColorBrush* tabBg = nullptr;
-            if (active)
-                rt->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.10f, 0.10f, 1.0f), &tabBg);
-            else if (hover)
-                rt->CreateSolidColorBrush(D2D1::ColorF(0.14f, 0.14f, 0.14f, 1.0f), &tabBg);
-            else
-                rt->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.08f, 1.0f), &tabBg);
-
-            if (tabBg)
-            {
-                D2D1_RECT_F rr = D2D1::RectF((float)tr.left, (float)tr.top, (float)tr.right, (float)tr.bottom);
-                rt->FillRectangle(rr, tabBg);
-                tabBg->Release();
-            }
-
-            std::wstring title = L"Terminal " + std::to_wstring(i + 1);
-            D2D1_RECT_F tx = D2D1::RectF((float)tr.left + 10.0f, (float)tr.top, (float)tr.right - 6.0f, (float)tr.bottom);
-            rt->DrawTextW(title.c_str(), (UINT32)title.size(), fmt, tx, fg);
-        }
-
-        fmt->Release();
-    }
+    tabBar_.Draw(rt, dwrite, hwnd);
 
     // Plus button
     RECT pr = PlusButtonRectClient();
