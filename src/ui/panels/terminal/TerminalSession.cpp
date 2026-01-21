@@ -454,6 +454,66 @@ bool TerminalSession::OnScrollbarLButtonUp()
     return scrollbar_.OnLeftButtonUp();
 }
 
+bool TerminalSession::OnLeftButtonDown(POINT pt)
+{
+    if (pt.x < (LONG)left_ || pt.x > (LONG)right_ || pt.y < (LONG)top_ || pt.y > (LONG)bottom_)
+        return false;
+
+    float scrollPx = scrollbar_.GetScrollOffset();
+    if (scrollPx < 0) scrollPx = 0;
+
+    int totalRows = (int)scrollback_.size() + rows_;
+    if (totalRows <= 0 || cols_ <= 0)
+        return false;
+
+    int row = (int)((pt.y - (top_ + padY_) + scrollPx) / lineH_);
+    int col = (int)((pt.x - (left_ + padX_)) / charW_);
+    row = std::max(0, std::min(row, totalRows - 1));
+    col = std::max(0, std::min(col, cols_ - 1));
+
+    selecting_ = true;
+    hasSelection_ = true;
+    selectionStartRow_ = row;
+    selectionStartCol_ = col;
+    selectionEndRow_ = row;
+    selectionEndCol_ = col;
+    return true;
+}
+
+bool TerminalSession::OnMouseMove(POINT pt, bool lmbDown)
+{
+    if (!selecting_ || !lmbDown)
+        return false;
+
+    float scrollPx = scrollbar_.GetScrollOffset();
+    if (scrollPx < 0) scrollPx = 0;
+
+    int totalRows = (int)scrollback_.size() + rows_;
+    if (totalRows <= 0 || cols_ <= 0)
+        return false;
+
+    int row = (int)((pt.y - (top_ + padY_) + scrollPx) / lineH_);
+    int col = (int)((pt.x - (left_ + padX_)) / charW_);
+    row = std::max(0, std::min(row, totalRows - 1));
+    col = std::max(0, std::min(col, cols_ - 1));
+
+    if (row == selectionEndRow_ && col == selectionEndCol_)
+        return false;
+
+    selectionEndRow_ = row;
+    selectionEndCol_ = col;
+    return true;
+}
+
+bool TerminalSession::OnLeftButtonUp()
+{
+    if (!selecting_)
+        return false;
+
+    selecting_ = false;
+    return true;
+}
+
 // ---------------- Layout / Draw ----------------
 void TerminalSession::SetViewport(float left, float top, float right, float bottom)
 {
@@ -489,7 +549,7 @@ void TerminalSession::UpdatePseudoConsoleSizeFromPixels(float widthPx, float hei
 
 void TerminalSession::DrawContent(ID2D1RenderTarget* rt, IDWriteFactory* dwrite,
                                  const std::wstring& fontFamily, float fontSizePx, IDWriteFontCollection* fontCollection,
-                                 bool resizeHoverOrResizing)
+                                 bool resizeHoverOrResizing, bool isFocused)
 {
     if (!rt || !dwrite) return;
 
@@ -571,8 +631,8 @@ void TerminalSession::DrawContent(ID2D1RenderTarget* rt, IDWriteFactory* dwrite,
     }
 
     // Padding inside the content area
-    const float padX = 10.0f;
-    const float padY = 8.0f;
+    const float padX = padX_;
+    const float padY = padY_;
 
     const float viewportW = (right_ - left_);
     const float viewportH = (bottom_ - top_);
@@ -603,6 +663,10 @@ void TerminalSession::DrawContent(ID2D1RenderTarget* rt, IDWriteFactory* dwrite,
     int totalRows = (int)scrollback_.size() + rows_;
     int maxRowsToDraw = (int)(viewportH / lineH_) + 3;
     int endRow = std::min(totalRows, firstRow + maxRowsToDraw);
+
+    ID2D1SolidColorBrush* selectionBrush = nullptr;
+    if (hasSelection_)
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.25f, 0.45f, 0.85f, 0.45f), &selectionBrush);
 
     rt->PushAxisAlignedClip(panel, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
@@ -638,6 +702,37 @@ void TerminalSession::DrawContent(ID2D1RenderTarget* rt, IDWriteFactory* dwrite,
             }
         }
 
+        if (hasSelection_ && selectionBrush)
+        {
+            int startRow = selectionStartRow_;
+            int endRow = selectionEndRow_;
+            int startCol = selectionStartCol_;
+            int endCol = selectionEndCol_;
+            if (startRow > endRow || (startRow == endRow && startCol > endCol))
+            {
+                std::swap(startRow, endRow);
+                std::swap(startCol, endCol);
+            }
+
+            if (r >= startRow && r <= endRow)
+            {
+                int leftCol = 0;
+                int rightCol = cols_;
+                if (r == startRow)
+                    leftCol = startCol;
+                if (r == endRow)
+                    rightCol = endCol + 1;
+
+                leftCol = std::max(0, std::min(leftCol, cols_ - 1));
+                rightCol = std::max(leftCol + 1, std::min(rightCol, cols_));
+
+                float selLeft = left_ + padX + (float)leftCol * charW_;
+                float selRight = left_ + padX + (float)rightCol * charW_;
+                D2D1_RECT_F selRect = D2D1::RectF(selLeft, y, selRight, y + lineH_);
+                rt->FillRectangle(selRect, selectionBrush);
+            }
+        }
+
         while (!line.empty() && line.back() == L' ') line.pop_back();
         if (line.empty()) continue;
 
@@ -645,10 +740,35 @@ void TerminalSession::DrawContent(ID2D1RenderTarget* rt, IDWriteFactory* dwrite,
         rt->DrawTextW(line.c_str(), (UINT32)line.size(), textFormat_, rect, fg, D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 
+    if (isFocused)
+    {
+        VTermPos cursor{};
+        if (vterm_screen_get_cursorpos(screen_, &cursor))
+        {
+            int cursorRow = (int)scrollback_.size() + cursor.row;
+            if (cursorRow >= firstRow && cursorRow < endRow)
+            {
+                float caretY = yStart + (float)(cursorRow - firstRow) * lineH_;
+                float caretX = left_ + padX + (float)cursor.col * charW_;
+                if (caretY <= bottom_ && caretX <= right_)
+                {
+                    D2D1_RECT_F caretRect = D2D1::RectF(
+                        caretX,
+                        caretY,
+                        caretX + std::max(1.0f, charW_ * 0.15f),
+                        caretY + lineH_);
+                    rt->FillRectangle(caretRect, fg);
+                }
+            }
+        }
+    }
+
     rt->PopAxisAlignedClip();
 
     scrollbar_.Draw(rt);
 
+    if (selectionBrush)
+        selectionBrush->Release();
     bg->Release();
     fg->Release();
     border->Release();

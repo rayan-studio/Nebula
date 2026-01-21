@@ -37,13 +37,16 @@ public:
     void SetViewport(float left, float top, float right, float bottom);
     void DrawContent(ID2D1RenderTarget* rt, IDWriteFactory* dwrite,
                      const std::wstring& fontFamily, float fontSizePx, IDWriteFontCollection* fontCollection,
-                     bool resizeHoverOrResizing);
+                     bool resizeHoverOrResizing, bool isFocused);
 
     // Scroll / mouse
     void OnMouseWheel(int wheelDelta);
     bool OnScrollbarMouseMove(POINT pt);
     bool OnScrollbarLButtonDown(POINT pt);
     bool OnScrollbarLButtonUp();
+    bool OnLeftButtonDown(POINT pt);
+    bool OnMouseMove(POINT pt, bool lmbDown);
+    bool OnLeftButtonUp();
 
     float GetScrollOffset() const { return scrollbar_.GetScrollOffset(); }
     void SnapToBottomSoon() { pendingSnapToBottom_ = true; }
@@ -102,11 +105,20 @@ private:
     float left_ = 0, top_ = 0, right_ = 0, bottom_ = 0;
     float charW_ = 8.0f;
     float lineH_ = 16.0f;
+    float padX_ = 10.0f;
+    float padY_ = 8.0f;
 
     // Scroll state
     bool userScrolling_ = false;
     bool pendingSnapToBottom_ = false;
     Scrollbar scrollbar_;
+
+    bool selecting_ = false;
+    bool hasSelection_ = false;
+    int selectionStartRow_ = 0;
+    int selectionStartCol_ = 0;
+    int selectionEndRow_ = 0;
+    int selectionEndCol_ = 0;
 
     std::atomic<bool> hasDamage_{ false };
     std::atomic<bool> stopReader_{ false };
