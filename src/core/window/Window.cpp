@@ -9,6 +9,8 @@
 #include <shlobj.h>
 #include <shobjidl.h>
 #include <vector>
+#include <filesystem>
+#include <thread>
 #include <uxtheme.h>
 #include <vssym32.h>
 #include "helpers/window_helpers.h"
@@ -68,6 +70,9 @@ static void ThrottledInvalidateRect(HWND hwnd, const RECT *rect, BOOL erase)
     }
 }
 
+static constexpr UINT CARET_TIMER_ID = 1;
+static constexpr UINT CARET_TIMER_INTERVAL_MS = 250;
+
 struct KeyMods
 {
     bool ctrl = false;
@@ -92,6 +97,128 @@ static bool KeyIsChar(WPARAM wParam, wchar_t cUpper)
 {
     // WM_KEYDOWN donne virtual-key codes, pour lettres c'est 'A'..'Z'
     return (wParam == (WPARAM)cUpper);
+}
+
+static std::wstring QuotePath(const std::filesystem::path &path)
+{
+    return L"\"" + path.wstring() + L"\"";
+}
+
+static bool RunCommandAndWait(const std::wstring &command, const std::filesystem::path &workingDir, DWORD &exitCode)
+{
+    std::wstring cmdLine = L"cmd.exe /C " + command;
+    STARTUPINFOW si = {};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi = {};
+
+    std::wstring workdirStr = workingDir.wstring();
+    wchar_t *mutableCmd = _wcsdup(cmdLine.c_str());
+    BOOL ok = CreateProcessW(
+        nullptr,
+        mutableCmd,
+        nullptr,
+        nullptr,
+        FALSE,
+        CREATE_NEW_CONSOLE,
+        nullptr,
+        workdirStr.empty() ? nullptr : workdirStr.c_str(),
+        &si,
+        &pi);
+    free(mutableCmd);
+
+    if (!ok)
+    {
+        exitCode = GetLastError();
+        return false;
+    }
+
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return exitCode == 0;
+}
+
+static bool LaunchExecutable(const std::filesystem::path &exePath)
+{
+    STARTUPINFOW si = {};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi = {};
+
+    std::wstring exe = exePath.wstring();
+    wchar_t *mutableCmd = _wcsdup(exe.c_str());
+    BOOL ok = CreateProcessW(
+        nullptr,
+        mutableCmd,
+        nullptr,
+        nullptr,
+        FALSE,
+        0,
+        nullptr,
+        exePath.parent_path().wstring().c_str(),
+        &si,
+        &pi);
+    free(mutableCmd);
+
+    if (!ok)
+        return false;
+
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
+}
+
+static bool HasSolutionFile(const std::filesystem::path &root)
+{
+    std::error_code ec;
+    for (const auto &entry : std::filesystem::directory_iterator(root, ec))
+    {
+        if (ec)
+            break;
+        if (!entry.is_regular_file(ec))
+            continue;
+        auto ext = entry.path().extension().wstring();
+        if (_wcsicmp(ext.c_str(), L".sln") == 0)
+            return true;
+    }
+    return false;
+}
+
+static std::filesystem::path FindNewestExecutable(const std::filesystem::path &root)
+{
+    std::error_code ec;
+    std::filesystem::path newest;
+    std::filesystem::file_time_type newestTime{};
+
+    if (!std::filesystem::exists(root, ec))
+        return newest;
+
+    for (const auto &entry : std::filesystem::recursive_directory_iterator(root, ec))
+    {
+        if (ec)
+            break;
+        if (!entry.is_regular_file(ec))
+            continue;
+
+        auto path = entry.path();
+        if (_wcsicmp(path.extension().wstring().c_str(), L".exe") != 0)
+            continue;
+
+        auto filename = path.filename().wstring();
+        if (filename.find(L"cmake") != std::wstring::npos)
+            continue;
+
+        auto time = entry.last_write_time(ec);
+        if (ec)
+            continue;
+        if (newest.empty() || time > newestTime)
+        {
+            newest = path;
+            newestTime = time;
+        }
+    }
+
+    return newest;
 }
 
 bool Window::Create(int nCmdShow)
@@ -285,6 +412,78 @@ void Window::CloseEditorForTabIndex(int index)
     }
 }
 
+void Window::RunActiveProject()
+{
+    std::wstring root = GetExplorerManager().GetState().rootPath;
+    if (root.empty())
+    {
+        MessageBoxW(hwnd_, L"Aucun projet ouvert.", L"Run", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    std::filesystem::path rootPath(root);
+    std::error_code ec;
+    bool hasCMake = std::filesystem::exists(rootPath / "CMakeLists.txt", ec);
+    bool hasSolution = HasSolutionFile(rootPath);
+
+    if (!hasCMake && !hasSolution)
+    {
+        MessageBoxW(hwnd_, L"Aucun projet C++ détecté (CMakeLists.txt ou .sln manquant).", L"Run", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    if (!hasCMake)
+    {
+        MessageBoxW(hwnd_, L"Le lancement automatique supporte seulement CMake pour le moment.", L"Run", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    std::thread([rootPath, hwnd = hwnd_]()
+    {
+        Logger::Instance().Log(L"Run: CMake configure/build started.");
+
+        std::filesystem::path buildDir = rootPath / "build";
+        DWORD exitCode = 0;
+        std::wstring configureCmd = L"cmake -S " + QuotePath(rootPath) + L" -B " + QuotePath(buildDir);
+        if (!RunCommandAndWait(configureCmd, rootPath, exitCode))
+        {
+            Logger::Instance().Log(L"Run: CMake configure failed.");
+            MessageBoxW(hwnd, L"Configuration CMake échouée. Vérifie la console.", L"Run", MB_OK | MB_ICONERROR);
+            return;
+        }
+
+        std::wstring buildCmd = L"cmake --build " + QuotePath(buildDir) + L" --config Debug";
+        if (!RunCommandAndWait(buildCmd, rootPath, exitCode))
+        {
+            Logger::Instance().Log(L"Run: Build failed.");
+            MessageBoxW(hwnd, L"Compilation échouée. Vérifie la console.", L"Run", MB_OK | MB_ICONERROR);
+            return;
+        }
+
+        std::filesystem::path exe = FindNewestExecutable(buildDir / "Debug");
+        if (exe.empty())
+            exe = FindNewestExecutable(buildDir / "Release");
+        if (exe.empty())
+            exe = FindNewestExecutable(buildDir);
+
+        if (exe.empty())
+        {
+            Logger::Instance().Log(L"Run: No executable found after build.");
+            MessageBoxW(hwnd, L"Aucun exécutable trouvé après compilation.", L"Run", MB_OK | MB_ICONWARNING);
+            return;
+        }
+
+        if (!LaunchExecutable(exe))
+        {
+            Logger::Instance().Log(L"Run: Failed to launch executable.");
+            MessageBoxW(hwnd, L"Impossible de lancer l'exécutable.", L"Run", MB_OK | MB_ICONERROR);
+            return;
+        }
+
+        Logger::Instance().Log(L"Run: Executable launched.");
+    }).detach();
+}
+
 LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
     switch (uMsg)
@@ -388,6 +587,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
         }
         SetText(L"Bonjour — texte rendu via GPU (Direct2D)");
+
+        SetTimer(hwnd_, CARET_TIMER_ID, CARET_TIMER_INTERVAL_MS, nullptr);
 
         // Initialize ggwave wrapper (will fallback to SAPI if not enabled)
         CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
@@ -522,12 +723,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         {
             new_hovered_button = Window::Hovered_Maximize;
         }
+        else if (PtInRect(&button_rects.run, cursor_point))
+        {
+            new_hovered_button = Window::Hovered_Run;
+        }
         auto current = hoveredButton_;
         if (new_hovered_button != current)
         {
             InvalidateRect(hwnd_, &button_rects.close, FALSE);
             InvalidateRect(hwnd_, &button_rects.minimize, FALSE);
             InvalidateRect(hwnd_, &button_rects.maximize, FALSE);
+            InvalidateRect(hwnd_, &button_rects.run, FALSE);
             hoveredButton_ = new_hovered_button;
         }
         return DefWindowProc(hwnd_, uMsg, wParam, lParam);
@@ -1243,6 +1449,19 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 
         return 0;
     }
+    case WM_TIMER:
+    {
+        if (wParam == CARET_TIMER_ID)
+        {
+            Orion::Editor *editor = GetEditor();
+            if (editor && editor->UpdateCaretBlink())
+            {
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+            return 0;
+        }
+        break;
+    }
     case WM_COMMAND:
     {
         int id = LOWORD(wParam);
@@ -1549,6 +1768,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             ShowWindow(hwnd_, mode);
             return 0;
         }
+        else if (current == Window::Hovered_Run)
+        {
+            RunActiveProject();
+            return 0;
+        }
         return DefWindowProc(hwnd_, uMsg, wParam, lParam);
     }
     case WM_RBUTTONUP:
@@ -1683,6 +1907,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         return DefWindowProc(hwnd_, uMsg, wParam, lParam);
     }
     case WM_DESTROY:
+        KillTimer(hwnd_, CARET_TIMER_ID);
         // Shutdown ggwave wrapper
         ggwave::Shutdown();
         CoUninitialize();

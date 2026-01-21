@@ -134,6 +134,38 @@ static void DrawCloseIcon(ID2D1RenderTarget *ctx, ID2D1SolidColorBrush *brush, D
     ctx->DrawLine(p3, p4, brush, 1.0f);
 }
 
+// Fonction helper pour dessiner l'icône play (triangle)
+static void DrawPlayIcon(
+    ID2D1RenderTarget *ctx,
+    IDWriteFactory *dwrite,
+    ID2D1SolidColorBrush *brush,
+    D2D1_RECT_F rect)
+{
+    if (!dwrite || !ctx || !brush)
+        return;
+
+    float height = rect.bottom - rect.top;
+    float fontSize = std::clamp(height * 0.45f, 12.0f, height - 2.0f);
+
+    IDWriteTextFormat *iconFormat = nullptr;
+    if (SUCCEEDED(dwrite->CreateTextFormat(
+            L"Segoe MDL2 Assets", NULL,
+            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+            fontSize, L"en-us", &iconFormat)))
+    {
+        iconFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        iconFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+        const wchar_t glyph[2] = {0xE768, 0}; // Play icon
+
+        ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+        ctx->DrawTextW(glyph, 1, iconFormat, rect, brush,
+                       D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+
+        iconFormat->Release();
+    }
+}
+
 void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, int hoveredButton, bool hasFocus, const std::wstring &title)
 {
     (void)hasFocus;
@@ -166,6 +198,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     D2D1_RECT_F rMin = D2D1::RectF((FLOAT)button_rects.minimize.left, (FLOAT)button_rects.minimize.top, (FLOAT)button_rects.minimize.right, (FLOAT)button_rects.minimize.bottom);
     D2D1_RECT_F rMax = D2D1::RectF((FLOAT)button_rects.maximize.left, (FLOAT)button_rects.maximize.top, (FLOAT)button_rects.maximize.right, (FLOAT)button_rects.maximize.bottom);
     D2D1_RECT_F rClose = D2D1::RectF((FLOAT)button_rects.close.left, (FLOAT)button_rects.close.top, (FLOAT)button_rects.close.right, (FLOAT)button_rects.close.bottom);
+    D2D1_RECT_F rRun = D2D1::RectF((FLOAT)button_rects.run.left, (FLOAT)button_rects.run.top, (FLOAT)button_rects.run.right, (FLOAT)button_rects.run.bottom);
 
     ID2D1SolidColorBrush *hoverBrush = nullptr;
     ctx->CreateSolidColorBrush(D2D1::ColorF(0x3e3e42), &hoverBrush);
@@ -173,11 +206,13 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     ID2D1SolidColorBrush *closeHoverBrush = nullptr;
     ctx->CreateSolidColorBrush(D2D1::ColorF(0xe81123), &closeHoverBrush);
 
-    if (hoveredButton == 1)
+    if (hoveredButton == Window::Hovered_Minimize)
         ctx->FillRectangle(rMin, hoverBrush);
-    if (hoveredButton == 2)
+    if (hoveredButton == Window::Hovered_Run)
+        ctx->FillRectangle(rRun, hoverBrush);
+    if (hoveredButton == Window::Hovered_Maximize)
         ctx->FillRectangle(rMax, hoverBrush);
-    if (hoveredButton == 3)
+    if (hoveredButton == Window::Hovered_Close)
         ctx->FillRectangle(rClose, closeHoverBrush);
 
     UINT dpi = GetDpiForWindow(hwnd);
@@ -193,6 +228,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     if (iconBrush)
     {
         DrawMinimizeIcon(ctx, iconBrush, rMin);
+        DrawPlayIcon(ctx, dwrite, iconBrush, rRun);
 
         if (isMaximized)
             DrawRestoreIcon(ctx, dwrite, iconBrush, rMax);
@@ -339,7 +375,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     }
 
     float titleLeft = currentX;
-    float titleRight = rMin.left;
+    float titleRight = rRun.left;
     float titleWidth = titleRight - titleLeft;
     if (titleWidth > 40.0f && dwrite)
     {

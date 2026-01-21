@@ -206,6 +206,7 @@ namespace Orion
 
         void LoadFile(const std::wstring &filePath);
         void Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
+        bool UpdateCaretBlink();
         void UpdateLayout(HWND hwnd, float left, float top, float right, float bottom);
         bool HasFile() const { return !state_.lines.empty(); }
         bool LoadCustomFont(IDWriteFactory *dwrite, const std::wstring &fontPath);
