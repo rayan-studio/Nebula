@@ -355,7 +355,14 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
     }
 
     if (IsPointInPanel(pt))
+    {
         focused_ = true;
+        if (TerminalSession* s = ActiveSession())
+        {
+            if (s->OnLeftButtonDown(pt))
+                SetCapture(hwnd);
+        }
+    }
 }
 
 void TerminalPanel::OnLeftButtonUp(HWND hwnd)
@@ -365,6 +372,15 @@ void TerminalPanel::OnLeftButtonUp(HWND hwnd)
     if (TerminalSession* s = ActiveSession())
     {
         if (s->OnScrollbarLButtonUp())
+        {
+            ReleaseCapture();
+            return;
+        }
+    }
+
+    if (TerminalSession* s = ActiveSession())
+    {
+        if (s->OnLeftButtonUp())
         {
             ReleaseCapture();
             return;
@@ -408,6 +424,13 @@ bool TerminalPanel::OnMouseMove(HWND hwnd, POINT pt)
     if (TerminalSession* s = ActiveSession())
     {
         if (s->OnScrollbarMouseMove(pt))
+            changed = true;
+    }
+
+    bool lmbDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    if (TerminalSession* s = ActiveSession())
+    {
+        if (s->OnMouseMove(pt, lmbDown))
             changed = true;
     }
 
@@ -569,7 +592,7 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
         s->SetViewport(left_, top_ + tabsH, right_, bottom_);
 
         // draw session content (chrome + text + scrollbar)
-        s->DrawContent(rt, dwrite, fontFamily_, fontSize_, fontCollection_, (resizeHover_ || resizing_));
+        s->DrawContent(rt, dwrite, fontFamily_, fontSize_, fontCollection_, (resizeHover_ || resizing_), focused_);
     }
 
     bg->Release();

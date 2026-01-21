@@ -340,7 +340,6 @@ namespace Orion
 
         DWORD lastClickTime_ = 0;
         POINT lastClickPos_ = {0, 0};
-        CaretPosition lastClickTextPos_ = {-1, -1};
         int clickCount_ = 0;
     };
 
