@@ -31,6 +31,7 @@
 #include "ui/panels/ggwave/GGWavePanel.h"
 #include "utils/logger/Logger.h"
 #include "orion/caret/Caret.h"
+#include "ui/layout/ExplorerLayoutState.h"
 
 static void EnableMicaIfAvailable(HWND hwnd)
 {
@@ -1106,15 +1107,30 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 
         // Get panel width from active panel
         Panel *panelDblClick = GetPanelManager().GetActivePanel();
-        int panelWidth = (panelDblClick && panelDblClick->IsVisible()) ? panelDblClick->GetPhysicalWidth() : 0;
-        int editorLeftX = sidebarWidth + panelWidth;
+        int panelLeftWidth = 0;
+        int panelRightWidth = 0;
+        if (panelDblClick && panelDblClick->IsVisible())
+        {
+            int activeWidth = panelDblClick->GetPhysicalWidth();
+            if (panelDblClick->GetId() == PanelId::Explorer &&
+                GetExplorerLayoutState().placement == ExplorerPlacement::Right)
+            {
+                panelRightWidth = activeWidth;
+            }
+            else
+            {
+                panelLeftWidth = activeWidth;
+            }
+        }
+        int editorLeftX = sidebarWidth + panelLeftWidth;
+        int editorRightX = clientRect.right - panelRightWidth;
 
         bool inPanelDbl = panelDblClick && panelDblClick->IsVisible() &&
                           (panelDblClick->IsPointInPanel(pt) || panelDblClick->IsPointInResizeZone(pt));
 
         if (tabBar_.GetActiveTabIndex() < 0 &&
             pt.y >= tbRect.bottom + tabBar_.GetHeight() && pt.y <= clientRect.bottom &&
-            pt.x >= editorLeftX && pt.x <= clientRect.right &&
+            pt.x >= editorLeftX && pt.x <= editorRightX &&
             !inPanelDbl)
         {
             // create unique untitled placeholder path
@@ -2076,8 +2092,28 @@ RECT Window::GetTabBarRectClient() const
     RECT client;
     GetClientRect(hwnd_, &client);
 
-    // Simple option: full client width
-    r.right = client.right;
+    UINT dpi = GetDpiForWindow(hwnd_);
+    int sidebarWidth = win32_dpi_scale(52, dpi);
+    int panelLeftWidth = 0;
+    int panelRightWidth = 0;
+
+    Panel *activePanel = GetPanelManager().GetActivePanel();
+    if (activePanel && activePanel->IsVisible())
+    {
+        int activeWidth = activePanel->GetPhysicalWidth();
+        if (activePanel->GetId() == PanelId::Explorer &&
+            GetExplorerLayoutState().placement == ExplorerPlacement::Right)
+        {
+            panelRightWidth = activeWidth;
+        }
+        else
+        {
+            panelLeftWidth = activeWidth;
+        }
+    }
+
+    r.left = sidebarWidth + panelLeftWidth;
+    r.right = client.right - panelRightWidth;
 
     return r;
 }
