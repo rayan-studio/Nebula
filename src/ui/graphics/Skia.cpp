@@ -13,6 +13,7 @@
 #include "helpers/window_helpers.h"
 #include "ui/screens/Welcome.h"
 #include "utils/logger/Logger.h"
+#include "ui/layout/ExplorerLayoutState.h"
 
 static void SafeRelease(IUnknown **p)
 {
@@ -119,16 +120,23 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
         float sidebarWidth = static_cast<float>(win32_dpi_scale(52, dpi));
         
         // Get active panel width from PanelManager
-        float panelWidth = 0.0f;
+        float panelLeftWidth = 0.0f;
+        float panelRightWidth = 0.0f;
         Panel* activePanel = GetPanelManager().GetActivePanel();
         if (activePanel && activePanel->IsVisible()) {
-            panelWidth = static_cast<float>(activePanel->GetState().physicalWidth);
+            float activeWidth = static_cast<float>(activePanel->GetState().physicalWidth);
+            if (activePanel->GetId() == PanelId::Explorer &&
+                GetExplorerLayoutState().placement == ExplorerPlacement::Right) {
+                panelRightWidth = activeWidth;
+            } else {
+                panelLeftWidth = activeWidth;
+            }
         }
 
         // Dessiner la TabBar
-        float tabBarLeft = sidebarWidth + panelWidth;
+        float tabBarLeft = sidebarWidth + panelLeftWidth;
         float tabBarTop = (float)tbRect.bottom;
-        float tabBarRight = (float)client.right;
+        float tabBarRight = (float)client.right - panelRightWidth;
 
         tabBar->UpdateLayout(tabBarLeft, tabBarTop, tabBarRight);
         tabBar->Draw(pRenderTarget_, pDWriteFactory_, hwnd);

@@ -16,6 +16,7 @@
 #include "ui/components/titlebar/TitleBar.h"
 #include "core/window/Window.h"
 #include "utils/logger/Logger.h"
+#include "ui/layout/ExplorerLayoutState.h"
 
 // Disable min/max macros from Windows headers
 #undef min
@@ -773,19 +774,35 @@ void ExplorerManager::UpdateLayout(HWND hwnd)
     int sidebarWidth = win32_dpi_scale(52, dpi);
     state_.physicalWidth = win32_dpi_scale(state_.logicalWidth, dpi);
 
-    state_.leftEdge = (float)(client.left + sidebarWidth);
-    state_.rightEdge = state_.leftEdge + (float)state_.physicalWidth;
+    ExplorerPlacement placement = GetExplorerLayoutState().placement;
+    if (placement == ExplorerPlacement::Right)
+    {
+        state_.rightEdge = (float)client.right;
+        state_.leftEdge = state_.rightEdge - (float)state_.physicalWidth;
+
+        float minLeft = (float)(client.left + sidebarWidth);
+        if (state_.leftEdge < minLeft)
+        {
+            state_.leftEdge = minLeft;
+            state_.physicalWidth = (int)(state_.rightEdge - state_.leftEdge);
+        }
+    }
+    else
+    {
+        state_.leftEdge = (float)(client.left + sidebarWidth);
+        state_.rightEdge = state_.leftEdge + (float)state_.physicalWidth;
+
+        if (state_.rightEdge > (float)client.right)
+        {
+            state_.rightEdge = (float)client.right;
+            state_.physicalWidth = (int)(state_.rightEdge - state_.leftEdge);
+        }
+    }
     state_.topEdge = (float)tbRect.bottom;
     // Reserve space for footer so explorer content doesn't overlap it
     int footerLogicalH = 28;
     int footerH = win32_dpi_scale(footerLogicalH, dpi);
     state_.bottomEdge = (float)(client.bottom - footerH);
-
-    if (state_.rightEdge > (float)client.right)
-    {
-        state_.rightEdge = (float)client.right;
-        state_.physicalWidth = (int)(state_.rightEdge - state_.leftEdge);
-    }
 
     UpdateItemPositions();
 
@@ -805,7 +822,14 @@ void ExplorerManager::UpdateLayout(HWND hwnd)
     if (!visible_)
     {
         state_.physicalWidth = 0;
-        state_.rightEdge = state_.leftEdge;
+        if (placement == ExplorerPlacement::Right)
+        {
+            state_.leftEdge = state_.rightEdge;
+        }
+        else
+        {
+            state_.rightEdge = state_.leftEdge;
+        }
     }
 
     // AJOUTEZ CES LIGNES :

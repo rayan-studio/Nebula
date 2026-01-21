@@ -3,6 +3,7 @@
 #include "PanelManager.h"
 #include "explorer/ExplorerPanel.h"
 #include "search/SearchPanel.h"
+#include "settings/SettingsPanel.h"
 
 // ============================================================================
 // Panel System Initialization
@@ -20,6 +21,10 @@ void InitializePanelSystem()
     // Register Search panel
     auto searchPanel = std::make_unique<SearchPanel>();
     manager.RegisterPanel(std::move(searchPanel));
+
+    // Register Settings panel
+    auto settingsPanel = std::make_unique<SettingsPanel>();
+    manager.RegisterPanel(std::move(settingsPanel));
     
     // Set Explorer as the default active panel
     manager.SetActivePanel(PanelId::Explorer);
