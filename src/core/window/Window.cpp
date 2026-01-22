@@ -655,7 +655,6 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 }
             }
         }
-        }
         SetText(L"Bonjour — texte rendu via GPU (Direct2D)");
 
         SetTimer(hwnd_, CARET_TIMER_ID, CARET_TIMER_INTERVAL_MS, nullptr);
