@@ -14,6 +14,7 @@
 // Forward decl (vterm types cachés dans cpp)
 struct VTerm;
 struct VTermScreen;
+struct VTermState;
 
 class TerminalSession
 {
@@ -92,6 +93,7 @@ private:
     // VTerm
     VTerm* vt_ = nullptr;
     VTermScreen* screen_ = nullptr;
+    VTermState* state_ = nullptr;
     std::vector<std::wstring> scrollback_;
     int rows_ = 24;
     int cols_ = 80;
