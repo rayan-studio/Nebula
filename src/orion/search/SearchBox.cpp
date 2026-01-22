@@ -7,9 +7,13 @@ namespace Orion
     SearchBox::SearchBox()
         : visible_(false)
         , inputFocused_(true)
+        , replaceFocused_(false)
+        , activeField_(InputField::Search)
         , caretPosition_(0)
+        , replaceCaretPosition_(0)
         , caretVisible_(true)
         , lastBlinkTime_(GetTickCount())
+        , replaceRequested_(false)
         , currentMatchIndex_(-1)
         , hoverClose_(false)
         , hoverPrev_(false)
@@ -28,6 +32,8 @@ namespace Orion
     {
         visible_ = true;
         inputFocused_ = true;
+        replaceFocused_ = false;
+        activeField_ = InputField::Search;
         caretVisible_ = true;
         lastBlinkTime_ = GetTickCount();
         // Select all text when opening
@@ -38,15 +44,20 @@ namespace Orion
     {
         visible_ = false;
         inputFocused_ = false;
+        replaceFocused_ = false;
+        activeField_ = InputField::None;
         ClearMatches();
     }
 
     void SearchBox::UpdateLayout(float editorLeft, float editorTop, float editorWidth)
     {
         // Position search box at top-right of editor (only input field visible)
-        float boxWidth = 400.0f;
-        float boxHeight = 36.0f;
+        float boxWidth = 420.0f;
+        float boxHeight = 74.0f;
         float padding = 8.0f;
+        float rowHeight = 26.0f;
+        float rowSpacing = 6.0f;
+        float innerPadding = 8.0f;
 
         boxRect_ = D2D1::RectF(
             editorLeft + editorWidth - boxWidth - padding,
@@ -55,12 +66,29 @@ namespace Orion
             editorTop + padding + boxHeight
         );
 
-        // Input fills most of the box (no buttons)
+        // Inputs (search + replace)
         inputRect_ = D2D1::RectF(
-            boxRect_.left + 8.0f,
-            boxRect_.top + 4.0f,
-            boxRect_.right - 8.0f,
-            boxRect_.bottom - 4.0f
+            boxRect_.left + innerPadding,
+            boxRect_.top + innerPadding,
+            boxRect_.right - innerPadding,
+            boxRect_.top + innerPadding + rowHeight
+        );
+
+        float replaceButtonWidth = 24.0f;
+        float replaceButtonGap = 6.0f;
+
+        replaceInputRect_ = D2D1::RectF(
+            boxRect_.left + innerPadding,
+            inputRect_.bottom + rowSpacing,
+            boxRect_.right - innerPadding - replaceButtonGap - replaceButtonWidth,
+            inputRect_.bottom + rowSpacing + rowHeight
+        );
+
+        replaceButtonRect_ = D2D1::RectF(
+            replaceInputRect_.right + replaceButtonGap,
+            replaceInputRect_.top,
+            replaceInputRect_.right + replaceButtonGap + replaceButtonWidth,
+            replaceInputRect_.bottom
         );
     }
 
@@ -73,28 +101,26 @@ namespace Orion
         // Note: outer box (shadow/background/border) intentionally omitted
         // to match the simplified single-input look used elsewhere.
 
-        // Input field background
-        ID2D1SolidColorBrush* inputBgBrush = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.1f, 0.1f, 0.1f), &inputBgBrush);
-        if (inputBgBrush)
-        {
-            ctx->FillRoundedRectangle(D2D1::RoundedRect(inputRect_, 2.0f, 2.0f), inputBgBrush);
-            inputBgBrush->Release();
-        }
+        auto drawInput = [&](const D2D1_RECT_F &rect, const std::wstring &text, const wchar_t *placeholder, bool focused, int caretPos) {
+            // Input field background
+            ID2D1SolidColorBrush* inputBgBrush = nullptr;
+            ctx->CreateSolidColorBrush(D2D1::ColorF(0.1f, 0.1f, 0.1f), &inputBgBrush);
+            if (inputBgBrush)
+            {
+                ctx->FillRoundedRectangle(D2D1::RoundedRect(rect, 2.0f, 2.0f), inputBgBrush);
+                inputBgBrush->Release();
+            }
 
-        // Input field border
-        ID2D1SolidColorBrush* inputBorderBrush = nullptr;
-        D2D1_COLOR_F borderColor = inputFocused_ ? D2D1::ColorF(0.2f, 0.4f, 0.8f) : D2D1::ColorF(0.25f, 0.25f, 0.25f);
-        ctx->CreateSolidColorBrush(borderColor, &inputBorderBrush);
-        if (inputBorderBrush)
-        {
-            ctx->DrawRoundedRectangle(D2D1::RoundedRect(inputRect_, 2.0f, 2.0f), inputBorderBrush, 1.0f);
-            inputBorderBrush->Release();
-        }
+            // Input field border
+            ID2D1SolidColorBrush* inputBorderBrush = nullptr;
+            D2D1_COLOR_F borderColor = focused ? D2D1::ColorF(0.2f, 0.4f, 0.8f) : D2D1::ColorF(0.25f, 0.25f, 0.25f);
+            ctx->CreateSolidColorBrush(borderColor, &inputBorderBrush);
+            if (inputBorderBrush)
+            {
+                ctx->DrawRoundedRectangle(D2D1::RoundedRect(rect, 2.0f, 2.0f), inputBorderBrush, 1.0f);
+                inputBorderBrush->Release();
+            }
 
-        // Input text
-        if (!searchText_.empty())
-        {
             IDWriteTextFormat* textFormat = nullptr;
             dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
                                     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
@@ -104,89 +130,75 @@ namespace Orion
                 textFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
                 textFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
-                ID2D1SolidColorBrush* textBrush = nullptr;
-                ctx->CreateSolidColorBrush(D2D1::ColorF(0.9f, 0.9f, 0.9f), &textBrush);
-                
-                D2D1_RECT_F textRect = inputRect_;
+                D2D1_RECT_F textRect = rect;
                 textRect.left += 6.0f;
                 textRect.right -= 6.0f;
-                
-                ctx->DrawTextW(searchText_.c_str(), static_cast<UINT32>(searchText_.length()),
-                              textFormat, textRect, textBrush);
 
-                if (textBrush) textBrush->Release();
+                if (!text.empty())
+                {
+                    ID2D1SolidColorBrush* textBrush = nullptr;
+                    ctx->CreateSolidColorBrush(D2D1::ColorF(0.9f, 0.9f, 0.9f), &textBrush);
+
+                    ctx->DrawTextW(text.c_str(), static_cast<UINT32>(text.length()),
+                                  textFormat, textRect, textBrush);
+
+                    if (textBrush) textBrush->Release();
+                }
+                else
+                {
+                    ID2D1SolidColorBrush* placeholderBrush = nullptr;
+                    ctx->CreateSolidColorBrush(D2D1::ColorF(0.4f, 0.4f, 0.4f), &placeholderBrush);
+                    ctx->DrawTextW(placeholder, static_cast<UINT32>(wcslen(placeholder)),
+                                  textFormat, textRect, placeholderBrush);
+                    if (placeholderBrush) placeholderBrush->Release();
+                }
+
                 textFormat->Release();
             }
-        }
-        else
-        {
-            // Placeholder text
-            IDWriteTextFormat* placeholderFormat = nullptr;
-            dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
-                                    DWRITE_FONT_STYLE_ITALIC, DWRITE_FONT_STRETCH_NORMAL,
-                                    13.0f, L"en-us", &placeholderFormat);
-            if (placeholderFormat)
+
+            if (focused && caretVisible_)
             {
-                placeholderFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-                placeholderFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-
-                ID2D1SolidColorBrush* placeholderBrush = nullptr;
-                ctx->CreateSolidColorBrush(D2D1::ColorF(0.4f, 0.4f, 0.4f), &placeholderBrush);
-                
-                D2D1_RECT_F textRect = inputRect_;
-                textRect.left += 6.0f;
-                textRect.right -= 6.0f;
-                
-                const wchar_t* placeholder = L"Rechercher...";
-                ctx->DrawTextW(placeholder, static_cast<UINT32>(wcslen(placeholder)),
-                              placeholderFormat, textRect, placeholderBrush);
-
-                if (placeholderBrush) placeholderBrush->Release();
-                placeholderFormat->Release();
-            }
-        }
-
-        // Caret
-        if (inputFocused_ && caretVisible_)
-        {
-            ID2D1SolidColorBrush* caretBrush = nullptr;
-            ctx->CreateSolidColorBrush(D2D1::ColorF(0.9f, 0.9f, 0.9f), &caretBrush);
-            if (caretBrush)
-            {
-                // Simple caret at end of text for now
-                float caretX = inputRect_.left + 6.0f;
-                if (!searchText_.empty())
+                ID2D1SolidColorBrush* caretBrush = nullptr;
+                ctx->CreateSolidColorBrush(D2D1::ColorF(0.9f, 0.9f, 0.9f), &caretBrush);
+                if (caretBrush)
                 {
-                    IDWriteTextFormat* tf = nullptr;
-                    dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
-                                            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                                            13.0f, L"en-us", &tf);
-                    if (tf)
+                    float caretX = rect.left + 6.0f;
+                    if (!text.empty())
                     {
-                        IDWriteTextLayout* layout = nullptr;
-                        dwrite->CreateTextLayout(searchText_.c_str(), caretPosition_,
-                                                tf, 1000.0f, 30.0f, &layout);
-                        if (layout)
+                        IDWriteTextFormat* tf = nullptr;
+                        dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                                                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                                13.0f, L"en-us", &tf);
+                        if (tf)
                         {
-                            DWRITE_TEXT_METRICS metrics;
-                            layout->GetMetrics(&metrics);
-                            caretX += metrics.width;
-                            layout->Release();
+                            IDWriteTextLayout* layout = nullptr;
+                            dwrite->CreateTextLayout(text.c_str(), caretPos,
+                                                    tf, 1000.0f, 30.0f, &layout);
+                            if (layout)
+                            {
+                                DWRITE_TEXT_METRICS metrics;
+                                layout->GetMetrics(&metrics);
+                                caretX += metrics.width;
+                                layout->Release();
+                            }
+                            tf->Release();
                         }
-                        tf->Release();
                     }
-                }
-                
-                D2D1_RECT_F caretRect = D2D1::RectF(
-                    caretX, inputRect_.top + 4.0f,
-                    caretX + 1.5f, inputRect_.bottom - 4.0f
-                );
-                ctx->FillRectangle(caretRect, caretBrush);
-                caretBrush->Release();
-            }
-        }
 
-        // No buttons or match counter in the simplified UI
+                    D2D1_RECT_F caretRect = D2D1::RectF(
+                        caretX, rect.top + 4.0f,
+                        caretX + 1.5f, rect.bottom - 4.0f
+                    );
+                    ctx->FillRectangle(caretRect, caretBrush);
+                    caretBrush->Release();
+                }
+            }
+        };
+
+        drawInput(inputRect_, searchText_, L"Rechercher...", inputFocused_, caretPosition_);
+        drawInput(replaceInputRect_, replaceText_, L"Remplacer...", replaceFocused_, replaceCaretPosition_);
+
+        DrawButton(ctx, dwrite, replaceButtonRect_, L"\u2192", false, false);
     }
 
     void SearchBox::DrawButton(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
@@ -246,59 +258,84 @@ namespace Orion
 
     void SearchBox::OnChar(wchar_t ch)
     {
-        if (!inputFocused_) return;
+        if (!inputFocused_ && !replaceFocused_) return;
         if (ch < 32 || ch == 127) return; // Ignore control chars
 
-        searchText_.insert(caretPosition_, 1, ch);
-        caretPosition_++;
+        if (inputFocused_)
+        {
+            searchText_.insert(caretPosition_, 1, ch);
+            caretPosition_++;
+        }
+        else if (replaceFocused_)
+        {
+            replaceText_.insert(replaceCaretPosition_, 1, ch);
+            replaceCaretPosition_++;
+        }
         caretVisible_ = true;
         lastBlinkTime_ = GetTickCount();
     }
 
     void SearchBox::OnKeyDown(WPARAM key)
     {
-        if (!inputFocused_) return;
+        if (!inputFocused_ && !replaceFocused_) return;
+
+        std::wstring *activeText = inputFocused_ ? &searchText_ : &replaceText_;
+        int *activeCaret = inputFocused_ ? &caretPosition_ : &replaceCaretPosition_;
 
         switch (key)
         {
         case VK_BACK:
-            if (caretPosition_ > 0)
+            if (*activeCaret > 0)
             {
-                searchText_.erase(caretPosition_ - 1, 1);
-                caretPosition_--;
+                activeText->erase(*activeCaret - 1, 1);
+                (*activeCaret)--;
             }
             break;
         
         case VK_DELETE:
-            if (caretPosition_ < static_cast<int>(searchText_.length()))
+            if (*activeCaret < static_cast<int>(activeText->length()))
             {
-                searchText_.erase(caretPosition_, 1);
+                activeText->erase(*activeCaret, 1);
             }
             break;
         
         case VK_LEFT:
-            if (caretPosition_ > 0)
-                caretPosition_--;
+            if (*activeCaret > 0)
+                (*activeCaret)--;
             break;
         
         case VK_RIGHT:
-            if (caretPosition_ < static_cast<int>(searchText_.length()))
-                caretPosition_++;
+            if (*activeCaret < static_cast<int>(activeText->length()))
+                (*activeCaret)++;
             break;
         
         case VK_HOME:
-            caretPosition_ = 0;
+            *activeCaret = 0;
             break;
         
         case VK_END:
-            caretPosition_ = static_cast<int>(searchText_.length());
+            *activeCaret = static_cast<int>(activeText->length());
             break;
         
         case VK_RETURN:
+            if (inputFocused_)
+            {
+                if (GetAsyncKeyState(VK_SHIFT) & 0x8000)
+                    FindPrevious();
+                else
+                    FindNext();
+            }
+            else if (replaceFocused_)
+            {
+                replaceRequested_ = true;
+            }
+            break;
+
+        case VK_TAB:
             if (GetAsyncKeyState(VK_SHIFT) & 0x8000)
-                FindPrevious();
+                SetInputFocused(true);
             else
-                FindNext();
+                SetReplaceFocused(true);
             break;
         
         case VK_ESCAPE:
@@ -320,21 +357,54 @@ namespace Orion
             // Use setter to keep focus behavior consistent (caret blink, visibility)
             SetInputFocused(true);
             // TODO: Set caret position based on click location (requires text layout measurement)
+            return;
+        }
+
+        if (pt.x >= replaceInputRect_.left && pt.x <= replaceInputRect_.right &&
+            pt.y >= replaceInputRect_.top && pt.y <= replaceInputRect_.bottom)
+        {
+            SetReplaceFocused(true);
+            return;
+        }
+
+        if (pt.x >= replaceButtonRect_.left && pt.x <= replaceButtonRect_.right &&
+            pt.y >= replaceButtonRect_.top && pt.y <= replaceButtonRect_.bottom)
+        {
+            SetReplaceFocused(true);
+            replaceRequested_ = true;
         }
     }
 
     void SearchBox::SetInputFocused(bool focused)
     {
         inputFocused_ = focused;
-        if (!inputFocused_)
+        if (inputFocused_)
         {
-            caretVisible_ = false;
+            replaceFocused_ = false;
         }
         else
         {
-            caretVisible_ = true;
-            lastBlinkTime_ = GetTickCount();
+            replaceFocused_ = false;
         }
+
+        activeField_ = inputFocused_ ? InputField::Search : (replaceFocused_ ? InputField::Replace : InputField::None);
+
+        caretVisible_ = inputFocused_ || replaceFocused_;
+        if (caretVisible_)
+            lastBlinkTime_ = GetTickCount();
+    }
+
+    void SearchBox::SetReplaceFocused(bool focused)
+    {
+        replaceFocused_ = focused;
+        if (replaceFocused_)
+            inputFocused_ = false;
+
+        activeField_ = replaceFocused_ ? InputField::Replace : (inputFocused_ ? InputField::Search : InputField::None);
+
+        caretVisible_ = inputFocused_ || replaceFocused_;
+        if (caretVisible_)
+            lastBlinkTime_ = GetTickCount();
     }
 
     bool SearchBox::IsPointInSearchBox(POINT pt) const
@@ -347,6 +417,8 @@ namespace Orion
         };
 
         if (inside(inputRect_)) return true;
+        if (inside(replaceInputRect_)) return true;
+        if (inside(replaceButtonRect_)) return true;
         if (inside(closeButtonRect_)) return true;
         if (inside(prevButtonRect_)) return true;
         if (inside(nextButtonRect_)) return true;
@@ -361,6 +433,22 @@ namespace Orion
     {
         searchText_ = text;
         caretPosition_ = static_cast<int>(text.length());
+    }
+
+    void SearchBox::SetReplaceText(const std::wstring& text)
+    {
+        replaceText_ = text;
+        replaceCaretPosition_ = static_cast<int>(text.length());
+    }
+
+    void SearchBox::SetCurrentMatchIndex(int idx)
+    {
+        if (idx < 0 || idx >= static_cast<int>(matches_.size()))
+        {
+            currentMatchIndex_ = matches_.empty() ? -1 : 0;
+            return;
+        }
+        currentMatchIndex_ = idx;
     }
 
     void SearchBox::PerformSearch(const std::vector<std::wstring>& lines)
@@ -478,6 +566,15 @@ namespace Orion
             caretVisible_ = !caretVisible_;
             lastBlinkTime_ = current;
         }
+    }
+
+    bool SearchBox::ConsumeReplaceRequest()
+    {
+        if (!replaceRequested_)
+            return false;
+
+        replaceRequested_ = false;
+        return true;
     }
 
 } // namespace Orion

@@ -342,6 +342,7 @@ namespace Orion
         bool isDirty_ = false;
         void DrawSearchMatches(ID2D1RenderTarget *ctx);
         void DrawWhitespaceIndicators(ID2D1RenderTarget *ctx);
+        bool ReplaceCurrentMatch();
         std::vector<EditorState> undoStack_;
         size_t maxUndoEntries_ = 200;
         D2D1_COLOR_F GetTokenColor(::Orion::Syntax::TokenType type, const std::wstring &ext) const;
