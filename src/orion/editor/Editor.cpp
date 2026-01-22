@@ -47,6 +47,8 @@ namespace Orion
         selectionConfig.cornerRadius = 3.0f;
         selectionConfig.style = Rendering::SelectionStyle::RoundedSmart;
         selection_ = std::make_unique<Rendering::Selection>(selectionConfig);
+
+        diagnosticsState_ = std::make_shared<DiagnosticsState>();
     }
 
     bool Editor::UpdateCaretBlink()

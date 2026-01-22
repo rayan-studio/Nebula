@@ -16,6 +16,15 @@ class TerminalSession;
 class TerminalPanel
 {
 public:
+    struct ProblemItem
+    {
+        std::wstring fileName;
+        int line = 0;
+        int column = 0;
+        bool isError = false;
+        std::wstring message;
+    };
+
     struct State
     {
         float leftEdge = 0;
@@ -73,6 +82,7 @@ public:
     // Render
     void Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite);
     void Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwnd);
+    void SetProblems(const std::wstring& filePath, const std::vector<ProblemItem>& problems);
 
     // Font
     void SetFont(const std::wstring& family, float sizePx);
@@ -87,7 +97,9 @@ private:
 
     RECT  TabsBarRectClient() const;
     RECT  PlusButtonRectClient() const;
+    RECT  ProblemsButtonRectClient() const;
     bool  HitTestPlus(POINT pt) const;
+    bool  HitTestProblems(POINT pt) const;
     bool  IsPointInTabsBar(POINT pt) const;
     float TabsBarRightEdge() const;
 
@@ -135,8 +147,12 @@ private:
 
     // Tabs hover
     bool hoveredPlus_ = false;
+    bool hoveredProblems_ = false;
+    bool showProblems_ = false;
 
     TabBar tabBar_;
+    std::vector<ProblemItem> problems_;
+    std::wstring problemsFilePath_;
 };
 
 // Global accessor

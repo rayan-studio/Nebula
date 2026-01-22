@@ -171,9 +171,26 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
 
                 editor->UpdateLayout(hwnd, editorLeft, editorTop, editorRight, editorBottom);
                 editor->Draw(pRenderTarget_, pDWriteFactory_);
-                
+
                 // Draw terminal after editor
                 if (terminal.IsVisible()) {
+                    std::vector<TerminalPanel::ProblemItem> problems;
+                    std::wstring filePath = editor->GetFilePath();
+                    std::wstring fileName = filePath;
+                    size_t lastSlash = filePath.find_last_of(L"\\/");
+                    if (lastSlash != std::wstring::npos)
+                        fileName = filePath.substr(lastSlash + 1);
+                    for (const auto& diag : editor->GetDiagnostics())
+                    {
+                        TerminalPanel::ProblemItem item;
+                        item.fileName = fileName.empty() ? L"<untitled>" : fileName;
+                        item.line = diag.line + 1;
+                        item.column = diag.startCol + 1;
+                        item.isError = diag.isError;
+                        item.message = diag.message;
+                        problems.push_back(std::move(item));
+                    }
+                    terminal.SetProblems(filePath, problems);
                     terminal.Draw(pRenderTarget_, pDWriteFactory_, hwnd);
                 }
                 
@@ -214,6 +231,7 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
             
             // Draw terminal after welcome
             if (terminal.IsVisible()) {
+                terminal.SetProblems(L"", {});
                 terminal.Draw(pRenderTarget_, pDWriteFactory_, hwnd);
             }
             

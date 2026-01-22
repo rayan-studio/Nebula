@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <mutex>
+#include <atomic>
 #include <windows.h>
 #include "ui/components/scrollbar/Scrollbar.h"
 #include <functional>
@@ -201,6 +203,15 @@ namespace Orion
     class Editor
     {
     public:
+        struct Diagnostic
+        {
+            int line = 0;
+            int startCol = 0;
+            int endCol = 0;
+            bool isError = false;
+            std::wstring message;
+        };
+
         Editor();
         ~Editor();
 
@@ -230,6 +241,9 @@ namespace Orion
         void CreateEmpty();
         // Save buffer to file (UTF-8). Returns true on success.
         bool SaveToFile(const std::wstring &filePath);
+        void RunClangdDiagnosticsAsync();
+        std::vector<Diagnostic> GetDiagnostics() const;
+        void ClearDiagnostics();
         // Dirty state API
         bool IsDirty() const { return isDirty_; }
         void MarkDirty()
@@ -275,6 +289,13 @@ namespace Orion
                              std::vector<std::wstring> lines);
 
     private:
+        struct DiagnosticsState
+        {
+            std::mutex mutex;
+            std::vector<Diagnostic> diagnostics;
+            std::atomic<int> token{0};
+        };
+
         CustomFontCollectionLoader *fontLoader_ = nullptr;
         IDWriteFactory *fontCollectionRegisteredFactory_ = nullptr;
         IDWriteFontCollection *customFontCollection_ = nullptr;
@@ -328,6 +349,7 @@ namespace Orion
         std::unique_ptr<Geometry::IndentationHelper> indentHelper_;
         std::unique_ptr<Rendering::GuideRenderer> guideRenderer_;
         std::unique_ptr<Rendering::Selection> selection_;
+        std::shared_ptr<DiagnosticsState> diagnosticsState_;
 
         Geometry::IndentConfig GetIndentConfig() const;
         // Brush cache for syntax highlighting (color -> brush)

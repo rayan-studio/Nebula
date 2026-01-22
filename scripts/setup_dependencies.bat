@@ -18,6 +18,7 @@ if not defined WINGET_CMD (
 call :install_package "Git.Git" "Git"
 call :install_package "Python.Python.3.11" "Python 3.11"
 call :install_package "Kitware.CMake" "CMake"
+call :install_package "LLVM.LLVM" "LLVM (clangd)"
 call :install_package "MSYS2.MSYS2" "MSYS2"
 
 echo.
