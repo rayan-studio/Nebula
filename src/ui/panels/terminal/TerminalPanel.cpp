@@ -37,6 +37,11 @@ int TerminalPanel::GetTerminalCount() const
     return (int)sessions_.size();
 }
 
+int TerminalPanel::AllocateSessionId()
+{
+    return nextSessionId_++;
+}
+
 void TerminalPanel::SetActiveIndex(int idx)
 {
     if (idx < 0 || idx >= (int)sessions_.size())
@@ -62,6 +67,7 @@ void TerminalPanel::EnsureAtLeastOneSession(HWND hwnd)
 
     // Crée une session par défaut (non initialisée tant que pas visible/focus si tu veux)
     sessions_.push_back(std::make_unique<TerminalSession>());
+    sessionIds_.push_back(AllocateSessionId());
     activeIndex_ = 0;
     SyncTabBar();
 
@@ -89,6 +95,7 @@ void TerminalPanel::NewTerminal(HWND hwnd, const std::wstring& startDir)
 
     // crée
     sessions_.push_back(std::make_unique<TerminalSession>());
+    sessionIds_.push_back(AllocateSessionId());
     activeIndex_ = (int)sessions_.size() - 1;
     SyncTabBar();
 
@@ -120,6 +127,8 @@ void TerminalPanel::CloseTerminal(int idx)
 
     sessions_[idx]->Shutdown();
     sessions_.erase(sessions_.begin() + idx);
+    if (idx < (int)sessionIds_.size())
+        sessionIds_.erase(sessionIds_.begin() + idx);
     SyncTabBar();
 
     if (sessions_.empty())
@@ -141,6 +150,7 @@ void TerminalPanel::CloseAll()
     for (auto& s : sessions_)
         if (s) s->Shutdown();
     sessions_.clear();
+    sessionIds_.clear();
     activeIndex_ = -1;
     visible_ = false;
     focused_ = false;
@@ -243,8 +253,8 @@ RECT TerminalPanel::TabsBarRectClient() const
 
 float TerminalPanel::TabsBarRightEdge() const
 {
-    RECT plus = PlusButtonRectClient();
-    float rightEdge = (float)plus.left - 6.0f;
+    RECT problems = ProblemsButtonRectClient();
+    float rightEdge = (float)problems.left - 6.0f;
     if (rightEdge < left_)
         rightEdge = left_;
     return rightEdge;
@@ -262,9 +272,28 @@ RECT TerminalPanel::PlusButtonRectClient() const
     return r;
 }
 
+RECT TerminalPanel::ProblemsButtonRectClient() const
+{
+    RECT plus = PlusButtonRectClient();
+    int height = (int)TabsBarHeightPx();
+    int width = (int)std::round(height * 3.2f);
+    RECT r;
+    r.right = plus.left - 6;
+    r.left = r.right - width;
+    r.top = plus.top;
+    r.bottom = plus.bottom;
+    return r;
+}
+
 bool TerminalPanel::HitTestPlus(POINT pt) const
 {
     RECT r = PlusButtonRectClient();
+    return (pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom);
+}
+
+bool TerminalPanel::HitTestProblems(POINT pt) const
+{
+    RECT r = ProblemsButtonRectClient();
     return (pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom);
 }
 
@@ -293,7 +322,8 @@ void TerminalPanel::SyncTabBar()
 
     for (int i = 0; i < desired; ++i)
     {
-        std::wstring title = L"Terminal " + std::to_wstring(i + 1);
+        int id = (i < (int)sessionIds_.size()) ? sessionIds_[i] : (i + 1);
+        std::wstring title = L"Terminal " + std::to_wstring(id);
         tabBar_.UpdateTabPath(i, L"", title);
     }
 
@@ -305,6 +335,12 @@ void TerminalPanel::SyncTabBar()
 void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
 {
     if (!visible_) return;
+
+    if (HitTestProblems(pt))
+    {
+        showProblems_ = !showProblems_;
+        return;
+    }
 
     // Plus click => NewTerminal (startDir choisi par Window normalement via menu)
     if (HitTestPlus(pt))
@@ -408,7 +444,12 @@ bool TerminalPanel::OnMouseMove(HWND hwnd, POINT pt)
     if (prevPlus != hoveredPlus_)
         changed = true;
 
-    if (IsPointInTabsBar(pt) && !hoveredPlus_)
+    bool prevProblems = hoveredProblems_;
+    hoveredProblems_ = HitTestProblems(pt);
+    if (prevProblems != hoveredProblems_)
+        changed = true;
+
+    if (IsPointInTabsBar(pt) && !hoveredPlus_ && !hoveredProblems_)
     {
         int tabHover = tabBar_.OnMouseMove(pt);
         if (tabHover != -2)
@@ -560,6 +601,42 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
 
     tabBar_.Draw(rt, dwrite, hwnd);
 
+    // Problems button
+    RECT prb = ProblemsButtonRectClient();
+    D2D1_RECT_F problemsRect = D2D1::RectF((float)prb.left, (float)prb.top, (float)prb.right, (float)prb.bottom);
+
+    ID2D1SolidColorBrush* problemsBg = nullptr;
+    if (hoveredProblems_ || showProblems_)
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.16f, 0.16f, 0.16f, 1.0f), &problemsBg);
+    else
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.10f, 0.10f, 1.0f), &problemsBg);
+
+    if (problemsBg)
+    {
+        rt->FillRectangle(problemsRect, problemsBg);
+        problemsBg->Release();
+    }
+
+    IDWriteTextFormat* problemsFormat = nullptr;
+    dwrite->CreateTextFormat(
+        L"Segoe UI",
+        NULL,
+        DWRITE_FONT_WEIGHT_NORMAL,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        12.0f,
+        L"en-us",
+        &problemsFormat);
+    if (problemsFormat)
+    {
+        problemsFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        problemsFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+        std::wstring label = L"Problems (" + std::to_wstring(problems_.size()) + L")";
+        rt->DrawTextW(label.c_str(), (UINT32)label.size(), problemsFormat, problemsRect, fg);
+        problemsFormat->Release();
+    }
+
     // Plus button
     RECT pr = PlusButtonRectClient();
     D2D1_RECT_F plus = D2D1::RectF((float)pr.left, (float)pr.top, (float)pr.right, (float)pr.bottom);
@@ -585,17 +662,97 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
     rt->DrawLine(D2D1::Point2F(cx, cy - halfSize), D2D1::Point2F(cx, cy + halfSize), fg, 1.6f);
 
     // Content viewport
-    TerminalSession* s = ActiveSession();
-    if (s)
+    float tabsH = TabsBarHeightPx();
+    if (showProblems_)
     {
-        float tabsH = TabsBarHeightPx();
-        s->SetViewport(left_, top_ + tabsH, right_, bottom_);
+        D2D1_RECT_F contentRect = D2D1::RectF(left_, top_ + tabsH, right_, bottom_);
+        ID2D1SolidColorBrush* contentBg = nullptr;
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.08f, 0.95f), &contentBg);
+        if (contentBg)
+        {
+            rt->FillRectangle(contentRect, contentBg);
+            contentBg->Release();
+        }
 
-        // draw session content (chrome + text + scrollbar)
-        s->DrawContent(rt, dwrite, fontFamily_, fontSize_, fontCollection_, (resizeHover_ || resizing_), focused_);
+        IDWriteTextFormat* listFormat = nullptr;
+        dwrite->CreateTextFormat(
+            L"Segoe UI",
+            NULL,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            12.0f,
+            L"en-us",
+            &listFormat);
+        if (listFormat)
+        {
+            listFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            listFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            listFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+
+            ID2D1SolidColorBrush* errorBrush = nullptr;
+            ID2D1SolidColorBrush* warningBrush = nullptr;
+            rt->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.35f, 0.35f, 1.0f), &errorBrush);
+            rt->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.70f, 0.30f, 1.0f), &warningBrush);
+
+            float y = contentRect.top + 8.0f;
+            float x = contentRect.left + 12.0f;
+            float lineH = 18.0f;
+
+            std::wstring header = L"Problems";
+            rt->DrawTextW(header.c_str(), (UINT32)header.size(), listFormat,
+                          D2D1::RectF(x, y, contentRect.right - 8.0f, y + lineH), fg);
+            y += lineH + 4.0f;
+
+            if (problems_.empty())
+            {
+                std::wstring empty = L"Aucun problème détecté";
+                rt->DrawTextW(empty.c_str(), (UINT32)empty.size(), listFormat,
+                              D2D1::RectF(x, y, contentRect.right - 8.0f, y + lineH), fg);
+            }
+            else
+            {
+                rt->PushAxisAlignedClip(contentRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                for (const auto& p : problems_)
+                {
+                    ID2D1SolidColorBrush* lineBrush = p.isError ? errorBrush : warningBrush;
+                    std::wstring line = (p.isError ? L"E " : L"W ") +
+                        p.fileName + L":" + std::to_wstring(p.line) + L":" + std::to_wstring(p.column) + L" " + p.message;
+                    rt->DrawTextW(line.c_str(), (UINT32)line.size(), listFormat,
+                                  D2D1::RectF(x, y, contentRect.right - 8.0f, y + lineH), lineBrush ? lineBrush : fg);
+                    y += lineH;
+                    if (y > contentRect.bottom - lineH)
+                        break;
+                }
+                rt->PopAxisAlignedClip();
+            }
+
+            if (errorBrush)
+                errorBrush->Release();
+            if (warningBrush)
+                warningBrush->Release();
+            listFormat->Release();
+        }
+    }
+    else
+    {
+        TerminalSession* s = ActiveSession();
+        if (s)
+        {
+            s->SetViewport(left_, top_ + tabsH, right_, bottom_);
+
+            // draw session content (chrome + text + scrollbar)
+            s->DrawContent(rt, dwrite, fontFamily_, fontSize_, fontCollection_, (resizeHover_ || resizing_), focused_);
+        }
     }
 
     bg->Release();
     fg->Release();
     border->Release();
+}
+
+void TerminalPanel::SetProblems(const std::wstring& filePath, const std::vector<ProblemItem>& problems)
+{
+    problemsFilePath_ = filePath;
+    problems_ = problems;
 }

@@ -117,7 +117,14 @@ def main():
     # Configure
     log(f"{C.D}→ configuring{C.R}")
     r = subprocess.run(
-        ["cmake", str(ROOT), "-G", "Visual Studio 17 2022", "-A", "x64"],
+        [
+            "cmake",
+            str(ROOT),
+            "-G",
+            "Visual Studio 17 2022",
+            "-A",
+            "x64",
+        ],
         cwd=BUILD,
         capture_output=True,
         text=True
@@ -132,7 +139,7 @@ def main():
     for line in r.stdout.split('\n'):
         if 'Windows SDK' in line or 'Using' in line:
             log(f"{C.D}  {line.strip()}{C.R}")
-    
+
     # Build
     log(f"\n{C.D}→ building (release){C.R}")
     

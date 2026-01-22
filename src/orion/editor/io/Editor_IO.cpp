@@ -228,6 +228,7 @@ namespace Orion
         state_.filePath = filePath;
         // Clear dirty flag after successful save
         ClearDirty();
+        RunClangdDiagnosticsAsync();
         return true;
     }
 
