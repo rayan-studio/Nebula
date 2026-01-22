@@ -48,6 +48,10 @@ public:
         std::wstring filePath;
         std::wstring encoding;
         std::vector<std::wstring> lines;
+        bool isPreview = false;
+        HBITMAP previewBitmap = nullptr;
+        SIZE previewSize = {0, 0};
+        std::wstring previewMessage;
     };
 
     bool Create(int nCmdShow);

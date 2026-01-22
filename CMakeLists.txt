@@ -101,8 +101,10 @@ target_link_libraries(Nebula PRIVATE
   d2d1 
   dwrite 
   dwmapi 
+  shell32
   uxtheme 
   ole32
+  windowscodecs
   winmm  # Pour waveOut
   dbghelp
 )

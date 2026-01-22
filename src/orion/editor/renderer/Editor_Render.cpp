@@ -128,6 +128,15 @@ namespace Orion
             }
         }
 
+        if (isPreview_)
+        {
+            DrawPreview(ctx, dwrite);
+            ctx->PopAxisAlignedClip();
+            ctx->SetAntialiasMode(oldAA);
+            ctx->SetTextAntialiasMode(oldTextAA);
+            return;
+        }
+
         Orion::Gutter gutter;
         metrics_.gutterWidth = gutter.CalculateGutterWidth(state_, metrics_);
         gutter.DrawGutter(ctx, state_, theme_, metrics_);
