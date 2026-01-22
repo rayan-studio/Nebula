@@ -103,5 +103,17 @@ namespace Orion
                 p.second->Release();
         }
         brushCache_.clear();
+
+        if (previewD2DBitmap_)
+        {
+            previewD2DBitmap_->Release();
+            previewD2DBitmap_ = nullptr;
+        }
+
+        if (previewBitmap_)
+        {
+            DeleteObject(previewBitmap_);
+            previewBitmap_ = nullptr;
+        }
     }
 }

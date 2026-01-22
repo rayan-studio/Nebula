@@ -191,6 +191,7 @@ namespace Orion
                                         std::wstring encoding,
                                         std::vector<std::wstring> lines)
     {
+        ResetPreview();
         state_.filePath = std::move(filePath);
         state_.encoding = std::move(encoding);
 
@@ -205,6 +206,7 @@ namespace Orion
     }
     void Orion::Editor::LoadFileAsync(HWND hwnd, const std::wstring &filePath, int tabIndex)
     {
+        ResetPreview();
         // UI : afficher un "loading" instantané (optionnel)
         state_.filePath = filePath;
         state_.lines.clear();
@@ -222,6 +224,7 @@ namespace Orion
         auto* result = new Window::EditorFileLoadResult();
         result->tabIndex = tabIndex;
         result->filePath = filePathCopy;
+        result->isPreview = false;
 
         // --- Convert path to UTF-8 (safe, with null terminator) ---
         int size_needed = WideCharToMultiByte(CP_UTF8, 0, filePathCopy.c_str(), -1, nullptr, 0, nullptr, nullptr);

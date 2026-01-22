@@ -11,6 +11,8 @@ namespace Orion
     // --- OnChar (complete) ---
     void Editor::OnChar(wchar_t ch)
     {
+        if (isPreview_)
+            return;
         bool contentChanged = false;
 
         if (searchBox_.IsVisible() && searchBox_.IsInputFocused())
@@ -686,6 +688,8 @@ namespace Orion
     // --- OnKeyDown (complete) ---
     void Editor::OnKeyDown(WPARAM key)
     {
+        if (isPreview_)
+            return;
         // Save initial caret to detect whether a key actually moved it.
         CaretPosition prevCaret = state_.caret;
 

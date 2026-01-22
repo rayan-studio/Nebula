@@ -187,6 +187,7 @@ namespace Orion
 
     void Editor::CreateEmpty()
     {
+        ResetPreview();
         state_.lines.clear();
         state_.lines.push_back(L"");
         state_.caret = {0, 0};

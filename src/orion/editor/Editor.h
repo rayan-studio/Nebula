@@ -282,11 +282,16 @@ namespace Orion
         friend void Caret::SetCaret(Editor &editor, int line, int column);
 
         void LoadFileAsync(HWND hwnd, const std::wstring &filePath, int tabIndex);
+        void LoadPreviewAsync(HWND hwnd, const std::wstring &filePath, int tabIndex);
 
         // appelé UNIQUEMENT sur le thread UI
         void ApplyLoadedFile(std::wstring filePath,
                              std::wstring encoding,
                              std::vector<std::wstring> lines);
+        void ApplyLoadedPreview(std::wstring filePath,
+                                HBITMAP previewBitmap,
+                                SIZE previewSize,
+                                std::wstring previewMessage);
 
     private:
         struct DiagnosticsState
@@ -304,7 +309,9 @@ namespace Orion
         void DrawActiveLine(ID2D1RenderTarget *ctx);
         void DrawSelection(ID2D1RenderTarget *ctx);
         void DrawTextContent(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
+        void DrawPreview(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
         void DrawCaret(ID2D1RenderTarget *ctx);
+        void ResetPreview();
 
         D2D1_POINT_2F TextToScreenPosition(CaretPosition pos);
         CaretPosition ScreenToTextPosition(POINT screenPoint);
@@ -364,6 +371,12 @@ namespace Orion
         DWORD lastClickTime_ = 0;
         POINT lastClickPos_ = {0, 0};
         int clickCount_ = 0;
+
+        bool isPreview_ = false;
+        std::wstring previewMessage_;
+        HBITMAP previewBitmap_ = nullptr;
+        SIZE previewBitmapSize_ = {0, 0};
+        ID2D1Bitmap *previewD2DBitmap_ = nullptr;
     };
 
     class CustomTextRenderer : public IDWriteTextRenderer
