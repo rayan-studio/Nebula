@@ -15,20 +15,24 @@ namespace Orion
 
         if (searchBox_.IsVisible() && searchBox_.IsInputFocused())
         {
+            SearchBox::InputField activeField = searchBox_.GetActiveField();
             searchBox_.OnChar(ch);
-            // Re-effectuer la recherche après chaque caractère
-            searchBox_.PerformSearch(state_.lines);
-
-            // Scroller vers le match courant si disponible
-            if (!searchBox_.GetMatches().empty())
+            if (activeField == SearchBox::InputField::Search)
             {
-                int idx = searchBox_.GetCurrentMatchIndex();
-                if (idx >= 0 && idx < (int)searchBox_.GetMatches().size())
+                // Re-effectuer la recherche après chaque caractère
+                searchBox_.PerformSearch(state_.lines);
+
+                // Scroller vers le match courant si disponible
+                if (!searchBox_.GetMatches().empty())
                 {
-                    const auto &match = searchBox_.GetMatches()[idx];
-                    state_.caret.line = match.line;
-                    state_.caret.column = match.startColumn;
-                    Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
+                    int idx = searchBox_.GetCurrentMatchIndex();
+                    if (idx >= 0 && idx < (int)searchBox_.GetMatches().size())
+                    {
+                        const auto &match = searchBox_.GetMatches()[idx];
+                        state_.caret.line = match.line;
+                        state_.caret.column = match.startColumn;
+                        Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
+                    }
                 }
             }
             return;
@@ -891,9 +895,17 @@ namespace Orion
 
         if (searchBox_.IsVisible() && searchBox_.IsInputFocused())
         {
+            SearchBox::InputField activeField = searchBox_.GetActiveField();
             searchBox_.OnKeyDown(key);
 
-            if (key == VK_BACK || key == VK_DELETE || key == VK_RETURN)
+            if (searchBox_.ConsumeReplaceRequest())
+            {
+                ReplaceCurrentMatch();
+                return;
+            }
+
+            if (activeField == SearchBox::InputField::Search &&
+                (key == VK_BACK || key == VK_DELETE || key == VK_RETURN))
             {
                 searchBox_.PerformSearch(state_.lines);
 

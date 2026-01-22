@@ -355,44 +355,63 @@ namespace Orion
 
                 if (format)
                 {
-                    if (match.startColumn > 0)
+                    IDWriteTextLayout *layout = nullptr;
+                    if (SUCCEEDED(pDWriteFactory_->CreateTextLayout(
+                            line.c_str(),
+                            (UINT32)line.size(),
+                            format,
+                            10000.0f,
+                            metrics_.lineHeight,
+                            &layout)) &&
+                        layout)
                     {
-                        std::wstring textBefore = line.substr(0, match.startColumn);
-                        IDWriteTextLayout *layout1 = nullptr;
-                        if (SUCCEEDED(pDWriteFactory_->CreateTextLayout(
-                                textBefore.c_str(),
-                                (UINT32)textBefore.size(),
-                                format,
-                                10000.0f,
-                                metrics_.lineHeight,
-                                &layout1)) &&
-                            layout1)
-                        {
-                            DWRITE_TEXT_METRICS tm1 = {};
-                            layout1->GetMetrics(&tm1);
-                            startX = contentLeft + tm1.width - state_.scrollOffsetX;
-                            layout1->Release();
-                        }
-                    }
+                        layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
 
-                    if (match.endColumn > 0 && match.endColumn <= (int)line.size())
-                    {
-                        std::wstring textBeforeEnd = line.substr(0, match.endColumn);
-                        IDWriteTextLayout *layout2 = nullptr;
-                        if (SUCCEEDED(pDWriteFactory_->CreateTextLayout(
-                                textBeforeEnd.c_str(),
-                                (UINT32)textBeforeEnd.size(),
-                                format,
-                                10000.0f,
-                                metrics_.lineHeight,
-                                &layout2)) &&
-                            layout2)
+                        IDWriteTypography *typography = nullptr;
+                        if (SUCCEEDED(pDWriteFactory_->CreateTypography(&typography)) && typography)
                         {
-                            DWRITE_TEXT_METRICS tm2 = {};
-                            layout2->GetMetrics(&tm2);
-                            endX = contentLeft + tm2.width - state_.scrollOffsetX;
-                            layout2->Release();
+                            DWRITE_FONT_FEATURE features[] = {
+                                {DWRITE_MAKE_FONT_FEATURE_TAG('l', 'i', 'g', 'a'), 1},
+                                {DWRITE_MAKE_FONT_FEATURE_TAG('c', 'a', 'l', 't'), 1},
+                                {DWRITE_MAKE_FONT_FEATURE_TAG('d', 'l', 'i', 'g'), 1},
+                            };
+
+                            for (auto &f : features)
+                                typography->AddFontFeature(f);
+
+                            DWRITE_TEXT_RANGE fullRange = {0, (UINT32)line.size()};
+                            layout->SetTypography(typography, fullRange);
+                            typography->Release();
                         }
+
+                        float hitStartX = 0.0f;
+                        float hitStartY = 0.0f;
+                        float hitEndX = 0.0f;
+                        float hitEndY = 0.0f;
+                        DWRITE_HIT_TEST_METRICS metricsStart{};
+                        DWRITE_HIT_TEST_METRICS metricsEnd{};
+
+                        if (SUCCEEDED(layout->HitTestTextPosition(
+                                (UINT32)match.startColumn,
+                                FALSE,
+                                &hitStartX,
+                                &hitStartY,
+                                &metricsStart)) &&
+                            SUCCEEDED(layout->HitTestTextPosition(
+                                (UINT32)match.endColumn,
+                                TRUE,
+                                &hitEndX,
+                                &hitEndY,
+                                &metricsEnd)))
+                        {
+                            float drawX = contentLeft - state_.scrollOffsetX;
+                            startX = drawX + hitStartX;
+                            endX = drawX + hitEndX;
+                            if (endX <= startX)
+                                endX = startX + metrics_.characterWidth;
+                        }
+
+                        layout->Release();
                     }
 
                     if (tmpFmt)

@@ -74,6 +74,11 @@ namespace Orion
             if (inside)
             {
                 searchBox_.OnLeftButtonDown(pt);
+                if (searchBox_.ConsumeReplaceRequest())
+                {
+                    ReplaceCurrentMatch();
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
                 return;
             }
         }
