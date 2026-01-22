@@ -331,6 +331,7 @@ void TerminalSession::InitVTerm()
     vterm_set_utf8(vt_, 1);
 
     screen_ = vterm_obtain_screen(vt_);
+    state_ = vterm_obtain_state(vt_);
     vterm_screen_reset(screen_, 1);
     vterm_screen_enable_altscreen(screen_, 1);
 
@@ -402,6 +403,7 @@ void TerminalSession::InitVTerm()
 void TerminalSession::DestroyVTerm()
 {
     screen_ = nullptr;
+    state_ = nullptr;
     if (vt_)
     {
         vterm_free(vt_);
@@ -743,8 +745,9 @@ void TerminalSession::DrawContent(ID2D1RenderTarget* rt, IDWriteFactory* dwrite,
     if (isFocused)
     {
         VTermPos cursor{};
-        if (vterm_screen_get_cursorpos(screen_, &cursor))
+        if (state_)
         {
+            vterm_state_get_cursorpos(state_, &cursor);
             int cursorRow = (int)scrollback_.size() + cursor.row;
             if (cursorRow >= firstRow && cursorRow < endRow)
             {
