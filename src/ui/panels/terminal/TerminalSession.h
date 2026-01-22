@@ -57,6 +57,10 @@ public:
                                           const std::wstring& fontFamily, float fontSizePx, IDWriteFontCollection* fontCollection);
 
 private:
+    bool CopySelectionToClipboard();
+    std::wstring BuildSelectionText() const;
+    std::wstring BuildRowText(int row) const;
+
     void StartReadThread();
     void StopReadThread();
     void ReadLoop();
@@ -121,6 +125,7 @@ private:
     int selectionStartCol_ = 0;
     int selectionEndRow_ = 0;
     int selectionEndCol_ = 0;
+    bool suppressNextChar_ = false;
 
     std::atomic<bool> hasDamage_{ false };
     std::atomic<bool> stopReader_{ false };
