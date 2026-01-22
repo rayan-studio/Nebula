@@ -11,12 +11,15 @@ TabBar::~TabBar() {}
 int TabBar::AddTab(const std::wstring &filePath, const std::wstring &displayName)
 {
     // If a tab with the same file path already exists, activate it and return its index
-    for (int i = 0; i < (int)tabs_.size(); ++i)
+    if (!filePath.empty())
     {
-        if (tabs_[i].filePath == filePath)
+        for (int i = 0; i < (int)tabs_.size(); ++i)
         {
-            SetActiveTab(i);
-            return i;
+            if (tabs_[i].filePath == filePath)
+            {
+                SetActiveTab(i);
+                return i;
+            }
         }
     }
 
