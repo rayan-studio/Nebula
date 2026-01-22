@@ -3,6 +3,7 @@ project(Nebula LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ========================================
 # Configuration libvterm (neovim version)
@@ -100,8 +101,10 @@ target_link_libraries(Nebula PRIVATE
   d2d1 
   dwrite 
   dwmapi 
+  shell32
   uxtheme 
   ole32
+  windowscodecs
   winmm  # Pour waveOut
   dbghelp
 )

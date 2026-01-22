@@ -314,6 +314,12 @@ namespace Orion
             }
         }
 
+        std::vector<Editor::Diagnostic> diagnostics = GetDiagnostics();
+        ID2D1SolidColorBrush *errorBrush = nullptr;
+        ID2D1SolidColorBrush *warningBrush = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.25f, 0.25f, 1.0f), &errorBrush);
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.65f, 0.25f, 1.0f), &warningBrush);
+
         for (int i = firstVisibleLine; i < lastVisibleLine; ++i)
         {
             float lineY = state_.topEdge + (i * metrics_.lineHeight) - state_.scrollOffsetY;
@@ -428,6 +434,46 @@ namespace Orion
 
                     layout->Draw(nullptr, &renderer, drawX, drawY);
                     drawBrush->Release();
+
+                    if (!diagnostics.empty())
+                    {
+                        for (const auto &diag : diagnostics)
+                        {
+                            if (diag.line != i)
+                                continue;
+
+                            int lineLength = (int)line.size();
+                            int startCol = std::max(0, std::min(diag.startCol, lineLength));
+                            int endCol = std::max(startCol, std::min(diag.endCol, lineLength));
+                            if (endCol <= startCol)
+                                endCol = std::min(lineLength, startCol + 1);
+
+                            float startX = 0.0f;
+                            float startY = 0.0f;
+                            float endX = 0.0f;
+                            float endY = 0.0f;
+                            DWRITE_HIT_TEST_METRICS metricsStart{};
+                            DWRITE_HIT_TEST_METRICS metricsEnd{};
+
+                            if (SUCCEEDED(layout->HitTestTextPosition((UINT32)startCol, FALSE, &startX, &startY, &metricsStart)) &&
+                                SUCCEEDED(layout->HitTestTextPosition((UINT32)endCol, TRUE, &endX, &endY, &metricsEnd)))
+                            {
+                                if (endX <= startX)
+                                    endX = startX + metrics_.characterWidth;
+
+                                float underlineY = drawY + metrics_.lineHeight - 2.0f;
+                                ID2D1SolidColorBrush *lineBrush = diag.isError ? errorBrush : warningBrush;
+                                if (lineBrush)
+                                {
+                                    ctx->DrawLine(
+                                        D2D1::Point2F(drawX + startX, underlineY),
+                                        D2D1::Point2F(drawX + endX, underlineY),
+                                        lineBrush,
+                                        1.5f);
+                                }
+                            }
+                        }
+                    }
                 }
 
                 layout->Release();
@@ -439,6 +485,10 @@ namespace Orion
             defaultBrush->Release();
         if (tmpFmt)
             tmpFmt->Release();
+        if (errorBrush)
+            errorBrush->Release();
+        if (warningBrush)
+            warningBrush->Release();
     }
 
     D2D1_COLOR_F Editor::GetTokenColor(::Orion::Syntax::TokenType type, const std::wstring &ext) const

@@ -19,6 +19,8 @@ namespace Orion
     void Editor::OnLeftButtonDown(HWND hwnd, POINT pt)
     {
         (void)hwnd;
+        if (isPreview_)
+            return;
 
         // Check scrollbar interaction first
         if (scrollbar_.OnLeftButtonDown(pt))
@@ -74,6 +76,11 @@ namespace Orion
             if (inside)
             {
                 searchBox_.OnLeftButtonDown(pt);
+                if (searchBox_.ConsumeReplaceRequest())
+                {
+                    ReplaceCurrentMatch();
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
                 return;
             }
         }
@@ -277,6 +284,8 @@ namespace Orion
 
     void Editor::OnMouseMove(HWND hwnd, POINT pt)
     {
+        if (isPreview_)
+            return;
         (void)hwnd;
 
         // vertical scrollbar
@@ -380,6 +389,8 @@ namespace Orion
 
     void Editor::OnLeftButtonUp(HWND hwnd, POINT pt)
     {
+        if (isPreview_)
+            return;
         (void)hwnd;
         (void)pt;
 
@@ -404,6 +415,8 @@ namespace Orion
 
     void Editor::OnMouseWheel(HWND hwnd, int delta, bool ctrlPressed)
     {
+        if (isPreview_)
+            return;
         (void)hwnd;
 
         bool shiftPressed = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
@@ -453,6 +466,8 @@ namespace Orion
 
     void Editor::OnHorizontalWheel(HWND hwnd, int delta)
     {
+        if (isPreview_)
+            return;
         if (!hScrollbarVisible_)
             return;
 
