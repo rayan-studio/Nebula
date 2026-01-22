@@ -37,6 +37,11 @@ int TerminalPanel::GetTerminalCount() const
     return (int)sessions_.size();
 }
 
+int TerminalPanel::AllocateSessionId()
+{
+    return nextSessionId_++;
+}
+
 void TerminalPanel::SetActiveIndex(int idx)
 {
     if (idx < 0 || idx >= (int)sessions_.size())
@@ -62,6 +67,7 @@ void TerminalPanel::EnsureAtLeastOneSession(HWND hwnd)
 
     // Crée une session par défaut (non initialisée tant que pas visible/focus si tu veux)
     sessions_.push_back(std::make_unique<TerminalSession>());
+    sessionIds_.push_back(AllocateSessionId());
     activeIndex_ = 0;
     SyncTabBar();
 
@@ -89,6 +95,7 @@ void TerminalPanel::NewTerminal(HWND hwnd, const std::wstring& startDir)
 
     // crée
     sessions_.push_back(std::make_unique<TerminalSession>());
+    sessionIds_.push_back(AllocateSessionId());
     activeIndex_ = (int)sessions_.size() - 1;
     SyncTabBar();
 
@@ -120,6 +127,8 @@ void TerminalPanel::CloseTerminal(int idx)
 
     sessions_[idx]->Shutdown();
     sessions_.erase(sessions_.begin() + idx);
+    if (idx < (int)sessionIds_.size())
+        sessionIds_.erase(sessionIds_.begin() + idx);
     SyncTabBar();
 
     if (sessions_.empty())
@@ -141,6 +150,7 @@ void TerminalPanel::CloseAll()
     for (auto& s : sessions_)
         if (s) s->Shutdown();
     sessions_.clear();
+    sessionIds_.clear();
     activeIndex_ = -1;
     visible_ = false;
     focused_ = false;
@@ -293,7 +303,8 @@ void TerminalPanel::SyncTabBar()
 
     for (int i = 0; i < desired; ++i)
     {
-        std::wstring title = L"Terminal " + std::to_wstring(i + 1);
+        int id = (i < (int)sessionIds_.size()) ? sessionIds_[i] : (i + 1);
+        std::wstring title = L"Terminal " + std::to_wstring(id);
         tabBar_.UpdateTabPath(i, L"", title);
     }
 

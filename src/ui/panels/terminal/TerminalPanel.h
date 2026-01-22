@@ -104,6 +104,8 @@ private:
     void UpdatePseudoConsoleSizeFromPixelsForActive();
 
 private:
+    int AllocateSessionId();
+
     // Panel state
     bool visible_ = false;
     bool focused_ = false;
@@ -128,6 +130,8 @@ private:
     // Multi sessions
     std::vector<std::unique_ptr<TerminalSession>> sessions_;
     int activeIndex_ = -1;
+    int nextSessionId_ = 1;
+    std::vector<int> sessionIds_;
 
     // Tabs hover
     bool hoveredPlus_ = false;
