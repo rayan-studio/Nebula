@@ -621,6 +621,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                     }
                 }
             }
+        }
         // If we found a custom font path, try to create a custom font collection
         if (!customFontPath_.empty() && skia_)
         {
