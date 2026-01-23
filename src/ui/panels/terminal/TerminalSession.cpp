@@ -291,6 +291,13 @@ void TerminalSession::OnChar(wchar_t ch)
 {
     if (!initialized_) return;
 
+    if (suppressNextChar_)
+    {
+        suppressNextChar_ = false;
+        if (ch == 0x03)
+            return;
+    }
+
     if (ch == L'\r' || ch == L'\n' || ch == L'\b' || ch == 0x1B || ch == L'\t')
         return;
 
@@ -302,6 +309,16 @@ void TerminalSession::OnChar(wchar_t ch)
 void TerminalSession::OnKeyDown(WPARAM vk)
 {
     if (!initialized_) return;
+
+    bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    if (ctrl && (vk == 'C' || vk == 'c'))
+    {
+        if (CopySelectionToClipboard())
+        {
+            suppressNextChar_ = true;
+            return;
+        }
+    }
 
     switch (vk)
     {
@@ -320,6 +337,127 @@ void TerminalSession::OnKeyDown(WPARAM vk)
     default:
         break;
     }
+}
+
+std::wstring TerminalSession::BuildRowText(int row) const
+{
+    std::wstring line;
+    if (row < 0 || cols_ <= 0)
+        return line;
+
+    int scrollbackRows = (int)scrollback_.size();
+    if (row < scrollbackRows)
+    {
+        line = scrollback_[(size_t)row];
+        if ((int)line.size() < cols_)
+            line.append((size_t)(cols_ - line.size()), L' ');
+        else if ((int)line.size() > cols_)
+            line.resize((size_t)cols_);
+        return line;
+    }
+
+    if (!screen_)
+        return line;
+
+    int screenRow = row - scrollbackRows;
+    if (screenRow < 0 || screenRow >= rows_)
+        return line;
+
+    line.assign((size_t)cols_, L' ');
+    for (int c = 0; c < cols_; ++c)
+    {
+        VTermPos pos{ screenRow, c };
+        VTermScreenCell cell{};
+        if (vterm_screen_get_cell(screen_, pos, &cell))
+        {
+            uint32_t cp = cell.chars[0];
+            if (cp == 0) cp = L' ';
+            line[(size_t)c] = (wchar_t)cp;
+        }
+    }
+    return line;
+}
+
+std::wstring TerminalSession::BuildSelectionText() const
+{
+    if (!hasSelection_)
+        return {};
+
+    int startRow = selectionStartRow_;
+    int endRow = selectionEndRow_;
+    int startCol = selectionStartCol_;
+    int endCol = selectionEndCol_;
+    if (startRow > endRow || (startRow == endRow && startCol > endCol))
+    {
+        std::swap(startRow, endRow);
+        std::swap(startCol, endCol);
+    }
+
+    startRow = std::max(0, startRow);
+    endRow = std::max(0, endRow);
+
+    std::wstring output;
+    for (int row = startRow; row <= endRow; ++row)
+    {
+        std::wstring line = BuildRowText(row);
+        int leftCol = 0;
+        int rightCol = cols_;
+        if (row == startRow)
+            leftCol = startCol;
+        if (row == endRow)
+            rightCol = endCol + 1;
+
+        leftCol = std::max(0, std::min(leftCol, cols_));
+        rightCol = std::max(leftCol, std::min(rightCol, cols_));
+
+        std::wstring slice = line.substr((size_t)leftCol, (size_t)(rightCol - leftCol));
+        while (!slice.empty() && slice.back() == L' ')
+            slice.pop_back();
+
+        if (!output.empty())
+            output.append(L"\r\n");
+        output.append(slice);
+    }
+
+    return output;
+}
+
+bool TerminalSession::CopySelectionToClipboard()
+{
+    if (!hasSelection_ || !hwndOwner_)
+        return false;
+
+    std::wstring text = BuildSelectionText();
+    if (text.empty())
+        return false;
+
+    if (!OpenClipboard(hwndOwner_))
+        return false;
+
+    EmptyClipboard();
+
+    size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (!hMem)
+    {
+        CloseClipboard();
+        return false;
+    }
+
+    void* ptr = GlobalLock(hMem);
+    if (!ptr)
+    {
+        GlobalFree(hMem);
+        CloseClipboard();
+        return false;
+    }
+
+    memcpy(ptr, text.c_str(), bytes);
+    GlobalUnlock(hMem);
+
+    SetClipboardData(CF_UNICODETEXT, hMem);
+    CloseClipboard();
+    return true;
 }
 
 // ---------------- VTerm ----------------

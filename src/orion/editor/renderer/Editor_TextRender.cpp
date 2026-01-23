@@ -314,6 +314,12 @@ namespace Orion
             }
         }
 
+        std::vector<Editor::Diagnostic> diagnostics = GetDiagnostics();
+        ID2D1SolidColorBrush *errorBrush = nullptr;
+        ID2D1SolidColorBrush *warningBrush = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.25f, 0.25f, 1.0f), &errorBrush);
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.65f, 0.25f, 1.0f), &warningBrush);
+
         for (int i = firstVisibleLine; i < lastVisibleLine; ++i)
         {
             float lineY = state_.topEdge + (i * metrics_.lineHeight) - state_.scrollOffsetY;
@@ -429,52 +435,50 @@ namespace Orion
                     layout->Draw(nullptr, &renderer, drawX, drawY);
                     drawBrush->Release();
 
-                    // Diagnostics: underline ranges in red (simple wavy line)
-                    if (!diagnostics_.empty())
+                    // Diagnostics: underline ranges with a subtle wavy line
+                    if (!diagnostics.empty())
                     {
-                        ID2D1SolidColorBrush *diagBrush = nullptr;
-                        ctx->CreateSolidColorBrush(D2D1::ColorF(0.85f, 0.35f, 0.35f, 0.95f), &diagBrush);
-                        if (diagBrush)
+                        for (const auto &diag : diagnostics)
                         {
-                            for (const auto &d : diagnostics_)
+                            if (diag.line != i)
+                                continue;
+
+                            int start = diag.startCol;
+                            int length = diag.endCol - diag.startCol;
+                            if (length <= 0)
+                                length = 1;
+
+                            UINT32 count = 0;
+                            layout->HitTestTextRange((UINT32)start, (UINT32)length, drawX, drawY, nullptr, 0, &count);
+                            if (count == 0)
+                                continue;
+
+                            std::vector<DWRITE_HIT_TEST_METRICS> metrics(count);
+                            layout->HitTestTextRange((UINT32)start, (UINT32)length, drawX, drawY, metrics.data(), count, &count);
+
+                            ID2D1SolidColorBrush *lineBrush = diag.isError ? errorBrush : warningBrush;
+                            if (!lineBrush)
+                                continue;
+
+                            for (UINT32 mi = 0; mi < count; ++mi)
                             {
-                                if (d.line != i)
-                                    continue;
+                                const auto &m = metrics[mi];
+                                float x1 = m.left;
+                                float x2 = m.left + m.width;
+                                float y = m.top + m.height - 1.0f;
+                                float amp = 1.2f;
+                                float step = 4.0f;
+                                bool up = true;
 
-                                int start = d.startCol;
-                                int length = d.endCol - d.startCol;
-                                if (length <= 0)
-                                    length = 1;
-
-                                UINT32 count = 0;
-                                layout->HitTestTextRange((UINT32)start, (UINT32)length, drawX, drawY, nullptr, 0, &count);
-                                if (count == 0)
-                                    continue;
-
-                                std::vector<DWRITE_HIT_TEST_METRICS> metrics(count);
-                                layout->HitTestTextRange((UINT32)start, (UINT32)length, drawX, drawY, metrics.data(), count, &count);
-
-                                for (UINT32 mi = 0; mi < count; ++mi)
+                                for (float x = x1; x < x2; x += step)
                                 {
-                                    const auto &m = metrics[mi];
-                                    float x1 = m.left;
-                                    float x2 = m.left + m.width;
-                                    float y = m.top + m.height - 1.0f;
-                                    float amp = 1.2f;
-                                    float step = 4.0f;
-                                    bool up = true;
-
-                                    for (float x = x1; x < x2; x += step)
-                                    {
-                                        float nx = (x + step > x2) ? x2 : x + step;
-                                        float y1 = y + (up ? -amp : amp);
-                                        float y2 = y + (up ? amp : -amp);
-                                        ctx->DrawLine(D2D1::Point2F(x, y1), D2D1::Point2F(nx, y2), diagBrush, 1.2f);
-                                        up = !up;
-                                    }
+                                    float nx = (x + step > x2) ? x2 : x + step;
+                                    float y1 = y + (up ? -amp : amp);
+                                    float y2 = y + (up ? amp : -amp);
+                                    ctx->DrawLine(D2D1::Point2F(x, y1), D2D1::Point2F(nx, y2), lineBrush, 1.2f);
+                                    up = !up;
                                 }
                             }
-                            diagBrush->Release();
                         }
                     }
                 }
@@ -488,6 +492,10 @@ namespace Orion
             defaultBrush->Release();
         if (tmpFmt)
             tmpFmt->Release();
+        if (errorBrush)
+            errorBrush->Release();
+        if (warningBrush)
+            warningBrush->Release();
     }
 
     D2D1_COLOR_F Editor::GetTokenColor(::Orion::Syntax::TokenType type, const std::wstring &ext) const

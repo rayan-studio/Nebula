@@ -2,6 +2,7 @@
 #include "ui/graphics/Skia.h"
 #include "utils/logger/Logger.h"
 #include <sstream>
+#include <algorithm>
 #include <stdexcept>
 #include <windows.h>
 #include <windowsx.h>
@@ -10,6 +11,7 @@
 #include <shobjidl.h>
 #include <shellapi.h>
 #include <vector>
+#include <cwctype>
 #include <filesystem>
 #include <thread>
 #include <uxtheme.h>
@@ -107,6 +109,22 @@ static bool KeyIsChar(WPARAM wParam, wchar_t cUpper)
 static std::wstring QuotePath(const std::filesystem::path &path)
 {
     return L"\"" + path.wstring() + L"\"";
+}
+
+static std::wstring ToLower(std::wstring value)
+{
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](wchar_t c)
+                   { return (wchar_t)std::towlower(c); });
+    return value;
+}
+
+static bool ShouldOpenAsPreview(const std::wstring &filePath)
+{
+    std::wstring ext = ToLower(std::filesystem::path(filePath).extension().wstring());
+    return ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".gif" ||
+           ext == L".bmp" || ext == L".tiff" || ext == L".tif" || ext == L".webp" ||
+           ext == L".ico" || ext == L".pdf";
 }
 
 static bool RunCommandAndWait(const std::wstring &command, const std::filesystem::path &workingDir, DWORD &exitCode)
@@ -952,29 +970,46 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         if (!res)
             return 0;
 
+
         Orion::Editor *ed = GetEditorForTab(res->tabIndex);
+        bool applied = false;
         if (ed)
         {
-            // IMPORTANT: vérifier que l’éditeur correspond toujours au même fichier (tab peut avoir changé)
+            // IMPORTANT: v??rifier que l?????diteur correspond toujours au m??me fichier (tab peut avoir chang??)
             if (ed->GetFilePath() == res->filePath)
             {
-                ed->ApplyLoadedFile(std::move(res->filePath), std::move(res->encoding), std::move(res->lines));
-                InvalidateRect(hwnd_, nullptr, FALSE);
-
-                auto it = pendingGoToLine_.find(res->tabIndex);
-                if (it != pendingGoToLine_.end())
+                if (res->isPreview)
                 {
-                    int targetLine = it->second;
-                    pendingGoToLine_.erase(it);
-                    if (targetLine < 0)
-                        targetLine = 0;
-                    Orion::Caret::SetCaret(*ed, targetLine, 0);
+                    ed->ApplyLoadedPreview(
+                        std::move(res->filePath),
+                        res->previewBitmap,
+                        res->previewSize,
+                        std::move(res->previewMessage));
                 }
+                else
+                {
+                    ed->ApplyLoadedFile(std::move(res->filePath), std::move(res->encoding), std::move(res->lines));
 
-                Lsp::LspManager::Instance().UpdateFile(ed->GetFilePath(), ed->GetLinesSnapshot());
-                Lsp::LspManager::Instance().RequestDiagnosticsAsync(ed->GetFilePath(), ed->GetLinesSnapshot(), hwnd_, res->tabIndex);
+                    auto it = pendingGoToLine_.find(res->tabIndex);
+                    if (it != pendingGoToLine_.end())
+                    {
+                        int targetLine = it->second;
+                        pendingGoToLine_.erase(it);
+                        if (targetLine < 0)
+                            targetLine = 0;
+                        Orion::Caret::SetCaret(*ed, targetLine, 0);
+                    }
+
+                    Lsp::LspManager::Instance().UpdateFile(ed->GetFilePath(), ed->GetLinesSnapshot());
+                    Lsp::LspManager::Instance().RequestDiagnosticsAsync(ed->GetFilePath(), ed->GetLinesSnapshot(), hwnd_, res->tabIndex);
+                }
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                applied = true;
             }
         }
+
+        if (!applied && res->isPreview && res->previewBitmap)
+            DeleteObject(res->previewBitmap);
 
         delete res;
         return 0;
@@ -1001,7 +1036,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             Orion::Editor *ed = GetEditorForTab(payload->tabIndex);
             if (ed && ed->GetFilePath() == payload->filePath)
             {
-                ed->SetDiagnostics(std::move(payload->diagnostics));
+                ed->SetDiagnostics(payload->diagnostics);
                 InvalidateRect(hwnd_, nullptr, FALSE);
             }
             delete payload;
@@ -2345,9 +2380,16 @@ void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber)
 
         if (!filePath.empty())
         {
-            editor->LoadFileAsync(hwnd_, filePath, tabIndex);
-            if (lineNumber >= 0)
-                pendingGoToLine_[tabIndex] = lineNumber;
+            if (ShouldOpenAsPreview(filePath))
+            {
+                editor->LoadPreviewAsync(hwnd_, filePath, tabIndex);
+            }
+            else
+            {
+                editor->LoadFileAsync(hwnd_, filePath, tabIndex);
+                if (lineNumber >= 0)
+                    pendingGoToLine_[tabIndex] = lineNumber;
+            }
         }
         else
             editor->CreateEmpty();

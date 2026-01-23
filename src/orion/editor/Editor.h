@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <mutex>
+#include <atomic>
 #include <windows.h>
 #include "ui/components/scrollbar/Scrollbar.h"
 #include <functional>
@@ -203,6 +205,16 @@ namespace Orion
     class Editor
     {
     public:
+        struct Diagnostic
+        {
+            int line = 0;
+            int startCol = 0;
+            int endCol = 0;
+            bool isError = false;
+            std::wstring message;
+            std::wstring suggestion;
+        };
+
         Editor();
         ~Editor();
 
@@ -232,6 +244,9 @@ namespace Orion
         void CreateEmpty();
         // Save buffer to file (UTF-8). Returns true on success.
         bool SaveToFile(const std::wstring &filePath);
+        void RunClangdDiagnosticsAsync();
+        std::vector<Diagnostic> GetDiagnostics() const;
+        void ClearDiagnostics();
         // Dirty state API
         bool IsDirty() const { return isDirty_; }
         void MarkDirty()
@@ -270,20 +285,31 @@ namespace Orion
         bool Undo();
 
         // Diagnostics (LSP)
-        void SetDiagnostics(std::vector<Lsp::Diagnostic> diags) { diagnostics_ = std::move(diags); }
-        const std::vector<Lsp::Diagnostic> &GetDiagnostics() const { return diagnostics_; }
+        void SetDiagnostics(const std::vector<Lsp::Diagnostic> &diags);
 
         friend void Caret::SetCaret(Editor &editor, int line, int column);
 
-        void LoadFileAsync(HWND hwnd, const std::wstring &filePath, int tabIndex);
 
-        // appelé UNIQUEMENT sur le thread UI
+        void LoadFileAsync(HWND hwnd, const std::wstring &filePath, int tabIndex);
+        void LoadPreviewAsync(HWND hwnd, const std::wstring &filePath, int tabIndex);
+
+        // appel?? UNIQUEMENT sur le thread UI
         void ApplyLoadedFile(std::wstring filePath,
                              std::wstring encoding,
                              std::vector<std::wstring> lines);
-
+        void ApplyLoadedPreview(std::wstring filePath,
+                                HBITMAP previewBitmap,
+                                SIZE previewSize,
+                                std::wstring previewMessage);
 
     private:
+        struct DiagnosticsState
+        {
+            std::mutex mutex;
+            std::vector<Diagnostic> diagnostics;
+            std::atomic<int> token{0};
+        };
+
         CustomFontCollectionLoader *fontLoader_ = nullptr;
         IDWriteFactory *fontCollectionRegisteredFactory_ = nullptr;
         IDWriteFontCollection *customFontCollection_ = nullptr;
@@ -292,7 +318,9 @@ namespace Orion
         void DrawActiveLine(ID2D1RenderTarget *ctx);
         void DrawSelection(ID2D1RenderTarget *ctx);
         void DrawTextContent(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
+        void DrawPreview(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
         void DrawCaret(ID2D1RenderTarget *ctx);
+        void ResetPreview();
 
         D2D1_POINT_2F TextToScreenPosition(CaretPosition pos);
         CaretPosition ScreenToTextPosition(POINT screenPoint);
@@ -331,6 +359,7 @@ namespace Orion
         bool isDirty_ = false;
         void DrawSearchMatches(ID2D1RenderTarget *ctx);
         void DrawWhitespaceIndicators(ID2D1RenderTarget *ctx);
+        bool ReplaceCurrentMatch();
         std::vector<EditorState> undoStack_;
         size_t maxUndoEntries_ = 200;
         D2D1_COLOR_F GetTokenColor(::Orion::Syntax::TokenType type, const std::wstring &ext) const;
@@ -338,6 +367,7 @@ namespace Orion
         std::unique_ptr<Geometry::IndentationHelper> indentHelper_;
         std::unique_ptr<Rendering::GuideRenderer> guideRenderer_;
         std::unique_ptr<Rendering::Selection> selection_;
+        std::shared_ptr<DiagnosticsState> diagnosticsState_;
 
         Geometry::IndentConfig GetIndentConfig() const;
         // Brush cache for syntax highlighting (color -> brush)
@@ -353,7 +383,13 @@ namespace Orion
         int clickCount_ = 0;
         POINT dragStartPos_ = {0, 0};
         bool dragSelecting_ = false;
-        std::vector<Lsp::Diagnostic> diagnostics_;
+
+        bool isPreview_ = false;
+        std::wstring previewMessage_;
+        HBITMAP previewBitmap_ = nullptr;
+        SIZE previewBitmapSize_ = {0, 0};
+        ID2D1Bitmap *previewD2DBitmap_ = nullptr;
+
         std::wstring diagHoverText_;
         bool diagHoverVisible_ = false;
         POINT diagHoverPos_ = {0, 0};

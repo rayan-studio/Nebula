@@ -41,24 +41,30 @@ namespace Orion
     // --- OnChar (complete) ---
     void Editor::OnChar(wchar_t ch)
     {
+        if (isPreview_)
+            return;
         bool contentChanged = false;
 
         if (searchBox_.IsVisible() && searchBox_.IsInputFocused())
         {
+            SearchBox::InputField activeField = searchBox_.GetActiveField();
             searchBox_.OnChar(ch);
-            // Re-effectuer la recherche après chaque caractère
-            searchBox_.PerformSearch(state_.lines);
-
-            // Scroller vers le match courant si disponible
-            if (!searchBox_.GetMatches().empty())
+            if (activeField == SearchBox::InputField::Search)
             {
-                int idx = searchBox_.GetCurrentMatchIndex();
-                if (idx >= 0 && idx < (int)searchBox_.GetMatches().size())
+                // Re-effectuer la recherche après chaque caractère
+                searchBox_.PerformSearch(state_.lines);
+
+                // Scroller vers le match courant si disponible
+                if (!searchBox_.GetMatches().empty())
                 {
-                    const auto &match = searchBox_.GetMatches()[idx];
-                    state_.caret.line = match.line;
-                    state_.caret.column = match.startColumn;
-                    Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
+                    int idx = searchBox_.GetCurrentMatchIndex();
+                    if (idx >= 0 && idx < (int)searchBox_.GetMatches().size())
+                    {
+                        const auto &match = searchBox_.GetMatches()[idx];
+                        state_.caret.line = match.line;
+                        state_.caret.column = match.startColumn;
+                        Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
+                    }
                 }
             }
             return;
@@ -755,6 +761,8 @@ namespace Orion
     // --- OnKeyDown (complete) ---
     void Editor::OnKeyDown(WPARAM key)
     {
+        if (isPreview_)
+            return;
         // Save initial caret to detect whether a key actually moved it.
         CaretPosition prevCaret = state_.caret;
 
@@ -774,19 +782,19 @@ namespace Orion
         // Ctrl+; -> apply quick fix if available on caret
         if (ctrl && !shift && key == VK_OEM_1)
         {
-            auto findDiagAtCaret = [&]() -> const Lsp::Diagnostic*
+            auto diagnostics = GetDiagnostics();
+            const Diagnostic *diag = nullptr;
+            for (const auto &d : diagnostics)
             {
-                for (const auto &d : diagnostics_)
+                if (d.line != state_.caret.line)
+                    continue;
+                if (state_.caret.column >= d.startCol && state_.caret.column <= d.endCol)
                 {
-                    if (d.line != state_.caret.line)
-                        continue;
-                    if (state_.caret.column >= d.startCol && state_.caret.column <= d.endCol)
-                        return &d;
+                    diag = &d;
+                    break;
                 }
-                return nullptr;
-            };
+            }
 
-            const Lsp::Diagnostic *diag = findDiagAtCaret();
             if (diag && !diag->suggestion.empty())
             {
                 // Only handle simple "add semicolon" suggestion for now
@@ -1017,9 +1025,17 @@ namespace Orion
 
         if (searchBox_.IsVisible() && searchBox_.IsInputFocused())
         {
+            SearchBox::InputField activeField = searchBox_.GetActiveField();
             searchBox_.OnKeyDown(key);
 
-            if (key == VK_BACK || key == VK_DELETE || key == VK_RETURN)
+            if (searchBox_.ConsumeReplaceRequest())
+            {
+                ReplaceCurrentMatch();
+                return;
+            }
+
+            if (activeField == SearchBox::InputField::Search &&
+                (key == VK_BACK || key == VK_DELETE || key == VK_RETURN))
             {
                 searchBox_.PerformSearch(state_.lines);
 

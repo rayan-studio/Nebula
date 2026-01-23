@@ -20,6 +20,8 @@ namespace Orion
     void Editor::OnLeftButtonDown(HWND hwnd, POINT pt)
     {
         (void)hwnd;
+        if (isPreview_)
+            return;
 
         dragStartPos_ = pt;
         dragSelecting_ = false;
@@ -81,7 +83,14 @@ namespace Orion
                 return;
             }
         }
-
+                if (searchBox_.ConsumeReplaceRequest())
+                {
+                    ReplaceCurrentMatch();
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                return;
+            }
+        }
 
         if (searchBox_.IsVisible())
         {
@@ -321,6 +330,9 @@ namespace Orion
 
     void Editor::OnMouseMove(HWND hwnd, POINT pt)
     {
+        if (isPreview_)
+            return;
+        (void)hwnd;
         (void)hwnd;
 
         // vertical scrollbar
@@ -434,7 +446,8 @@ namespace Orion
             CaretPosition hoverPos = ScreenToTextPosition(pt);
             if (hoverPos.line >= 0 && hoverPos.line < (int)state_.lines.size())
             {
-                for (const auto &d : diagnostics_)
+                auto diagnostics = GetDiagnostics();
+                for (const auto &d : diagnostics)
                 {
                     if (d.line != hoverPos.line)
                         continue;
@@ -479,6 +492,8 @@ namespace Orion
 
     void Editor::OnLeftButtonUp(HWND hwnd, POINT pt)
     {
+        if (isPreview_)
+            return;
         (void)hwnd;
         (void)pt;
 
@@ -505,6 +520,8 @@ namespace Orion
 
     void Editor::OnMouseWheel(HWND hwnd, int delta, bool ctrlPressed)
     {
+        if (isPreview_)
+            return;
         (void)hwnd;
 
         bool shiftPressed = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
@@ -554,6 +571,8 @@ namespace Orion
 
     void Editor::OnHorizontalWheel(HWND hwnd, int delta)
     {
+        if (isPreview_)
+            return;
         if (!hScrollbarVisible_)
             return;
 

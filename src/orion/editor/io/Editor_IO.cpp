@@ -188,6 +188,7 @@ namespace Orion
 
     void Editor::CreateEmpty()
     {
+        ResetPreview();
         state_.lines.clear();
         state_.lines.push_back(L"");
         state_.caret = {0, 0};
@@ -229,6 +230,7 @@ namespace Orion
         state_.filePath = filePath;
         // Clear dirty flag after successful save
         ClearDirty();
+        RunClangdDiagnosticsAsync();
         return true;
     }
 

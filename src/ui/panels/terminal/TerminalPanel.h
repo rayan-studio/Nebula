@@ -16,6 +16,15 @@ class TerminalSession;
 class TerminalPanel
 {
 public:
+    struct ProblemItem
+    {
+        std::wstring fileName;
+        int line = 0;
+        int column = 0;
+        bool isError = false;
+        std::wstring message;
+    };
+
     struct State
     {
         float leftEdge = 0;
@@ -77,6 +86,7 @@ public:
     // Render
     void Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite);
     void Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwnd);
+    void SetProblems(const std::wstring& filePath, const std::vector<ProblemItem>& problems);
 
     // Font
     void SetFont(const std::wstring& family, float sizePx);
@@ -91,7 +101,9 @@ private:
 
     RECT  TabsBarRectClient() const;
     RECT  PlusButtonRectClient() const;
+    RECT  ProblemsButtonRectClient() const;
     bool  HitTestPlus(POINT pt) const;
+    bool  HitTestProblems(POINT pt) const;
     bool  IsPointInTabsBar(POINT pt) const;
     float TabsBarRightEdge() const;
 
@@ -108,6 +120,8 @@ private:
     void UpdatePseudoConsoleSizeFromPixelsForActive();
 
 private:
+    int AllocateSessionId();
+
     // Panel state
     bool visible_ = false;
     bool focused_ = false;
@@ -133,11 +147,17 @@ private:
     // Multi sessions
     std::vector<std::unique_ptr<TerminalSession>> sessions_;
     int activeIndex_ = -1;
+    int nextSessionId_ = 1;
+    std::vector<int> sessionIds_;
 
     // Tabs hover
     bool hoveredPlus_ = false;
+    bool hoveredProblems_ = false;
+    bool showProblems_ = false;
 
     TabBar tabBar_;
+    std::vector<ProblemItem> problems_;
+    std::wstring problemsFilePath_;
 };
 
 // Global accessor

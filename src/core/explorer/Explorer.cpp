@@ -1974,6 +1974,7 @@ void ExplorerManager::OnCharInline(wchar_t ch)
         inlineText_.insert(inlineCursorPos_, 1, ch);
         inlineCursorPos_++;
     }
+    InvalidateMainWindow();
 }
 
 void ExplorerManager::OnKeyDownInline(WPARAM key)
@@ -2070,6 +2071,12 @@ void ExplorerManager::OnKeyDownInline(WPARAM key)
                                 PostMessageW(wnd, WM_USER + 100, 0, (LPARAM)heapPath);
                             }
                             InvalidateMainWindow();
+                            HWND wnd = FindWindowW(L"NebulaTextWindowClass", NULL);
+                            if (wnd)
+                            {
+                                auto *heapPath = new std::wstring(targetPath);
+                                PostMessageW(wnd, WM_USER + 100, 0, (LPARAM)heapPath);
+                            }
                         }
                         else
                         {
@@ -2134,6 +2141,7 @@ void ExplorerManager::OnKeyDownInline(WPARAM key)
             inlineText_.erase(inlineCursorPos_, 1);
         break;
     }
+    InvalidateMainWindow();
 }
 
 ID2D1Bitmap *ExplorerManager::GetIconForItem(ID2D1RenderTarget *ctx, const ExplorerItem &item, HWND hwnd)
@@ -2379,6 +2387,7 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
             {
                 float indent = state_.leftPadding + (float)(item.depth * 12);
                 float iconWidth = item.isDirectory ? (float)win32_dpi_scale(16, dpi) : iconPx;
+                float iconLeft = std::round(state_.leftEdge + indent);
 
                 float baseLeft = state_.leftEdge + insetX;
                 float inputLeft = std::round(baseLeft + indent + iconWidth + 6.0f);
@@ -2387,6 +2396,24 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
                 float inputHeight = item.height;
 
                 inlineRect_ = D2D1::RectF(inputLeft, inputTop, inputLeft + inputWidth, inputTop + inputHeight);
+
+                ExplorerItem previewItem;
+                previewItem.name = inlineText_;
+                previewItem.fullPath = inlineText_;
+                previewItem.isDirectory = (inlineType_ == Input::Type::Folder);
+                if (!previewItem.isDirectory)
+                    previewItem.extension = std::filesystem::path(inlineText_).extension().string();
+                ID2D1Bitmap *previewIcon = GetIconForItem(ctx, previewItem, hwnd);
+                if (previewIcon)
+                {
+                    float iconY = std::round(item.yPosition + (item.height - iconPx) * 0.5f);
+                    D2D1_RECT_F iconRect = D2D1::RectF(
+                        iconLeft,
+                        iconY,
+                        iconLeft + iconPx,
+                        iconY + iconPx);
+                    ctx->DrawBitmap(previewIcon, iconRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+                }
 
                 // Background
                 ID2D1SolidColorBrush *bg = nullptr;
