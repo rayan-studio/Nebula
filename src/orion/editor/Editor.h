@@ -244,7 +244,6 @@ namespace Orion
         void CreateEmpty();
         // Save buffer to file (UTF-8). Returns true on success.
         bool SaveToFile(const std::wstring &filePath);
-        void RunClangdDiagnosticsAsync();
         std::vector<Diagnostic> GetDiagnostics() const;
         void ClearDiagnostics();
         // Dirty state API

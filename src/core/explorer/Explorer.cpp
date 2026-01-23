@@ -2071,12 +2071,6 @@ void ExplorerManager::OnKeyDownInline(WPARAM key)
                                 PostMessageW(wnd, WM_USER + 100, 0, (LPARAM)heapPath);
                             }
                             InvalidateMainWindow();
-                            HWND wnd = FindWindowW(L"NebulaTextWindowClass", NULL);
-                            if (wnd)
-                            {
-                                auto *heapPath = new std::wstring(targetPath);
-                                PostMessageW(wnd, WM_USER + 100, 0, (LPARAM)heapPath);
-                            }
                         }
                         else
                         {

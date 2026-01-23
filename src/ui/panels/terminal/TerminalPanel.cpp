@@ -821,3 +821,9 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
     resizeBg->Release();
     resizeLine->Release();
 }
+
+void TerminalPanel::SetProblems(const std::wstring& filePath, const std::vector<ProblemItem>& problems)
+{
+    problemsFilePath_ = filePath;
+    problems_ = problems;
+}

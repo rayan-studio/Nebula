@@ -1,6 +1,14 @@
 #include "orion/editor/Editor.h"
 #include "orion/caret/Caret.h"
 
+// Ensure Windows min/max macros don't interfere with std::min/std::max
+#ifdef max
+#undef max
+#endif
+#ifdef min
+#undef min
+#endif
+
 namespace Orion
 {
     bool Editor::ReplaceCurrentMatch()

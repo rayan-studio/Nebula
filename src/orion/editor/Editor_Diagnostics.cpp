@@ -9,6 +9,14 @@
 #include <cctype>
 #include <algorithm>
 
+// Ensure Windows min/max macros don't interfere with std::min/std::max
+#ifdef max
+#undef max
+#endif
+#ifdef min
+#undef min
+#endif
+
 namespace Orion
 {
     namespace
@@ -78,100 +86,6 @@ namespace Orion
             if (wnd)
                 InvalidateRect(wnd, nullptr, FALSE);
         }
-    }
-
-    void Editor::RunClangdDiagnosticsAsync()
-    {
-        if (!diagnosticsState_)
-            return;
-
-        if (state_.filePath.empty())
-        {
-            ClearDiagnostics();
-            return;
-        }
-
-        std::wstring ext = GetFileExtension();
-        if (!SupportsClangdExtension(ext))
-        {
-            ClearDiagnostics();
-            return;
-        }
-
-        std::filesystem::path filePath(state_.filePath);
-        auto compileDir = FindCompilationDatabase(filePath);
-        if (!compileDir.has_value())
-        {
-            ClearDiagnostics();
-            return;
-        }
-
-        auto diagnosticsState = diagnosticsState_;
-        int token = ++diagnosticsState->token;
-        std::string fileUtf8 = WideToUtf8(filePath.wstring());
-        std::string compileDirUtf8 = WideToUtf8(compileDir->wstring());
-
-        {
-            std::lock_guard<std::mutex> lock(diagnosticsState->mutex);
-            diagnosticsState->diagnostics.clear();
-        }
-
-        std::thread([diagnosticsState, token, fileUtf8, compileDirUtf8]()
-                    {
-                        std::vector<Diagnostic> parsed;
-
-                        if (fileUtf8.empty() || compileDirUtf8.empty())
-                            return;
-
-                        std::string cmd = "clangd --check=\"" + fileUtf8 + "\" --compile-commands-dir=\"" + compileDirUtf8 + "\" 2>&1";
-                        FILE *pipe = _popen(cmd.c_str(), "r");
-                        if (!pipe)
-                            return;
-
-                        std::regex diagRegex(R"(^(.+):(\d+):(\d+):\s*(error|warning|note):\s*(.*)$)");
-                        std::string line;
-                        char buffer[2048];
-                        while (fgets(buffer, sizeof(buffer), pipe))
-                        {
-                            line.assign(buffer);
-                            if (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
-                                line.erase(line.find_last_not_of("\r\n") + 1);
-
-                            std::smatch match;
-                            if (!std::regex_match(line, match, diagRegex))
-                                continue;
-
-                            std::string path = ToLower(match[1].str());
-                            std::string fileLower = ToLower(fileUtf8);
-                            if (!(path == fileLower || EndsWith(path, fileLower)))
-                                continue;
-
-                            int lineNumber = std::max(0, std::stoi(match[2].str()) - 1);
-                            int column = std::max(0, std::stoi(match[3].str()) - 1);
-                            std::string severity = match[4].str();
-
-                            Diagnostic diag;
-                            diag.line = lineNumber;
-                            diag.startCol = column;
-                            diag.endCol = column + 1;
-                            diag.isError = (severity == "error");
-                            diag.message = Utf8ToWide(match[5].str());
-                            parsed.push_back(std::move(diag));
-                        }
-
-                        _pclose(pipe);
-
-                        if (diagnosticsState->token.load() != token)
-                            return;
-
-                        {
-                            std::lock_guard<std::mutex> lock(diagnosticsState->mutex);
-                            diagnosticsState->diagnostics = std::move(parsed);
-                        }
-
-                        InvalidateMainWindow();
-                    })
-            .detach();
     }
 
     std::vector<Editor::Diagnostic> Editor::GetDiagnostics() const

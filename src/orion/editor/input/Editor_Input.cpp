@@ -80,9 +80,6 @@ namespace Orion
             if (inside)
             {
                 searchBox_.OnLeftButtonDown(pt);
-                return;
-            }
-        }
                 if (searchBox_.ConsumeReplaceRequest())
                 {
                     ReplaceCurrentMatch();
