@@ -2,6 +2,7 @@
 
 #include "../../completion/popup/Popup.h"
 #include "orion/caret/Caret.h"
+#include "lsp/LspManager.h"
 
 #include <algorithm>
 #include <cmath>
@@ -19,6 +20,9 @@ namespace Orion
     void Editor::OnLeftButtonDown(HWND hwnd, POINT pt)
     {
         (void)hwnd;
+
+        dragStartPos_ = pt;
+        dragSelecting_ = false;
 
         // Check scrollbar interaction first
         if (scrollbar_.OnLeftButtonDown(pt))
@@ -77,6 +81,7 @@ namespace Orion
                 return;
             }
         }
+
 
         if (searchBox_.IsVisible())
         {
@@ -145,6 +150,45 @@ namespace Orion
             clickedPos.column = 0;
         if (clickedPos.line >= 0 && clickedPos.line < (int)state_.lines.size())
             clickedPos.column = (std::min)(clickedPos.column, (int)state_.lines[clickedPos.line].size());
+
+        bool ctrlPressed = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        if (ctrlPressed && clickedPos.line >= 0 && clickedPos.line < (int)state_.lines.size())
+        {
+            const std::wstring &ln = state_.lines[clickedPos.line];
+            auto isWordChar = [](wchar_t c)
+            {
+                return (iswalnum(c) != 0) || (c == L'_');
+            };
+
+            std::wstring word;
+            int col = clickedPos.column;
+            if (!ln.empty())
+            {
+                int idx = col;
+                if (idx == (int)ln.size())
+                    idx = (int)ln.size() - 1;
+
+                if (idx >= 0 && idx < (int)ln.size() && isWordChar(ln[idx]))
+                {
+                    int left = idx;
+                    while (left > 0 && isWordChar(ln[left - 1]))
+                        --left;
+                    int right = idx;
+                    while (right + 1 < (int)ln.size() && isWordChar(ln[right + 1]))
+                        ++right;
+                    if (right >= left)
+                        word = ln.substr(left, right - left + 1);
+                }
+            }
+
+            auto loc = Lsp::LspManager::Instance().GoToDefinition(state_.filePath, ln, clickedPos.line, clickedPos.column, word);
+            if (loc.has_value())
+            {
+                auto *heapPath = new std::wstring(loc->filePath);
+                PostMessageW(hwnd, WM_USER + 100, (WPARAM)loc->line, (LPARAM)heapPath);
+                return;
+            }
+        }
 
         // Click count logic
         DWORD now = GetTickCount();
@@ -317,6 +361,17 @@ namespace Orion
 
         if (GetAsyncKeyState(VK_LBUTTON) & 0x8000)
         {
+            if (!dragSelecting_)
+            {
+                int dx = std::abs(pt.x - dragStartPos_.x);
+                int dy = std::abs(pt.y - dragStartPos_.y);
+                int threshX = GetSystemMetrics(SM_CXDRAG);
+                int threshY = GetSystemMetrics(SM_CYDRAG);
+                if (dx < threshX && dy < threshY)
+                    return;
+                dragSelecting_ = true;
+            }
+
             if (pt.x < (int)(state_.leftEdge + metrics_.gutterWidth + metrics_.leftPadding))
                 return;
 
@@ -370,6 +425,50 @@ namespace Orion
                 InvalidateRect(hwnd, nullptr, FALSE);
         }
 
+        // Diagnostics hover tooltip (only when not dragging)
+        if (!(GetAsyncKeyState(VK_LBUTTON) & 0x8000))
+        {
+            bool prevVisible = diagHoverVisible_;
+            std::wstring newText;
+
+            CaretPosition hoverPos = ScreenToTextPosition(pt);
+            if (hoverPos.line >= 0 && hoverPos.line < (int)state_.lines.size())
+            {
+                for (const auto &d : diagnostics_)
+                {
+                    if (d.line != hoverPos.line)
+                        continue;
+                    int start = d.startCol;
+                    int end = d.endCol;
+                    if (end <= start)
+                        end = start + 1;
+
+                    float x1 = contentLeft + (float)start * metrics_.characterWidth - state_.scrollOffsetX;
+                    float x2 = contentLeft + (float)end * metrics_.characterWidth - state_.scrollOffsetX;
+                    float y1 = state_.topEdge + (float)hoverPos.line * metrics_.lineHeight - state_.scrollOffsetY;
+                    float y2 = y1 + metrics_.lineHeight;
+
+                    if (pt.x >= (int)x1 && pt.x <= (int)x2 && pt.y >= (int)y1 && pt.y <= (int)y2)
+                    {
+                        newText = d.message;
+                        if (!d.suggestion.empty())
+                        {
+                            newText += L"\nSuggestion: " + d.suggestion;
+                        }
+                        break;
+                    }
+                }
+            }
+
+            diagHoverVisible_ = !newText.empty();
+            diagHoverText_ = newText;
+            diagHoverPos_ = pt;
+
+            if (prevVisible != diagHoverVisible_)
+                InvalidateRect(hwnd, nullptr, FALSE);
+        }
+
+
         if (completionPopup_ && completionPopup_->IsVisible())
         {
             completionPopup_->OnMouseMove(pt);
@@ -382,6 +481,8 @@ namespace Orion
     {
         (void)hwnd;
         (void)pt;
+
+        dragSelecting_ = false;
 
         if (scrollbar_.OnLeftButtonUp())
         {
@@ -476,6 +577,7 @@ namespace Orion
         state_.hasSelection = false;
         state_.caretVisible = true;
         state_.lastBlinkTime = GetTickCount();
+        dragSelecting_ = false;
 
         if (scrollbar_.IsDragging())
         {

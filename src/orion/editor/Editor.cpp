@@ -102,4 +102,5 @@ namespace Orion
         }
         brushCache_.clear();
     }
+
 }

@@ -105,12 +105,19 @@ void PanelManager::OnMouseMove(HWND hwnd, POINT clientPoint)
 
 void PanelManager::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
 {
-    // If click lands inside a panel that isn't active, activate it first
+    if (activePanel_ && activePanel_->IsVisible() &&
+        (activePanel_->IsPointInPanel(clientPoint) || activePanel_->IsPointInResizeZone(clientPoint)))
+    {
+        activePanel_->OnLeftButtonDown(hwnd, clientPoint);
+        return;
+    }
+
+    // Only switch panels if the active one is hidden and another visible panel was clicked
     for (Panel* p : panelList_)
     {
-        if (p->IsVisible() && p->IsPointInPanel(clientPoint) && p != activePanel_)
+        if (p->IsVisible() && p->IsPointInPanel(clientPoint))
         {
-            if (activePanel_)
+            if (activePanel_ && activePanel_ != p)
             {
                 activePanel_->SetActive(false);
                 activePanel_->SetVisible(false);
@@ -119,12 +126,10 @@ void PanelManager::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
             activePanel_->SetActive(true);
             activePanel_->SetVisible(true);
             InvalidateRect(hwnd, nullptr, FALSE);
-            break;
+            activePanel_->OnLeftButtonDown(hwnd, clientPoint);
+            return;
         }
     }
-
-    if (activePanel_ && activePanel_->IsVisible())
-        activePanel_->OnLeftButtonDown(hwnd, clientPoint);
 }
 
 void PanelManager::OnLeftButtonUp(HWND hwnd)

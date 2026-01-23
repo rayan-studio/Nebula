@@ -428,6 +428,55 @@ namespace Orion
 
                     layout->Draw(nullptr, &renderer, drawX, drawY);
                     drawBrush->Release();
+
+                    // Diagnostics: underline ranges in red (simple wavy line)
+                    if (!diagnostics_.empty())
+                    {
+                        ID2D1SolidColorBrush *diagBrush = nullptr;
+                        ctx->CreateSolidColorBrush(D2D1::ColorF(0.85f, 0.35f, 0.35f, 0.95f), &diagBrush);
+                        if (diagBrush)
+                        {
+                            for (const auto &d : diagnostics_)
+                            {
+                                if (d.line != i)
+                                    continue;
+
+                                int start = d.startCol;
+                                int length = d.endCol - d.startCol;
+                                if (length <= 0)
+                                    length = 1;
+
+                                UINT32 count = 0;
+                                layout->HitTestTextRange((UINT32)start, (UINT32)length, drawX, drawY, nullptr, 0, &count);
+                                if (count == 0)
+                                    continue;
+
+                                std::vector<DWRITE_HIT_TEST_METRICS> metrics(count);
+                                layout->HitTestTextRange((UINT32)start, (UINT32)length, drawX, drawY, metrics.data(), count, &count);
+
+                                for (UINT32 mi = 0; mi < count; ++mi)
+                                {
+                                    const auto &m = metrics[mi];
+                                    float x1 = m.left;
+                                    float x2 = m.left + m.width;
+                                    float y = m.top + m.height - 1.0f;
+                                    float amp = 1.2f;
+                                    float step = 4.0f;
+                                    bool up = true;
+
+                                    for (float x = x1; x < x2; x += step)
+                                    {
+                                        float nx = (x + step > x2) ? x2 : x + step;
+                                        float y1 = y + (up ? -amp : amp);
+                                        float y2 = y + (up ? amp : -amp);
+                                        ctx->DrawLine(D2D1::Point2F(x, y1), D2D1::Point2F(nx, y2), diagBrush, 1.2f);
+                                        up = !up;
+                                    }
+                                }
+                            }
+                            diagBrush->Release();
+                        }
+                    }
                 }
 
                 layout->Release();

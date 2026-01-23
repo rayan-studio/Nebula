@@ -3,14 +3,33 @@
 #include "orion/editor/Editor.h"
 #include <string>
 #include <map>
+#include <memory>
+#include "lsp/LspManager.h"
 
 // Forward declare KeyMods used in message handling (defined in Window.cpp)
 struct KeyMods;
 #include "orion/editor/keyboard/KeyboardManager.h"
 #include "ui/components/tabs/TabBar.h"
 static constexpr UINT WM_EDITOR_FILE_LOADED = WM_USER + 777;
+static constexpr UINT WM_EDITOR_FILE_RENAMED = WM_USER + 778;
+static constexpr UINT WM_OPEN_SETTINGS = WM_USER + 779;
+static constexpr UINT WM_LSP_DIAGNOSTICS = WM_USER + 780;
+
+struct RenamePathPayload
+{
+    std::wstring oldPath;
+    std::wstring newPath;
+};
+
+struct LspDiagnosticsResult
+{
+    int tabIndex = -1;
+    std::wstring filePath;
+    std::vector<Lsp::Diagnostic> diagnostics;
+};
 
 class Skia;
+class SettingsTabView;
 
 class Window
 {
@@ -20,6 +39,8 @@ private:
     TabBar tabBar_;
     int untitledCounter_ = 1;
     KeyboardManager keyboard_;
+    std::unique_ptr<SettingsTabView> settingsTab_;
+    std::map<int, int> pendingGoToLine_;
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleMessage(UINT, WPARAM, LPARAM);
@@ -56,10 +77,15 @@ public:
 
     Orion::Editor *GetEditor();
     TabBar *GetTabBar() { return &tabBar_; }
+    SettingsTabView *GetSettingsTabView() { return settingsTab_.get(); }
 
     // Gestion multi-éditeurs
     Orion::Editor *GetEditorForTab(int tabIndex);
     void OpenFileInNewTab(const std::wstring &filePath, int lineNumber = -1);
+    void OpenSettingsTab();
+    bool IsSettingsTabIndex(int tabIndex) const;
+    bool IsSettingsTabActive() const;
+    static const std::wstring &SettingsTabPath();
     // Dialogs
     void OpenFileDialog();
     void OpenProjectDialog();

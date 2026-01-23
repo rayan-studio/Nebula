@@ -27,11 +27,13 @@
 #include "ui/panels/search/SearchPanel.h"
 #include "ui/panels/terminal/TerminalPanel.h"
 #include "orion/font/CustomFontLoader.h"
+#include "ui/screens/SettingsTab.h"
 #include <dwrite_1.h>
 #include "ui/panels/ggwave/GGWavePanel.h"
 #include "utils/logger/Logger.h"
 #include "orion/caret/Caret.h"
 #include "ui/layout/ExplorerLayoutState.h"
+#include "lsp/LspManager.h"
 
 static void EnableMicaIfAvailable(HWND hwnd)
 {
@@ -58,6 +60,7 @@ static void EnableMicaIfAvailable(HWND hwnd)
 }
 
 static const wchar_t *WINDOW_CLASS_NAME = L"NebulaTextWindowClass";
+static const std::wstring kSettingsTabPath = L"__settings__";
 
 // Throttled invalidate to avoid excessive redraws on high-frequency events
 static DWORD g_lastInvalidateTime = 0;
@@ -168,6 +171,84 @@ static bool LaunchExecutable(const std::filesystem::path &exePath)
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     return true;
+}
+
+enum class SimpleCompiler
+{
+    None,
+    MSVC,
+    GPP
+};
+
+static std::optional<std::filesystem::path> FindVcVars64()
+{
+    std::vector<std::filesystem::path> candidates = {
+        L"C:\\Program Files\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat",
+        L"C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat",
+        L"C:\\Program Files\\Microsoft Visual Studio\\18\\Professional\\VC\\Auxiliary\\Build\\vcvars64.bat",
+        L"C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Auxiliary\\Build\\vcvars64.bat",
+
+        L"C:\\Program Files\\Microsoft Visual Studio\\2026\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat",
+        L"C:\\Program Files\\Microsoft Visual Studio\\2026\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat",
+        L"C:\\Program Files\\Microsoft Visual Studio\\2026\\Professional\\VC\\Auxiliary\\Build\\vcvars64.bat",
+        L"C:\\Program Files\\Microsoft Visual Studio\\2026\\Enterprise\\VC\\Auxiliary\\Build\\vcvars64.bat",
+
+        L"C:\\Program Files\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat",
+        L"C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat",
+        L"C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\VC\\Auxiliary\\Build\\vcvars64.bat",
+        L"C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Auxiliary\\Build\\vcvars64.bat",
+
+        L"C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat",
+        L"C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat",
+        L"C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Professional\\VC\\Auxiliary\\Build\\vcvars64.bat",
+        L"C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Enterprise\\VC\\Auxiliary\\Build\\vcvars64.bat",
+
+        L"C:\\Program Files (x86)\\Microsoft Visual Studio\\2017\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat",
+        L"C:\\Program Files (x86)\\Microsoft Visual Studio\\2017\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat",
+        L"C:\\Program Files (x86)\\Microsoft Visual Studio\\2017\\Professional\\VC\\Auxiliary\\Build\\vcvars64.bat",
+        L"C:\\Program Files (x86)\\Microsoft Visual Studio\\2017\\Enterprise\\VC\\Auxiliary\\Build\\vcvars64.bat",
+
+        L"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat",
+        L"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat",
+        L"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\Professional\\VC\\Auxiliary\\Build\\vcvars64.bat",
+        L"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\Enterprise\\VC\\Auxiliary\\Build\\vcvars64.bat"};
+
+    std::error_code ec;
+    for (const auto &p : candidates)
+    {
+        if (std::filesystem::exists(p, ec))
+            return p;
+    }
+    return std::nullopt;
+}
+
+static bool FindInPath(const std::wstring &exeName)
+{
+    wchar_t buf[MAX_PATH] = {0};
+    DWORD res = SearchPathW(nullptr, exeName.c_str(), nullptr, MAX_PATH, buf, nullptr);
+    return res > 0 && res < MAX_PATH;
+}
+
+static SimpleCompiler DetectSimpleCompiler()
+{
+    if (FindVcVars64().has_value() || FindInPath(L"cl.exe"))
+        return SimpleCompiler::MSVC;
+    if (FindInPath(L"g++.exe"))
+        return SimpleCompiler::GPP;
+    return SimpleCompiler::None;
+}
+
+static bool IsCppLikeFile(const std::wstring &path)
+{
+    std::wstring ext;
+    size_t pos = path.find_last_of(L'.');
+    if (pos != std::wstring::npos)
+    {
+        ext = path.substr(pos);
+        for (auto &c : ext)
+            c = towlower(c);
+    }
+    return ext == L".cpp" || ext == L".cc" || ext == L".cxx" || ext == L".c" || ext == L".h" || ext == L".hpp";
 }
 
 static bool HasSolutionFile(const std::filesystem::path &root)
@@ -375,6 +456,7 @@ void Window::CloseEditorForTabIndex(int index)
     }
 
     editors_.clear();
+    pendingGoToLine_.erase(index);
 
     int count = tabBar_.GetTabCount();
     for (int i = 0; i < count; ++i)
@@ -399,7 +481,7 @@ void Window::CloseEditorForTabIndex(int index)
                 found = p.second;
                 break;
             }
-      
+        }
 
         editors_[i] = found;
         if (found)
@@ -417,20 +499,75 @@ void Window::CloseEditorForTabIndex(int index)
 void Window::RunActiveProject()
 {
     std::wstring root = GetExplorerManager().GetState().rootPath;
-    if (root.empty())
-    {
-        MessageBoxW(hwnd_, L"Aucun projet ouvert.", L"Run", MB_OK | MB_ICONINFORMATION);
-        return;
-    }
+    Orion::Editor *activeEditor = GetEditor();
+    std::wstring activeFile = activeEditor ? activeEditor->GetFilePath() : L"";
 
     std::filesystem::path rootPath(root);
     std::error_code ec;
     bool hasCMake = std::filesystem::exists(rootPath / "CMakeLists.txt", ec);
     bool hasSolution = HasSolutionFile(rootPath);
 
-    if (!hasCMake && !hasSolution)
+    if (root.empty() || (!hasCMake && !hasSolution))
     {
-        MessageBoxW(hwnd_, L"Aucun projet C++ détecté (CMakeLists.txt ou .sln manquant).", L"Run", MB_OK | MB_ICONWARNING);
+        if (activeFile.empty() || activeFile.rfind(L"__untitled__", 0) == 0)
+        {
+            MessageBoxW(hwnd_, L"Aucun projet détecté et aucun fichier sauvegardé actif.", L"Run", MB_OK | MB_ICONINFORMATION);
+            return;
+        }
+        if (!IsCppLikeFile(activeFile))
+        {
+            MessageBoxW(hwnd_, L"Aucun projet C++ détecté et le fichier actif n'est pas C/C++.", L"Run", MB_OK | MB_ICONINFORMATION);
+            return;
+        }
+
+        SimpleCompiler compiler = DetectSimpleCompiler();
+        if (compiler == SimpleCompiler::None)
+        {
+            MessageBoxW(hwnd_,
+                        L"Aucun compilateur détecté.\nInstalle Visual Studio Build Tools (MSVC) ou MinGW-w64 (g++), puis relance.",
+                        L"Run",
+                        MB_OK | MB_ICONWARNING);
+            return;
+        }
+
+        std::filesystem::path filePath(activeFile);
+        std::filesystem::path buildDir = filePath.parent_path() / "build" / "single";
+        std::filesystem::create_directories(buildDir, ec);
+
+        std::filesystem::path outExe = buildDir / "app.exe";
+        std::wstring cmd;
+        std::wstring workDir = buildDir.wstring();
+
+        if (compiler == SimpleCompiler::MSVC)
+        {
+            auto vcvars = FindVcVars64();
+            if (vcvars.has_value())
+            {
+                cmd = L"\"\"" + vcvars->wstring() + L"\" && cl /nologo /EHsc /std:c++17 " +
+                      QuotePath(filePath) + L" /Fe:" + QuotePath(outExe) + L"\"";
+            }
+            else
+            {
+                cmd = L"cl /nologo /EHsc /std:c++17 " + QuotePath(filePath) + L" /Fe:" + QuotePath(outExe);
+            }
+        }
+        else
+        {
+            cmd = L"g++ -std=c++17 -g " + QuotePath(filePath) + L" -o " + QuotePath(outExe);
+        }
+
+        DWORD exitCode = 0;
+        if (!RunCommandAndWait(cmd, buildDir, exitCode))
+        {
+            MessageBoxW(hwnd_, L"Compilation échouée. Vérifie la console.", L"Run", MB_OK | MB_ICONERROR);
+            return;
+        }
+
+        if (!LaunchExecutable(outExe))
+        {
+            MessageBoxW(hwnd_, L"Impossible de lancer l'exécutable.", L"Run", MB_OK | MB_ICONERROR);
+            return;
+        }
         return;
     }
 
@@ -592,6 +729,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             skia_ = nullptr;
             return -1;
         }
+        GetExplorerManager().PreloadIconMapAsync();
         // Load custom font for all future editors
         {
             wchar_t modulePath[MAX_PATH] = {0};
@@ -822,6 +960,19 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             {
                 ed->ApplyLoadedFile(std::move(res->filePath), std::move(res->encoding), std::move(res->lines));
                 InvalidateRect(hwnd_, nullptr, FALSE);
+
+                auto it = pendingGoToLine_.find(res->tabIndex);
+                if (it != pendingGoToLine_.end())
+                {
+                    int targetLine = it->second;
+                    pendingGoToLine_.erase(it);
+                    if (targetLine < 0)
+                        targetLine = 0;
+                    Orion::Caret::SetCaret(*ed, targetLine, 0);
+                }
+
+                Lsp::LspManager::Instance().UpdateFile(ed->GetFilePath(), ed->GetLinesSnapshot());
+                Lsp::LspManager::Instance().RequestDiagnosticsAsync(ed->GetFilePath(), ed->GetLinesSnapshot(), hwnd_, res->tabIndex);
             }
         }
 
@@ -836,9 +987,60 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 
         if (pPath)
         {
-            OpenFileInNewTab(*pPath, lineNumber > 0 ? lineNumber : -1);
+            OpenFileInNewTab(*pPath, lineNumber >= 0 ? lineNumber : -1);
             delete pPath;
         }
+        return 0;
+    }
+
+    case WM_LSP_DIAGNOSTICS:
+    {
+        auto *payload = reinterpret_cast<LspDiagnosticsResult *>(lParam);
+        if (payload)
+        {
+            Orion::Editor *ed = GetEditorForTab(payload->tabIndex);
+            if (ed && ed->GetFilePath() == payload->filePath)
+            {
+                ed->SetDiagnostics(std::move(payload->diagnostics));
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+            delete payload;
+        }
+        return 0;
+    }
+
+    case WM_EDITOR_FILE_RENAMED:
+    {
+        auto *payload = reinterpret_cast<RenamePathPayload *>(lParam);
+        if (payload)
+        {
+            int tabIndex = tabBar_.FindTabIndexByFilePath(payload->oldPath);
+            if (tabIndex >= 0)
+            {
+                std::wstring display;
+                size_t lastSlash = payload->newPath.find_last_of(L"\\/");
+                if (lastSlash != std::wstring::npos)
+                    display = payload->newPath.substr(lastSlash + 1);
+                else
+                    display = payload->newPath;
+
+                tabBar_.UpdateTabPath(tabIndex, payload->newPath, display);
+                Orion::Editor *ed = GetEditorForTab(tabIndex);
+                if (ed)
+                {
+                    ed->SetFilePath(payload->newPath);
+                }
+
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+            delete payload;
+        }
+        return 0;
+    }
+
+    case WM_OPEN_SETTINGS:
+    {
+        OpenSettingsTab();
         return 0;
     }
 
@@ -905,6 +1107,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
 
         // Global Input overlay removed; clicks always propagate to Explorer/editor.
+
+        // Prioritize panel resize zone over explorer hit (prevents dead resize area)
+        Panel *activePanelClick = GetPanelManager().GetActivePanel();
+        if (activePanelClick && activePanelClick->IsVisible() && activePanelClick->IsPointInResizeZone(pt))
+        {
+            GetPanelManager().OnLeftButtonDown(hwnd_, pt);
+            return 0;
+        }
 
         // If click is inside Explorer, forward it first
         if (GetExplorerManager().IsVisible() && GetExplorerManager().IsPointInExplorer(pt))
@@ -1003,6 +1213,29 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
+        // Check if click is in terminal area (tabs/plus/resize/panel)
+        TerminalPanel &terminal = GetTerminalPanel();
+        bool hitTerminal = false;
+        if (terminal.IsVisible())
+        {
+            bool inTerminal = terminal.IsPointInPanel(pt);
+            bool inTerminalResize = terminal.IsPointInResizeZone(pt);
+            bool inTerminalTabs = terminal.IsPointInTabsBarArea(pt) || terminal.IsPointInPlusButton(pt);
+
+            if (inTerminal || inTerminalResize || inTerminalTabs)
+            {
+                hitTerminal = true;
+                ReleaseCapture();
+                Orion::Editor *editor = GetEditor();
+                if (editor)
+                    editor->CancelInteraction();
+
+                terminal.OnLeftButtonDown(hwnd_, pt);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+        }
+
         // Check if click is in active panel area
         Panel *activePanel = GetPanelManager().GetActivePanel();
         bool inPanel = false;
@@ -1022,6 +1255,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             if (editor)
                 editor->CancelInteraction();
 
+            // Click outside terminal - unfocus it
+            if (!hitTerminal)
+                terminal.Unfocus();
+
             GetPanelManager().OnLeftButtonDown(hwnd_, pt);
             return 0;
         }
@@ -1031,33 +1268,30 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         if (ggwave.IsPointOnButton(pt))
         {
             ggwave.OnLeftButtonDown(hwnd_, pt);
+            if (!hitTerminal)
+                terminal.Unfocus();
             InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
         }
 
-        // Check if click is in terminal area
-        TerminalPanel &terminal = GetTerminalPanel();
-        if (terminal.IsVisible())
+        if (terminal.IsVisible() && !hitTerminal)
+            terminal.Unfocus();
+
+        if (IsSettingsTabActive() && settingsTab_ && settingsTab_->IsPointInView(pt))
         {
-            bool inTerminal = terminal.IsPointInPanel(pt);
-            bool inTerminalResize = terminal.IsPointInResizeZone(pt);
-
-            if (inTerminal || inTerminalResize)
+            if (GetPanelManager().IsPanelActive(PanelId::Search))
             {
-                ReleaseCapture();
-                Orion::Editor *editor = GetEditor();
-                if (editor)
-                    editor->CancelInteraction();
+                SearchPanel *searchPanel = GetPanelManager().GetPanelAs<SearchPanel>(PanelId::Search);
+                if (searchPanel && searchPanel->IsInputFocused())
+                {
+                    searchPanel->UnfocusInput();
+                }
+            }
 
-                terminal.OnLeftButtonDown(hwnd_, pt);
-                InvalidateRect(hwnd_, nullptr, FALSE);
-                return 0;
-            }
-            else
-            {
-                // Click outside terminal - unfocus it
-                terminal.Unfocus();
-            }
+            GetTerminalPanel().Unfocus();
+            settingsTab_->OnLeftButtonDown(hwnd_, pt);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
         }
 
         Orion::Editor *editor = GetEditor();
@@ -1203,6 +1437,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
+        if (IsSettingsTabActive() && settingsTab_ && settingsTab_->IsPointInView(pt))
+        {
+            return 0;
+        }
+
         // Route wheel to editor when not over panel (pass Ctrl state for zoom)
         {
             int delta = GET_WHEEL_DELTA_WPARAM(wParam);
@@ -1326,12 +1565,29 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
         // ===== END TERMINAL HANDLING =====
 
+        // Keep terminal hover state in sync even when the cursor leaves its area.
+        if (terminal.IsVisible() && !lmbDown)
+        {
+            bool changed = terminal.OnMouseMove(hwnd_, pt);
+            if (changed)
+            {
+                const auto& st = terminal.GetState();
+                RECT tr = {(LONG)st.leftEdge, (LONG)st.topEdge, (LONG)st.rightEdge, (LONG)st.bottomEdge};
+                ThrottledInvalidateRect(hwnd_, &tr, FALSE);
+            }
+        }
+
         // GGWave button hover
         GetGGWavePanel().OnMouseMove(hwnd_, pt);
 
         // If left button is down, prioritize editor dragging selection
         if (lmbDown)
         {
+            if (IsSettingsTabActive() && settingsTab_)
+            {
+                settingsTab_->OnMouseMove(hwnd_, pt);
+                return 0;
+            }
             Orion::Editor* editor = GetEditor();
             if (editor)
             {
@@ -1416,9 +1672,16 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 }
                 else
                 {
-                    Orion::Editor* editor = GetEditor();
-                    if (editor)
-                        editor->OnMouseMove(hwnd_, pt);
+                    if (IsSettingsTabActive() && settingsTab_)
+                    {
+                        settingsTab_->OnMouseMove(hwnd_, pt);
+                    }
+                    else
+                    {
+                        Orion::Editor* editor = GetEditor();
+                        if (editor)
+                            editor->OnMouseMove(hwnd_, pt);
+                    }
                 }
             }
         }
@@ -1509,6 +1772,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
         else
         {
+            if (IsSettingsTabActive() && settingsTab_)
+            {
+                settingsTab_->OnLeftButtonUp(hwnd_);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+
             Orion::Editor *editor = GetEditor();
             if (editor)
             {
@@ -1531,6 +1801,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         tabBar_.ClearHover();
         RECT tabRect = GetTabBarRectClient();
         InvalidateRect(hwnd_, &tabRect, FALSE);
+
+        if (settingsTab_)
+        {
+            POINT off = {-1, -1};
+            settingsTab_->OnMouseMove(hwnd_, off);
+        }
 
         return 0;
     }
@@ -2006,6 +2282,7 @@ Window::Window(HINSTANCE hInstance)
     : hInstance_(hInstance), hwnd_(nullptr), skia_(nullptr)
 {
     untitledCounter_ = 1;
+    settingsTab_ = std::make_unique<SettingsTabView>();
 }
 
 Window::~Window()
@@ -2033,6 +2310,22 @@ Orion::Editor *Window::GetEditorForTab(int tabIndex)
     return nullptr;
 }
 
+const std::wstring &Window::SettingsTabPath()
+{
+    return kSettingsTabPath;
+}
+
+bool Window::IsSettingsTabIndex(int tabIndex) const
+{
+    const Tab *tab = tabBar_.GetTab(tabIndex);
+    return tab && tab->filePath == kSettingsTabPath;
+}
+
+bool Window::IsSettingsTabActive() const
+{
+    return IsSettingsTabIndex(tabBar_.GetActiveTabIndex());
+}
+
 void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber)
 {
     std::wstring display;
@@ -2051,7 +2344,11 @@ void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber)
             editor->LoadCustomFont(skia_->GetDWriteFactory(), customFontPath_);
 
         if (!filePath.empty())
+        {
             editor->LoadFileAsync(hwnd_, filePath, tabIndex);
+            if (lineNumber >= 0)
+                pendingGoToLine_[tabIndex] = lineNumber;
+        }
         else
             editor->CreateEmpty();
 
@@ -2061,8 +2358,40 @@ void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber)
         {
             tabBar_.SetTabDirty(tabIndex, true);
             InvalidateRect(hwnd_, nullptr, FALSE);
+
+            Orion::Editor *ed = GetEditorForTab(tabIndex);
+            if (!ed)
+                return;
+            std::wstring fp = ed->GetFilePath();
+            if (fp.empty() || fp.rfind(L"__untitled__", 0) == 0)
+                return;
+            Lsp::LspManager::Instance().UpdateFile(fp, ed->GetLinesSnapshot());
+            Lsp::LspManager::Instance().RequestDiagnosticsAsync(fp, ed->GetLinesSnapshot(), hwnd_, tabIndex);
         };
     }
+    else if (lineNumber >= 0)
+    {
+        Orion::Editor *editor = editors_[tabIndex];
+        if (editor)
+        {
+            Orion::Caret::SetCaret(*editor, lineNumber, 0);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+    }
+}
+
+void Window::OpenSettingsTab()
+{
+    int existing = tabBar_.FindTabIndexByFilePath(kSettingsTabPath);
+    if (existing >= 0)
+    {
+        tabBar_.SetActiveTab(existing);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+
+    tabBar_.AddTab(kSettingsTabPath, L"Settings");
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void Window::ClearAllHoverStates()

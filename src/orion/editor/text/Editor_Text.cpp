@@ -201,6 +201,7 @@ namespace Orion
         state_.caret = {0, 0};
         state_.scrollOffsetX = 0.0f;
         state_.scrollOffsetY = 0.0f;
+
     }
     void Orion::Editor::LoadFileAsync(HWND hwnd, const std::wstring &filePath, int tabIndex)
     {

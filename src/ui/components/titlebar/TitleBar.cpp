@@ -668,28 +668,70 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
 
     D2D1_RECT_F r = g_activeDropdown.rect;
 
+    // Layered shadow (VS Code-like depth)
+    ID2D1SolidColorBrush *shadowBrush = nullptr;
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.16f), &shadowBrush);
+    if (shadowBrush)
+    {
+        D2D1_RECT_F shadowRect1 = D2D1::RectF(r.left + 2.0f, r.top + 6.0f, r.right + 2.0f, r.bottom + 6.0f);
+        D2D1_ROUNDED_RECT shadowRounded1 = D2D1::RoundedRect(shadowRect1, 6.0f, 6.0f);
+        ctx->FillRoundedRectangle(shadowRounded1, shadowBrush);
+        shadowBrush->Release();
+    }
+    ID2D1SolidColorBrush *shadowBrush2 = nullptr;
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.08f), &shadowBrush2);
+    if (shadowBrush2)
+    {
+        D2D1_RECT_F shadowRect2 = D2D1::RectF(r.left + 1.0f, r.top + 3.0f, r.right + 1.0f, r.bottom + 3.0f);
+        D2D1_ROUNDED_RECT shadowRounded2 = D2D1::RoundedRect(shadowRect2, 6.0f, 6.0f);
+        ctx->FillRoundedRectangle(shadowRounded2, shadowBrush2);
+        shadowBrush2->Release();
+    }
+
     ID2D1SolidColorBrush *bgBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0x1f1f20), &bgBrush);
-    D2D1_ROUNDED_RECT bgRounded = D2D1::RoundedRect(r, 4.0f, 4.0f);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0x242526), &bgBrush);
+    D2D1_ROUNDED_RECT bgRounded = D2D1::RoundedRect(r, 6.0f, 6.0f);
     ctx->FillRoundedRectangle(bgRounded, bgBrush);
 
+    ID2D1SolidColorBrush *borderBrush = nullptr;
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0x323436), &borderBrush);
+    if (borderBrush)
+    {
+        ctx->DrawRoundedRectangle(bgRounded, borderBrush, 1.0f);
+        borderBrush->Release();
+    }
+
     ID2D1SolidColorBrush *hoverBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0x313335), &hoverBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0x2f3336), &hoverBrush);
     ID2D1SolidColorBrush *textBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0xe6e6e6), &textBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0xf1f1f1), &textBrush);
+    ID2D1SolidColorBrush *disabledBrush = nullptr;
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0x8a8a8a), &disabledBrush);
 
     IDWriteTextFormat *textFormat = nullptr;
     if (dwrite)
     {
         dwrite->CreateTextFormat(
-            L"JetBrains Mono",
+            L"Segoe UI Variable Text",
             NULL,
-            DWRITE_FONT_WEIGHT_REGULAR,
+            DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
-            12.5f,
+            13.0f,
             L"en-us",
             &textFormat);
+        if (!textFormat)
+        {
+            dwrite->CreateTextFormat(
+                L"Segoe UI",
+                NULL,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                13.0f,
+                L"en-us",
+                &textFormat);
+        }
 
         if (textFormat)
         {
@@ -715,26 +757,20 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
         if (isEnabled && (int)i == g_activeDropdown.hoveredItem)
         {
             D2D1_ROUNDED_RECT hoverRounded = D2D1::RoundedRect(
-                D2D1::RectF(itemRect.left + 4.0f, itemRect.top + 4.0f, itemRect.right - 4.0f, itemRect.bottom - 4.0f),
-                3.0f, 3.0f);
+                D2D1::RectF(itemRect.left + 6.0f, itemRect.top + 4.0f, itemRect.right - 6.0f, itemRect.bottom - 4.0f),
+                5.0f, 5.0f);
             ctx->FillRoundedRectangle(hoverRounded, hoverBrush);
         }
 
         if (textFormat)
         {
             D2D1_RECT_F textRect = D2D1::RectF(
-                itemRect.left + 12.0f,
+                itemRect.left + 16.0f,
                 itemRect.top,
                 itemRect.right - 12.0f,
                 itemRect.bottom);
 
-            ID2D1SolidColorBrush *brushToUse = textBrush;
-            ID2D1SolidColorBrush *disabledBrush = nullptr;
-            if (!isEnabled)
-            {
-                ctx->CreateSolidColorBrush(D2D1::ColorF(0x7f7f7f), &disabledBrush);
-                brushToUse = disabledBrush;
-            }
+            ID2D1SolidColorBrush *brushToUse = isEnabled ? textBrush : disabledBrush;
 
             ctx->DrawTextW(
                 g_activeDropdown.items[i].c_str(),
@@ -745,8 +781,6 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
                 D2D1_DRAW_TEXT_OPTIONS_NONE,
                 DWRITE_MEASURING_MODE_NATURAL);
 
-            if (disabledBrush)
-                disabledBrush->Release();
         }
     }
 
@@ -754,6 +788,8 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
         textFormat->Release();
     if (textBrush)
         textBrush->Release();
+    if (disabledBrush)
+        disabledBrush->Release();
     if (hoverBrush)
         hoverBrush->Release();
     if (bgBrush)
@@ -814,8 +850,8 @@ void ShowContextMenuDropdown(HWND hwnd, const std::vector<std::wstring> &items, 
     g_activeDropdown.enabled.clear();
     g_activeDropdown.enabled.resize(items.size(), true);
 
-    float itemHeight = 32.0f;
-    float width = 200.0f;
+    float itemHeight = 34.0f;
+    float width = 236.0f;
     float height = itemHeight * items.size();
 
     g_activeDropdown.rect = D2D1::RectF(

@@ -150,7 +150,90 @@ namespace Orion
             completionPopup_->Draw(ctx, dwrite);
         }
 
+        if (diagHoverVisible_ && !diagHoverText_.empty())
+        {
+            ID2D1SolidColorBrush *tooltipBg = nullptr;
+            ID2D1SolidColorBrush *tooltipBorder = nullptr;
+            ID2D1SolidColorBrush *tooltipText = nullptr;
+
+            ctx->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.12f, 0.96f), &tooltipBg);
+            ctx->CreateSolidColorBrush(D2D1::ColorF(0.26f, 0.26f, 0.26f, 1.0f), &tooltipBorder);
+            ctx->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.95f, 0.95f, 1.0f), &tooltipText);
+
+            IDWriteTextFormat *tipFormat = nullptr;
+            if (dwrite)
+            {
+                dwrite->CreateTextFormat(
+                    L"Segoe UI",
+                    NULL,
+                    DWRITE_FONT_WEIGHT_NORMAL,
+                    DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    12.0f,
+                    L"en-us",
+                    &tipFormat);
+            }
+
+            if (tipFormat && tooltipBg && tooltipText)
+            {
+                float maxWidth = 320.0f;
+                IDWriteTextLayout *layout = nullptr;
+                dwrite->CreateTextLayout(
+                    diagHoverText_.c_str(),
+                    (UINT32)diagHoverText_.size(),
+                    tipFormat,
+                    maxWidth,
+                    200.0f,
+                    &layout);
+
+                if (layout)
+                {
+                    DWRITE_TEXT_METRICS tm = {};
+                    layout->GetMetrics(&tm);
+
+                    float padX = 8.0f;
+                    float padY = 6.0f;
+                    float w = tm.width + padX * 2.0f;
+                    float h = tm.height + padY * 2.0f;
+
+                    float x = (float)diagHoverPos_.x + 14.0f;
+                    float y = (float)diagHoverPos_.y + 18.0f;
+
+                    // Keep inside editor bounds
+                    if (x + w > state_.rightEdge)
+                        x = state_.rightEdge - w - 6.0f;
+                    if (y + h > state_.bottomEdge)
+                        y = state_.bottomEdge - h - 6.0f;
+                    if (x < state_.leftEdge)
+                        x = state_.leftEdge + 6.0f;
+                    if (y < state_.topEdge)
+                        y = state_.topEdge + 6.0f;
+
+                    D2D1_RECT_F box = D2D1::RectF(x, y, x + w, y + h);
+                    D2D1_ROUNDED_RECT round = D2D1::RoundedRect(box, 4.0f, 4.0f);
+                    ctx->FillRoundedRectangle(round, tooltipBg);
+                    if (tooltipBorder)
+                        ctx->DrawRoundedRectangle(round, tooltipBorder, 1.0f);
+
+                    D2D1_POINT_2F textPos = D2D1::Point2F(x + padX, y + padY);
+                    CustomTextRenderer tipRenderer(ctx, tooltipText);
+                    layout->Draw(nullptr, &tipRenderer, textPos.x, textPos.y);
+                    layout->Release();
+                }
+            }
+
+            if (tipFormat)
+                tipFormat->Release();
+            if (tooltipText)
+                tooltipText->Release();
+            if (tooltipBorder)
+                tooltipBorder->Release();
+            if (tooltipBg)
+                tooltipBg->Release();
+        }
+
         ctx->PopAxisAlignedClip();
+
 
         scrollbar_.Draw(ctx);
 
@@ -287,6 +370,7 @@ namespace Orion
         if (brush)
             brush->Release();
     }
+
 
     // ---- Search UI ----
     void Editor::ShowSearch()

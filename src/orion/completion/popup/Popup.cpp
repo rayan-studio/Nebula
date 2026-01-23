@@ -20,6 +20,9 @@ namespace Orion
     void CompletionPopup::SetItems(const std::vector<std::wstring>& items)
     {
         items_ = items;
+        scrollIndex_ = 0;
+        if (!items_.empty())
+            selected_ = 0;
         if (selected_ >= (int)items_.size()) selected_ = 0;
         if (!visible_ && !items_.empty()) Show();
         if (items_.empty()) Hide();
@@ -162,6 +165,18 @@ namespace Orion
             Hide();
             break;
         }
+
+        int maxShown = (int)((rect_.bottom - rect_.top) / itemHeight_);
+        if (maxShown <= 0) return;
+        int total = (int)items_.size();
+        int visibleCount = (std::min)(total, maxShown);
+        if (selected_ < scrollIndex_)
+            scrollIndex_ = selected_;
+        else if (selected_ >= scrollIndex_ + visibleCount)
+            scrollIndex_ = selected_ - visibleCount + 1;
+        if (scrollIndex_ < 0) scrollIndex_ = 0;
+        if (total > visibleCount && scrollIndex_ > total - visibleCount)
+            scrollIndex_ = total - visibleCount;
     }
 
     void CompletionPopup::OnLeftButtonDown(POINT pt)

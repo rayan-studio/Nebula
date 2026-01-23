@@ -17,6 +17,7 @@
 #include "core/window/Window.h"
 #include "utils/logger/Logger.h"
 #include "ui/layout/ExplorerLayoutState.h"
+#include "lsp/LspManager.h"
 
 // Disable min/max macros from Windows headers
 #undef min
@@ -44,6 +45,10 @@ namespace
 
     // Icon mapping cache
     std::unordered_map<std::string, std::string> g_iconMap;
+    std::mutex g_iconMapMutex;
+    std::atomic<bool> g_iconMapReady{false};
+    std::atomic<bool> g_iconMapLoading{false};
+    const std::string g_defaultIconPath = "assets/ressource/icons/document.svg";
 
 }
 
@@ -76,15 +81,23 @@ static std::string ReadFileToString(const std::wstring &wpath)
     return ss.str();
 }
 
-static void LoadIconMapIfNeeded()
-{
-    if (!g_iconMap.empty())
-        return;
+static void InvalidateMainWindow();
 
+static void LoadIconMapBlocking()
+{
     std::wstring jsonPath = L"assets\\ressource\\material-icons.json";
     std::string content = ReadFileToString(jsonPath);
+    std::unordered_map<std::string, std::string> local;
     if (content.empty())
+    {
+        {
+            std::lock_guard<std::mutex> lk(g_iconMapMutex);
+            g_iconMap = std::move(local);
+        }
+        g_iconMapReady.store(true);
+        g_iconMapLoading.store(false);
         return;
+    }
 
     std::regex re(R"((?:"|')([a-zA-Z0-9_\-\.]+)(?:"|')\s*:\s*\{[^}]*?(?:"|')iconPath(?:"|')\s*:\s*(?:"|')([^"']+)(?:"|'))");
     std::smatch m;
@@ -100,15 +113,45 @@ static void LoadIconMapIfNeeded()
             {
                 path = path.substr(2);
             }
-            g_iconMap[key] = path;
+            local[key] = path;
         }
         it = m.suffix().first;
     }
+
+    {
+        std::lock_guard<std::mutex> lk(g_iconMapMutex);
+        g_iconMap = std::move(local);
+    }
+    g_iconMapReady.store(true);
+    g_iconMapLoading.store(false);
+    InvalidateMainWindow();
+}
+
+static void LoadIconMapIfNeeded(bool allowBlocking)
+{
+    if (g_iconMapReady.load())
+        return;
+
+    bool expected = false;
+    if (!g_iconMapLoading.compare_exchange_strong(expected, true))
+        return;
+
+    if (allowBlocking)
+    {
+        LoadIconMapBlocking();
+        return;
+    }
+
+    std::thread([]()
+                { LoadIconMapBlocking(); })
+        .detach();
 }
 
 static std::string GetIconPathForExtension(const std::string &ext)
 {
-    LoadIconMapIfNeeded();
+    LoadIconMapIfNeeded(false);
+    if (!g_iconMapReady.load())
+        return g_defaultIconPath;
 
     std::string key = ext;
     if (!key.empty() && key[0] == '.')
@@ -120,20 +163,23 @@ static std::string GetIconPathForExtension(const std::string &ext)
         key[i] = (char)::tolower((unsigned char)key[i]);
     }
 
-    auto it = g_iconMap.find(key);
-    if (it != g_iconMap.end())
     {
-        return "assets/ressource/" + it->second;
+        std::lock_guard<std::mutex> lk(g_iconMapMutex);
+        auto it = g_iconMap.find(key);
+        if (it != g_iconMap.end())
+        {
+            return "assets/ressource/" + it->second;
+        }
+
+        // Fallback
+        auto fallback = g_iconMap.find("document");
+        if (fallback != g_iconMap.end())
+        {
+            return "assets/ressource/" + fallback->second;
+        }
     }
 
-    // Fallback
-    auto fallback = g_iconMap.find("document");
-    if (fallback != g_iconMap.end())
-    {
-        return "assets/ressource/" + fallback->second;
-    }
-
-    return {};
+    return g_defaultIconPath;
 }
 
 static ID2D1Bitmap *CreateBitmapFromRGBA(ID2D1RenderTarget *ctx, unsigned char *data, int w, int h, float dpi)
@@ -245,6 +291,15 @@ void ExplorerManager::Initialize(const std::wstring &rootPath)
     // store and start watcher
     watchPath_ = rootPath;
     StartWatching();
+
+    Lsp::LspManager::Instance().SetProjectRoot(rootPath);
+
+    // No background language server startup.
+}
+
+void ExplorerManager::PreloadIconMapAsync()
+{
+    LoadIconMapIfNeeded(false);
 }
 
 // Helper: invalidate main window when change detected
@@ -397,6 +452,13 @@ void ExplorerManager::CreateNewFile(const std::wstring &name)
             LoadDirectoryContents();
             // Sélectionner le nouvel élément afin qu'il soit visible et highlighté
             SetActivePath(targetPath);
+            // Ouvrir le fichier dans l'éditeur
+            HWND wnd = FindWindowW(L"NebulaTextWindowClass", NULL);
+            if (wnd)
+            {
+                auto *heapPath = new std::wstring(targetPath);
+                PostMessageW(wnd, WM_USER + 100, 0, (LPARAM)heapPath);
+            }
             InvalidateMainWindow();
         }
         else
@@ -1024,6 +1086,12 @@ void ExplorerManager::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
             {
                 return;
             }
+        }
+
+        // If we're renaming this item, keep focus on the inline input
+        if (inlineVisible_ && renameTargetIndex_ == idx)
+        {
+            return;
         }
 
         if (isDirectory)
@@ -1678,6 +1746,9 @@ void ExplorerManager::ShowInlineInput(Input::Type type)
     inlineType_ = type;
     inlineText_.clear();
     inlineCursorPos_ = 0;
+    inlineHasSelection_ = false;
+    inlineSelStart_ = 0;
+    inlineSelEnd_ = 0;
 
     inlineTargetLocked_ = true;
     inlineTargetFullPath_.clear();
@@ -1804,11 +1875,22 @@ void ExplorerManager::ShowRenameInline(int itemIndex)
     // store original full path
     renameTargetIndex_ = itemIndex;
     renameOriginalFullPath_ = state_.items[itemIndex].fullPath;
+    renameTargetIsDir_ = state_.items[itemIndex].isDirectory;
 
     // prefill with the display name
     inlineType_ = state_.items[itemIndex].isDirectory ? Input::Type::Folder : Input::Type::File;
     inlineText_ = state_.items[itemIndex].name;
-    inlineCursorPos_ = (int)inlineText_.size();
+    // Select base name (like VSCode) when possible
+    inlineSelStart_ = 0;
+    inlineSelEnd_ = (int)inlineText_.size();
+    if (inlineType_ == Input::Type::File)
+    {
+        size_t dot = inlineText_.find_last_of(L'.');
+        if (dot != std::wstring::npos && dot > 0)
+            inlineSelEnd_ = (int)dot;
+    }
+    inlineHasSelection_ = (inlineSelEnd_ > inlineSelStart_);
+    inlineCursorPos_ = inlineSelEnd_;
     inlineVisible_ = true;
 
     // Lock inline target to this item's path to avoid watcher moving it
@@ -1824,6 +1906,9 @@ void ExplorerManager::HideInlineInput()
     inlineVisible_ = false;
     inlineText_.clear();
     inlineCursorPos_ = 0;
+    inlineHasSelection_ = false;
+    inlineSelStart_ = 0;
+    inlineSelEnd_ = 0;
 
     // Remove the placeholder item if it exists
     {
@@ -1842,6 +1927,7 @@ void ExplorerManager::HideInlineInput()
     // clear any rename target state
     renameTargetIndex_ = -1;
     renameOriginalFullPath_.clear();
+    renameTargetIsDir_ = false;
     // clear locked inline target
     inlineTargetLocked_ = false;
     inlineTargetFullPath_.clear();
@@ -1860,6 +1946,15 @@ void ExplorerManager::OnCharInline(wchar_t ch)
         return;
     if (ch == 8)
     {
+        if (inlineHasSelection_)
+        {
+            int a = std::min(inlineSelStart_, inlineSelEnd_);
+            int b = std::max(inlineSelStart_, inlineSelEnd_);
+            inlineText_.erase(a, b - a);
+            inlineCursorPos_ = a;
+            inlineHasSelection_ = false;
+            return;
+        }
         if (inlineCursorPos_ > 0)
         {
             inlineText_.erase(inlineCursorPos_ - 1, 1);
@@ -1868,6 +1963,14 @@ void ExplorerManager::OnCharInline(wchar_t ch)
     }
     else
     {
+        if (inlineHasSelection_)
+        {
+            int a = std::min(inlineSelStart_, inlineSelEnd_);
+            int b = std::max(inlineSelStart_, inlineSelEnd_);
+            inlineText_.erase(a, b - a);
+            inlineCursorPos_ = a;
+            inlineHasSelection_ = false;
+        }
         inlineText_.insert(inlineCursorPos_, 1, ch);
         inlineCursorPos_++;
     }
@@ -1908,6 +2011,15 @@ void ExplorerManager::OnKeyDownInline(WPARAM key)
                         {
                             LoadDirectoryContents();
                             SetActivePath(newPath.wstring());
+                            if (!renameTargetIsDir_)
+                            {
+                                HWND wnd = FindWindowW(L"NebulaTextWindowClass", NULL);
+                                if (wnd)
+                                {
+                                    auto *payload = new RenamePathPayload{oldPath.wstring(), newPath.wstring()};
+                                    PostMessageW(wnd, WM_EDITOR_FILE_RENAMED, 0, (LPARAM)payload);
+                                }
+                            }
                         }
                     }
                 }
@@ -1919,6 +2031,7 @@ void ExplorerManager::OnKeyDownInline(WPARAM key)
                 // clear rename state
                 renameTargetIndex_ = -1;
                 renameOriginalFullPath_.clear();
+                renameTargetIsDir_ = false;
             }
             else
             {
@@ -1949,6 +2062,13 @@ void ExplorerManager::OnKeyDownInline(WPARAM key)
                             Logger::Instance().Log(L"Explorer: created file: " + targetPath);
                             LoadDirectoryContents();
                             SetActivePath(targetPath);
+                            // Open in editor
+                            HWND wnd = FindWindowW(L"NebulaTextWindowClass", NULL);
+                            if (wnd)
+                            {
+                                auto *heapPath = new std::wstring(targetPath);
+                                PostMessageW(wnd, WM_USER + 100, 0, (LPARAM)heapPath);
+                            }
                             InvalidateMainWindow();
                         }
                         else
@@ -1983,20 +2103,33 @@ void ExplorerManager::OnKeyDownInline(WPARAM key)
         HideInlineInput();
         break;
     case VK_LEFT:
+        inlineHasSelection_ = false;
         if (inlineCursorPos_ > 0)
             inlineCursorPos_--;
         break;
     case VK_RIGHT:
+        inlineHasSelection_ = false;
         if (inlineCursorPos_ < (int)inlineText_.size())
             inlineCursorPos_++;
         break;
     case VK_HOME:
+        inlineHasSelection_ = false;
         inlineCursorPos_ = 0;
         break;
     case VK_END:
+        inlineHasSelection_ = false;
         inlineCursorPos_ = (int)inlineText_.size();
         break;
     case VK_DELETE:
+        if (inlineHasSelection_)
+        {
+            int a = std::min(inlineSelStart_, inlineSelEnd_);
+            int b = std::max(inlineSelStart_, inlineSelEnd_);
+            inlineText_.erase(a, b - a);
+            inlineCursorPos_ = a;
+            inlineHasSelection_ = false;
+            break;
+        }
         if (inlineCursorPos_ < (int)inlineText_.size())
             inlineText_.erase(inlineCursorPos_, 1);
         break;
@@ -2099,6 +2232,146 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
     {
         const auto &item = state_.items[i];
 
+        // Rename inline input (draw over the existing item row)
+        if (inlineVisible_ && renameTargetIndex_ == (int)i)
+        {
+            float indent = state_.leftPadding + (float)(item.depth * 12);
+            float iconWidth = item.isDirectory ? (float)win32_dpi_scale(16, dpi) : iconPx;
+
+            float baseLeft = state_.leftEdge + insetX;
+            float inputLeft = std::round(baseLeft + indent + iconWidth + 6.0f);
+            float inputWidth = std::round(state_.rightEdge - state_.leftPadding - inputLeft);
+            float inputTop = std::round(item.yPosition);
+            float inputHeight = item.height;
+
+            inlineRect_ = D2D1::RectF(inputLeft, inputTop, inputLeft + inputWidth, inputTop + inputHeight);
+
+            // Background
+            ID2D1SolidColorBrush *bg = nullptr;
+            ctx->CreateSolidColorBrush(D2D1::ColorF(0.16f, 0.16f, 0.16f, 1.0f), &bg);
+            DrawRoundedFill(inlineRect_, bg);
+
+            // Border
+            ID2D1SolidColorBrush *border = nullptr;
+            ctx->CreateSolidColorBrush(D2D1::ColorF(0.38f, 0.57f, 0.95f, 1.0f), &border);
+            {
+                D2D1_RECT_F rr = D2D1::RectF(
+                    std::round(inlineRect_.left),
+                    std::round(inlineRect_.top),
+                    std::round(inlineRect_.right),
+                    std::round(inlineRect_.bottom));
+                D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
+                ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                ctx->DrawRoundedRectangle(D2D1::RoundedRect(rr, corner, corner), border, 1.0f);
+                ctx->SetAntialiasMode(oldAA);
+            }
+
+            // Icon (keep file/folder icon next to rename input)
+            if (!item.isDirectory)
+            {
+                ID2D1Bitmap *icon = GetIconForItem(ctx, item, hwnd);
+                if (icon)
+                {
+                    float iconY = std::round(item.yPosition + (item.height - iconPx) * 0.5f);
+                    D2D1_RECT_F iconRect = D2D1::RectF(
+                        std::round(baseLeft + indent),
+                        iconY,
+                        std::round(baseLeft + indent + iconPx),
+                        iconY + iconPx);
+                    ctx->DrawBitmap(icon, iconRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+                }
+            }
+
+            // Text
+            IDWriteTextFormat *tf = nullptr;
+            dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL,
+                                     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                     13.0f, L"en-us", &tf);
+            if (tf)
+            {
+                tf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                tf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            }
+
+            ID2D1SolidColorBrush *txtBrush = nullptr;
+            ctx->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.95f, 0.95f, 1.0f), &txtBrush);
+
+            D2D1_RECT_F textRect = D2D1::RectF(
+                inlineRect_.left + 8.0f, inlineRect_.top,
+                inlineRect_.right - 8.0f, inlineRect_.bottom);
+
+            if (inlineHasSelection_ && !inlineText_.empty())
+            {
+                int a = std::min(inlineSelStart_, inlineSelEnd_);
+                int b = std::max(inlineSelStart_, inlineSelEnd_);
+                std::wstring before = inlineText_.substr(0, a);
+                std::wstring selected = inlineText_.substr(0, b);
+
+                float startX = textRect.left;
+                float endX = textRect.left;
+                IDWriteTextLayout *beforeLayout = nullptr;
+                IDWriteTextLayout *selEndLayout = nullptr;
+                if (dwrite->CreateTextLayout(before.c_str(), (UINT32)before.size(), tf,
+                                             textRect.right - textRect.left, textRect.bottom - textRect.top, &beforeLayout) == S_OK && beforeLayout)
+                {
+                    DWRITE_TEXT_METRICS m1;
+                    beforeLayout->GetMetrics(&m1);
+                    startX += m1.width;
+                    beforeLayout->Release();
+                }
+                if (dwrite->CreateTextLayout(selected.c_str(), (UINT32)selected.size(), tf,
+                                             textRect.right - textRect.left, textRect.bottom - textRect.top, &selEndLayout) == S_OK && selEndLayout)
+                {
+                    DWRITE_TEXT_METRICS m2;
+                    selEndLayout->GetMetrics(&m2);
+                    endX += m2.width;
+                    selEndLayout->Release();
+                }
+
+                ID2D1SolidColorBrush *selBrush = nullptr;
+                ctx->CreateSolidColorBrush(D2D1::ColorF(0.25f, 0.45f, 0.85f, 0.45f), &selBrush);
+                if (selBrush)
+                {
+                    D2D1_RECT_F selRect = D2D1::RectF(startX, textRect.top + 2.0f, endX, textRect.bottom - 2.0f);
+                    ctx->FillRectangle(selRect, selBrush);
+                    selBrush->Release();
+                }
+            }
+
+            if (!inlineText_.empty())
+            {
+                ctx->DrawTextW(inlineText_.c_str(), (UINT32)inlineText_.size(), tf, textRect, txtBrush);
+            }
+
+            // Caret
+            std::wstring before = inlineText_.substr(0, inlineCursorPos_);
+            IDWriteTextLayout *layout = nullptr;
+            dwrite->CreateTextLayout(before.c_str(), (UINT32)before.size(), tf,
+                                     textRect.right - textRect.left, textRect.bottom - textRect.top, &layout);
+            if (layout)
+            {
+                DWRITE_TEXT_METRICS metrics;
+                layout->GetMetrics(&metrics);
+                float cx = textRect.left + metrics.width;
+                ctx->DrawLine(
+                    D2D1::Point2F(cx, textRect.top + 2.0f),
+                    D2D1::Point2F(cx, textRect.bottom - 2.0f),
+                    txtBrush, 1.0f);
+                layout->Release();
+            }
+
+            if (tf)
+                tf->Release();
+            if (txtBrush)
+                txtBrush->Release();
+            if (border)
+                border->Release();
+            if (bg)
+                bg->Release();
+
+            continue;
+        }
+
         // Si c'est le placeholder, dessiner l'input inline à cet endroit
         if (item.fullPath == L"__inline_placeholder__")
         {
@@ -2107,7 +2380,8 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
                 float indent = state_.leftPadding + (float)(item.depth * 12);
                 float iconWidth = item.isDirectory ? (float)win32_dpi_scale(16, dpi) : iconPx;
 
-                float inputLeft = std::round(state_.leftEdge + indent + iconWidth + 6.0f);
+                float baseLeft = state_.leftEdge + insetX;
+                float inputLeft = std::round(baseLeft + indent + iconWidth + 6.0f);
                 float inputWidth = std::round(state_.rightEdge - state_.leftPadding - inputLeft);
                 float inputTop = std::round(item.yPosition);
                 float inputHeight = item.height;
@@ -2116,13 +2390,45 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
 
                 // Background
                 ID2D1SolidColorBrush *bg = nullptr;
-                ctx->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f), &bg);
-                ctx->FillRectangle(inlineRect_, bg);
+                ctx->CreateSolidColorBrush(D2D1::ColorF(0.16f, 0.16f, 0.16f, 1.0f), &bg);
+                DrawRoundedFill(inlineRect_, bg);
 
                 // Border
                 ID2D1SolidColorBrush *border = nullptr;
-                ctx->CreateSolidColorBrush(D2D1::ColorF(0.3f, 0.5f, 0.8f, 1.0f), &border);
-                ctx->DrawRectangle(inlineRect_, border, 1.0f);
+                ctx->CreateSolidColorBrush(D2D1::ColorF(0.38f, 0.57f, 0.95f, 1.0f), &border);
+                {
+                    D2D1_RECT_F rr = D2D1::RectF(
+                        std::round(inlineRect_.left),
+                        std::round(inlineRect_.top),
+                        std::round(inlineRect_.right),
+                        std::round(inlineRect_.bottom));
+                    D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
+                    ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    ctx->DrawRoundedRectangle(D2D1::RoundedRect(rr, corner, corner), border, 1.0f);
+                    ctx->SetAntialiasMode(oldAA);
+                }
+
+                // File icon preview (based on typed extension)
+                if (inlineType_ == Input::Type::File)
+                {
+                    ExplorerItem previewItem;
+                    previewItem.isDirectory = false;
+                    if (!inlineText_.empty())
+                    {
+                        previewItem.extension = std::filesystem::path(inlineText_).extension().string();
+                    }
+                    ID2D1Bitmap *icon = GetIconForItem(ctx, previewItem, hwnd);
+                    if (icon)
+                    {
+                        float iconY = std::round(item.yPosition + (item.height - iconPx) * 0.5f);
+                        D2D1_RECT_F iconRect = D2D1::RectF(
+                            std::round(baseLeft + indent),
+                            iconY,
+                            std::round(baseLeft + indent + iconPx),
+                            iconY + iconPx);
+                        ctx->DrawBitmap(icon, iconRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+                    }
+                }
 
                 // Text
                 IDWriteTextFormat *tf = nullptr;
@@ -2136,7 +2442,7 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
                 }
 
                 ID2D1SolidColorBrush *txtBrush = nullptr;
-                ctx->CreateSolidColorBrush(D2D1::ColorF(0.9f, 0.9f, 0.9f, 1.0f), &txtBrush);
+                ctx->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.95f, 0.95f, 1.0f), &txtBrush);
 
                 D2D1_RECT_F textRect = D2D1::RectF(
                     inlineRect_.left + 8.0f, inlineRect_.top,
@@ -2145,7 +2451,7 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
                 if (inlineText_.empty())
                 {
                     ID2D1SolidColorBrush *ph = nullptr;
-                    ctx->CreateSolidColorBrush(D2D1::ColorF(0.5f, 0.5f, 0.5f, 1.0f), &ph);
+                    ctx->CreateSolidColorBrush(D2D1::ColorF(0.6f, 0.6f, 0.6f, 1.0f), &ph);
                     std::wstring placeholder = inlineType_ == Input::Type::File ? L"Nom du fichier..." : L"Nom du dossier...";
                     ctx->DrawTextW(placeholder.c_str(), (UINT32)placeholder.size(), tf, textRect, ph);
                     if (ph)
@@ -2159,6 +2465,53 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
                 }
                 else
                 {
+                    if (inlineHasSelection_)
+                    {
+                        int a = std::min(inlineSelStart_, inlineSelEnd_);
+                        int b = std::max(inlineSelStart_, inlineSelEnd_);
+                        IDWriteTextLayout *selLayout = nullptr;
+                        dwrite->CreateTextLayout(inlineText_.c_str(), (UINT32)inlineText_.size(), tf,
+                                                 textRect.right - textRect.left, textRect.bottom - textRect.top, &selLayout);
+                        if (selLayout)
+                        {
+                            DWRITE_TEXT_METRICS metrics;
+                            selLayout->GetMetrics(&metrics);
+                            float fullWidth = metrics.width;
+                            std::wstring before = inlineText_.substr(0, a);
+                            std::wstring selected = inlineText_.substr(0, b);
+
+                            IDWriteTextLayout *beforeLayout = nullptr;
+                            IDWriteTextLayout *selEndLayout = nullptr;
+                            float startX = textRect.left;
+                            float endX = textRect.left;
+                            if (dwrite->CreateTextLayout(before.c_str(), (UINT32)before.size(), tf,
+                                                         textRect.right - textRect.left, textRect.bottom - textRect.top, &beforeLayout) == S_OK && beforeLayout)
+                            {
+                                DWRITE_TEXT_METRICS m1;
+                                beforeLayout->GetMetrics(&m1);
+                                startX += m1.width;
+                                beforeLayout->Release();
+                            }
+                            if (dwrite->CreateTextLayout(selected.c_str(), (UINT32)selected.size(), tf,
+                                                         textRect.right - textRect.left, textRect.bottom - textRect.top, &selEndLayout) == S_OK && selEndLayout)
+                            {
+                                DWRITE_TEXT_METRICS m2;
+                                selEndLayout->GetMetrics(&m2);
+                                endX += m2.width;
+                                selEndLayout->Release();
+                            }
+
+                            ID2D1SolidColorBrush *selBrush = nullptr;
+                            ctx->CreateSolidColorBrush(D2D1::ColorF(0.25f, 0.45f, 0.85f, 0.45f), &selBrush);
+                            if (selBrush)
+                            {
+                                D2D1_RECT_F selRect = D2D1::RectF(startX, textRect.top + 2.0f, endX, textRect.bottom - 2.0f);
+                                ctx->FillRectangle(selRect, selBrush);
+                                selBrush->Release();
+                            }
+                            selLayout->Release();
+                        }
+                    }
                     ctx->DrawTextW(inlineText_.c_str(), (UINT32)inlineText_.size(), tf, textRect, txtBrush);
 
                     // Caret
@@ -2597,8 +2950,19 @@ void ExplorerManager::DrawSearchPanel(ID2D1RenderTarget *ctx, IDWriteFactory *dw
     float top = state_.topEdge + state_.titleHeight + 8.0f;
     float inputH = 30.0f;
     D2D1_RECT_F inputRect = D2D1::RectF(left, top, right, top + inputH);
-    ctx->FillRectangle(inputRect, bg);
-    ctx->DrawRectangle(inputRect, border, 1.0f);
+    // Rounded input like explorer items
+    {
+        D2D1_RECT_F rr = D2D1::RectF(
+            std::round(inputRect.left),
+            std::round(inputRect.top),
+            std::round(inputRect.right),
+            std::round(inputRect.bottom));
+        D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
+        ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        ctx->FillRoundedRectangle(D2D1::RoundedRect(rr, 4.0f, 4.0f), bg);
+        ctx->DrawRoundedRectangle(D2D1::RoundedRect(rr, 4.0f, 4.0f), border, 1.0f);
+        ctx->SetAntialiasMode(oldAA);
+    }
 
     // Draw query
     std::wstring display = searchQuery_.empty() ? std::wstring(L"Search...") : searchQuery_;

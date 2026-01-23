@@ -8,6 +8,36 @@
 
 namespace Orion
 {
+    namespace
+    {
+        bool IsCppLikeExt(const std::wstring &e)
+        {
+            return e == L".c" || e == L".cpp" || e == L".cc" || e == L".cxx" ||
+                e == L".h" || e == L".hpp" || e == L".hh" || e == L".hxx" || e == L".inl";
+        }
+
+        bool IsIncludeContext(const std::vector<std::wstring> &lines, int lineIndex, int column)
+        {
+            if (lineIndex < 0 || lineIndex >= (int)lines.size())
+                return false;
+            if (column <= 0)
+                return false;
+            const std::wstring &line = lines[lineIndex];
+            size_t posInclude = line.rfind(L"#include", (size_t)column);
+            if (posInclude == std::wstring::npos)
+                return false;
+            size_t lt = line.find_last_of(L"<\"", (size_t)column - 1);
+            if (lt == std::wstring::npos || lt <= posInclude)
+                return false;
+            wchar_t openCh = line[lt];
+            wchar_t closeCh = (openCh == L'<') ? L'>' : L'"';
+            size_t closePos = line.find(closeCh, lt + 1);
+            if (closePos != std::wstring::npos && closePos < (size_t)column)
+                return false;
+            return true;
+        }
+    }
+
     // --- OnChar (complete) ---
     void Editor::OnChar(wchar_t ch)
     {
@@ -57,11 +87,29 @@ namespace Orion
             }
         }
 
-        // If a previous OnKeyDown consumed this char (e.g. Ctrl+Space), suppress it
-        if (suppressNextChar_ && ch == L' ')
+        // If a previous OnKeyDown consumed this char (e.g. Ctrl+Space or completion Enter), suppress it
+        if (suppressNextChar_)
         {
-            suppressNextChar_ = false;
-            return;
+            bool swallow = false;
+            if (suppressNextCharValue_ == 0)
+            {
+                swallow = true;
+            }
+            else if (suppressNextCharValue_ == L'\r' || suppressNextCharValue_ == L'\n')
+            {
+                swallow = (ch == L'\r' || ch == L'\n');
+            }
+            else
+            {
+                swallow = (ch == suppressNextCharValue_);
+            }
+
+            if (swallow)
+            {
+                suppressNextChar_ = false;
+                suppressNextCharValue_ = 0;
+                return;
+            }
         }
 
         if (ch < 32 && ch != L'\t' && ch != L'\r' && ch != L'\n')
@@ -95,12 +143,6 @@ namespace Orion
                 for (auto &c : ext)
                     c = towlower(c);
             }
-        }
-
-        // If completion popup visible and typing, hide it
-        if (completionPopup_ && completionPopup_->IsVisible())
-        {
-            completionPopup_->Hide();
         }
 
         if (ch == L'\r' || ch == L'\n')
@@ -671,6 +713,37 @@ namespace Orion
             }
         }
 
+        // Keep include completion open while typing inside #include <...> or #include "..."
+        if (completionService_ && completionPopup_ && IsCppLikeExt(ext))
+        {
+            bool includeCtx = IsIncludeContext(state_.lines, state_.caret.line, state_.caret.column);
+            if (includeCtx)
+            {
+                Completion::CompletionContext ctx{state_.filePath, state_.lines, state_.caret.line, state_.caret.column, ext};
+                auto items = completionService_->GetCompletions(ctx);
+                if (!items.empty())
+                {
+                    std::vector<std::wstring> labels;
+                    labels.reserve(items.size());
+                    for (const auto &it : items)
+                        labels.push_back(it.label);
+
+                    completionPopup_->SetItems(labels);
+                    D2D1_POINT_2F p = TextToScreenPosition(state_.caret);
+                    completionPopup_->UpdateLayout(p.x, p.y + metrics_.lineHeight, 520.0f, metrics_.lineHeight);
+                    completionPopup_->Show();
+                }
+                else if (completionPopup_->IsVisible())
+                {
+                    completionPopup_->Hide();
+                }
+            }
+            else if (completionPopup_->IsVisible())
+            {
+                completionPopup_->Hide();
+            }
+        }
+
     ONCHAR_FINISH:
         state_.caretVisible = true;
         Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
@@ -697,6 +770,56 @@ namespace Orion
 
         bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
         bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+
+        // Ctrl+; -> apply quick fix if available on caret
+        if (ctrl && !shift && key == VK_OEM_1)
+        {
+            auto findDiagAtCaret = [&]() -> const Lsp::Diagnostic*
+            {
+                for (const auto &d : diagnostics_)
+                {
+                    if (d.line != state_.caret.line)
+                        continue;
+                    if (state_.caret.column >= d.startCol && state_.caret.column <= d.endCol)
+                        return &d;
+                }
+                return nullptr;
+            };
+
+            const Lsp::Diagnostic *diag = findDiagAtCaret();
+            if (diag && !diag->suggestion.empty())
+            {
+                // Only handle simple "add semicolon" suggestion for now
+                if (diag->suggestion.find(L"Add ';'") != std::wstring::npos)
+                {
+                    if (!state_.lines.empty() && state_.caret.line >= 0 && state_.caret.line < (int)state_.lines.size())
+                    {
+                        std::wstring &line = state_.lines[state_.caret.line];
+                        size_t lastNonWs = line.find_last_not_of(L" \t");
+                        if (lastNonWs == std::wstring::npos)
+                            lastNonWs = 0;
+                        if (line.empty() || line[lastNonWs] != L';')
+                        {
+                            if (undoStack_.empty() || undoStack_.back().lines != state_.lines ||
+                                undoStack_.back().caret.line != state_.caret.line ||
+                                undoStack_.back().caret.column != state_.caret.column)
+                            {
+                                undoStack_.push_back(state_);
+                                if (undoStack_.size() > maxUndoEntries_)
+                                    undoStack_.erase(undoStack_.begin());
+                            }
+
+                            if (lastNonWs >= line.size())
+                                line.push_back(L';');
+                            else
+                                line.insert(lastNonWs + 1, 1, L';');
+                            MarkDirty();
+                        }
+                    }
+                }
+            }
+            return;
+        }
 
         // determine file extension for language-specific behavior
         std::wstring ext;
@@ -735,6 +858,7 @@ namespace Orion
                 completionPopup_->UpdateLayout(p.x, p.y + metrics_.lineHeight, 400.0f, metrics_.lineHeight);
                 completionPopup_->Show();
                 suppressNextChar_ = true;
+                suppressNextCharValue_ = L' ';
             }
             return;
         }
@@ -873,6 +997,8 @@ namespace Orion
                         pendingCompletionLabel_.clear();
                     }
                 }
+                suppressNextChar_ = true;
+                suppressNextCharValue_ = L'\r';
             }
 
             if (key == VK_RETURN || key == VK_ESCAPE || key == VK_UP || key == VK_DOWN)
@@ -1246,6 +1372,37 @@ namespace Orion
                 }
             }
             break;
+        }
+
+        // Keep include completion open while typing inside #include <...> or #include "..."
+        if (completionService_ && completionPopup_ && IsCppLikeExt(ext))
+        {
+            bool includeCtx = IsIncludeContext(state_.lines, state_.caret.line, state_.caret.column);
+            if (includeCtx)
+            {
+                Completion::CompletionContext ctx{state_.filePath, state_.lines, state_.caret.line, state_.caret.column, ext};
+                auto items = completionService_->GetCompletions(ctx);
+                if (!items.empty())
+                {
+                    std::vector<std::wstring> labels;
+                    labels.reserve(items.size());
+                    for (const auto &it : items)
+                        labels.push_back(it.label);
+
+                    completionPopup_->SetItems(labels);
+                    D2D1_POINT_2F p = TextToScreenPosition(state_.caret);
+                    completionPopup_->UpdateLayout(p.x, p.y + metrics_.lineHeight, 520.0f, metrics_.lineHeight);
+                    completionPopup_->Show();
+                }
+                else if (completionPopup_->IsVisible())
+                {
+                    completionPopup_->Hide();
+                }
+            }
+            else if (completionPopup_->IsVisible())
+            {
+                completionPopup_->Hide();
+            }
         }
 
         // If caret moved while Shift is held, start (or update) selection

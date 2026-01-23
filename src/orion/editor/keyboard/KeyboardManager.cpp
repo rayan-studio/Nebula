@@ -8,6 +8,7 @@
 #include "ui/panels/search/SearchPanel.h"
 #include "ui/panels/terminal/TerminalPanel.h"
 #include "ui/components/input/InputTypeFixed.h"
+#include "lsp/LspManager.h"
 
 #include <commdlg.h>
 #include <shobjidl.h>
@@ -186,6 +187,54 @@ void KeyboardManager::SaveActiveTab()
 
 bool KeyboardManager::HandleGlobalShortcuts(WPARAM wParam, const Mods &m)
 {
+    if (!m.ctrl && !m.shift && !m.alt && wParam == VK_F12)
+    {
+        int active = window_->GetTabBar()->GetActiveTabIndex();
+        Orion::Editor *editor = window_->GetEditorForTab(active);
+        if (editor)
+        {
+            Orion::CaretPosition caret = editor->GetCaret();
+            auto lines = editor->GetLinesSnapshot();
+            if (caret.line >= 0 && caret.line < (int)lines.size())
+            {
+                const std::wstring &ln = lines[caret.line];
+                auto isWordChar = [](wchar_t c)
+                {
+                    return (iswalnum(c) != 0) || (c == L'_');
+                };
+
+                std::wstring word;
+                int col = caret.column;
+                if (!ln.empty())
+                {
+                    int idx = col;
+                    if (idx == (int)ln.size())
+                        idx = (int)ln.size() - 1;
+                    if (idx >= 0 && idx < (int)ln.size() && isWordChar(ln[idx]))
+                    {
+                        int left = idx;
+                        while (left > 0 && isWordChar(ln[left - 1]))
+                            --left;
+                        int right = idx;
+                        while (right + 1 < (int)ln.size() && isWordChar(ln[right + 1]))
+                            ++right;
+                        if (right >= left)
+                            word = ln.substr(left, right - left + 1);
+                    }
+                }
+
+                auto loc = Lsp::LspManager::Instance().GoToDefinition(editor->GetFilePath(), ln, caret.line, caret.column, word);
+                if (loc.has_value())
+                {
+                    auto *heapPath = new std::wstring(loc->filePath);
+                    PostMessageW(window_->GetHwnd(), WM_USER + 100, (WPARAM)loc->line, (LPARAM)heapPath);
+                    return true;
+                }
+            }
+        }
+        return true;
+    }
+
     // Toggle terminal: Ctrl+`
     if (m.ctrl && !m.shift && !m.alt && (wParam == VK_OEM_3))
     {

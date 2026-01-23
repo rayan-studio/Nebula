@@ -42,6 +42,8 @@ public:
     bool IsInitialized() const; // true si au moins une session initialisée
 
     const State& GetState() const { return state_; }
+    float GetHeightPx() const { return heightPx_; }
+    void SetHeightPx(float h) { heightPx_ = h; }
 
     // Multi-terminal API
     int  GetTerminalCount() const;
@@ -59,6 +61,8 @@ public:
     void UpdateLayout(HWND hwnd, float left, float top, float right, float bottom);
     bool IsPointInPanel(POINT pt) const;
     bool IsPointInResizeZone(POINT pt) const;
+    bool IsPointInTabsBarArea(POINT pt) const;
+    bool IsPointInPlusButton(POINT pt) const;
 
     // Mouse
     void OnLeftButtonDown(HWND hwnd, POINT pt);
@@ -112,8 +116,9 @@ private:
     bool resizeHover_ = false;
 
     float left_ = 0, top_ = 0, right_ = 0, bottom_ = 0;
-    float resizeZoneH_ = 10.0f;
+    float resizeZoneH_ = 6.0f;
     float minHeight_ = 120.0f;
+    float heightPx_ = 0.0f;
 
     POINT dragStart_{};
     float startTop_ = 0;

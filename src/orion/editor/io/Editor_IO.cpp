@@ -183,6 +183,7 @@ namespace Orion
 
         if (state_.lines.empty())
             state_.lines.push_back(L"");
+
     }
 
     void Editor::CreateEmpty()

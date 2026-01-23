@@ -12,6 +12,7 @@
 #include "ui/components/footer/Footer.h"
 #include "helpers/window_helpers.h"
 #include "ui/screens/Welcome.h"
+#include "ui/screens/SettingsTab.h"
 #include "utils/logger/Logger.h"
 #include "ui/layout/ExplorerLayoutState.h"
 
@@ -145,46 +146,69 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
         int activeTabIndex = tabBar->GetActiveTabIndex();
         if (activeTabIndex >= 0)
         {
-            Orion::Editor *editor = window->GetEditorForTab(activeTabIndex);
-            if (editor)
-            {
-                UINT dpiInner = GetDpiForWindow(hwnd);
-                int footerLogicalH = 28;
-                int footerH = win32_dpi_scale(footerLogicalH, dpiInner);
+            UINT dpiInner = GetDpiForWindow(hwnd);
+            int footerLogicalH = 28;
+            int footerH = win32_dpi_scale(footerLogicalH, dpiInner);
 
-                float editorLeft = tabBarLeft;
-                float editorTop = tabBarTop + tabBar->GetHeight();
-                float editorRight = tabBarRight;
-                // Reserve footer area so editor content doesn't overlap it
-                float editorBottom = (float)(client.bottom - footerH);
-                
-                // If terminal is visible, reserve a fixed terminal height and reduce editor space
-                TerminalPanel& terminal = GetTerminalPanel();
-                if (terminal.IsVisible()) {
-                    float termH = (float)win32_dpi_scale(260, dpiInner);
-                    float termTop = editorBottom - termH;
-                    float termBottom = editorBottom;
+            float editorLeft = tabBarLeft;
+            float editorTop = tabBarTop + tabBar->GetHeight();
+            float editorRight = tabBarRight;
+            // Reserve footer area so editor content doesn't overlap it
+            float editorBottom = (float)(client.bottom - footerH);
 
-                    terminal.UpdateLayout(hwnd, editorLeft, termTop, editorRight, termBottom);
-                    editorBottom = termTop;
+            // If terminal is visible, reserve a fixed terminal height and reduce editor space
+            TerminalPanel& terminal = GetTerminalPanel();
+            if (terminal.IsVisible()) {
+                float termH = terminal.GetHeightPx();
+                if (termH <= 0.0f)
+                {
+                    termH = (float)win32_dpi_scale(260, dpiInner);
+                    terminal.SetHeightPx(termH);
                 }
+                // Prevent terminal from reaching the title bar by keeping a minimum editor area
+                int minEditorLogicalH = 140;
+                float minEditorH = (float)win32_dpi_scale(minEditorLogicalH, dpiInner);
+                float maxTermH = editorBottom - (editorTop + minEditorH);
+                if (maxTermH > 0.0f && termH > maxTermH)
+                    termH = maxTermH;
+                float termTop = editorBottom - termH;
+                float termBottom = editorBottom;
 
-                editor->UpdateLayout(hwnd, editorLeft, editorTop, editorRight, editorBottom);
-                editor->Draw(pRenderTarget_, pDWriteFactory_);
-                
-                // Draw terminal after editor
-                if (terminal.IsVisible()) {
-                    terminal.Draw(pRenderTarget_, pDWriteFactory_, hwnd);
-                }
-                
-                // Draw GGWave listener button (positioned from right edge)
-                float footerTopForGGWave = (float)(client.bottom - footerH);
-                GGWavePanel& ggwave = GetGGWavePanel();
-                // Position relative to window width (right edge)
-                float windowWidth = (float)client.right;
-                ggwave.UpdateLayout(hwnd, footerTopForGGWave, windowWidth);
-                ggwave.Draw(pRenderTarget_, pDWriteFactory_, hwnd);
+                terminal.UpdateLayout(hwnd, editorLeft, termTop, editorRight, termBottom);
+                editorBottom = termTop;
             }
+
+            if (window->IsSettingsTabIndex(activeTabIndex))
+            {
+                SettingsTabView *settings = window->GetSettingsTabView();
+                if (settings)
+                {
+                    settings->UpdateLayout(hwnd, editorLeft, editorTop, editorRight, editorBottom);
+                    settings->Draw(pRenderTarget_, pDWriteFactory_, hwnd);
+                }
+            }
+            else
+            {
+                Orion::Editor *editor = window->GetEditorForTab(activeTabIndex);
+                if (editor)
+                {
+                    editor->UpdateLayout(hwnd, editorLeft, editorTop, editorRight, editorBottom);
+                    editor->Draw(pRenderTarget_, pDWriteFactory_);
+                }
+            }
+            
+            // Draw terminal after editor/settings
+            if (terminal.IsVisible()) {
+                terminal.Draw(pRenderTarget_, pDWriteFactory_, hwnd);
+            }
+            
+            // Draw GGWave listener button (positioned from right edge)
+            float footerTopForGGWave = (float)(client.bottom - footerH);
+            GGWavePanel& ggwave = GetGGWavePanel();
+            // Position relative to window width (right edge)
+            float windowWidth = (float)client.right;
+            ggwave.UpdateLayout(hwnd, footerTopForGGWave, windowWidth);
+            ggwave.Draw(pRenderTarget_, pDWriteFactory_, hwnd);
         }
         else
         {
@@ -202,7 +226,18 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
             // If terminal is visible, reserve a fixed terminal height and reduce welcome space
             TerminalPanel& terminal = GetTerminalPanel();
             if (terminal.IsVisible()) {
-                float termH = (float)win32_dpi_scale(260, dpiInner);
+                float termH = terminal.GetHeightPx();
+                if (termH <= 0.0f)
+                {
+                    termH = (float)win32_dpi_scale(260, dpiInner);
+                    terminal.SetHeightPx(termH);
+                }
+                // Prevent terminal from reaching the title bar by keeping a minimum editor area
+                int minEditorLogicalH = 140;
+                float minEditorH = (float)win32_dpi_scale(minEditorLogicalH, dpiInner);
+                float maxTermH = footerTop - (editorTop + minEditorH);
+                if (maxTermH > 0.0f && termH > maxTermH)
+                    termH = maxTermH;
                 float termTop = footerTop - termH;
                 float termBottom = footerTop;
 

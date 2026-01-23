@@ -18,6 +18,8 @@
 // Selection rendering
 #include "../selection/Selection.h"
 #include "orion/caret/CaretPosition.h"
+#include <unordered_map>
+#include "lsp/LspManager.h"
 
 // ============================================================================
 // HELPER : Conversion couleurs Web (hex) → Direct2D AVEC CORRECTION GAMMA sRGB
@@ -251,6 +253,8 @@ namespace Orion
         CaretPosition GetCaret() const { return state_.caret; }
         std::wstring GetFilePath() const { return state_.filePath; }
         std::wstring GetEncoding() const { return state_.encoding; }
+        void SetFilePath(const std::wstring &filePath) { state_.filePath = filePath; }
+        std::vector<std::wstring> GetLinesSnapshot() const { return state_.lines; }
         // Retourne le texte sélectionné (vide si pas de sélection)
         std::wstring GetSelectionText() const;
         // Indique si le buffer a du contenu non vide
@@ -265,6 +269,10 @@ namespace Orion
         void CancelInteraction();
         bool Undo();
 
+        // Diagnostics (LSP)
+        void SetDiagnostics(std::vector<Lsp::Diagnostic> diags) { diagnostics_ = std::move(diags); }
+        const std::vector<Lsp::Diagnostic> &GetDiagnostics() const { return diagnostics_; }
+
         friend void Caret::SetCaret(Editor &editor, int line, int column);
 
         void LoadFileAsync(HWND hwnd, const std::wstring &filePath, int tabIndex);
@@ -273,6 +281,7 @@ namespace Orion
         void ApplyLoadedFile(std::wstring filePath,
                              std::wstring encoding,
                              std::vector<std::wstring> lines);
+
 
     private:
         CustomFontCollectionLoader *fontLoader_ = nullptr;
@@ -317,6 +326,7 @@ namespace Orion
         std::wstring pendingCompletionTemplate_;
 
         bool suppressNextChar_ = false;
+        wchar_t suppressNextCharValue_ = 0;
         // Dirty flag: true when document has unsaved changes
         bool isDirty_ = false;
         void DrawSearchMatches(ID2D1RenderTarget *ctx);
@@ -341,6 +351,12 @@ namespace Orion
         DWORD lastClickTime_ = 0;
         POINT lastClickPos_ = {0, 0};
         int clickCount_ = 0;
+        POINT dragStartPos_ = {0, 0};
+        bool dragSelecting_ = false;
+        std::vector<Lsp::Diagnostic> diagnostics_;
+        std::wstring diagHoverText_;
+        bool diagHoverVisible_ = false;
+        POINT diagHoverPos_ = {0, 0};
     };
 
     class CustomTextRenderer : public IDWriteTextRenderer

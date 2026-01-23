@@ -409,6 +409,68 @@ std::vector<Token> Highlighter::TokenizeLine(const std::wstring &line, const std
     }
 
     // C/C++/JS/TS/Rust style tokenization (basic)
+    auto isCppLikeExt = [&]() -> bool
+    {
+        return ext == L".c" || ext == L".cpp" || ext == L".cc" || ext == L".cxx" ||
+            ext == L".h" || ext == L".hpp" || ext == L".hh" || ext == L".hxx" || ext == L".inl";
+    };
+
+    if (isCppLikeExt())
+    {
+        int n = (int)line.size();
+        int firstNonBOM = 0;
+        while (firstNonBOM < n && line[firstNonBOM] == 0xFEFF)
+            firstNonBOM++;
+
+        int i = firstNonBOM;
+        while (i < n && iswspace(line[i]))
+            i++;
+
+        if (i < n && line[i] == L'#')
+        {
+            int hashPos = i;
+            i++;
+            while (i < n && iswspace(line[i]))
+                i++;
+            int wordStart = i;
+            while (i < n && iswalpha(line[i]))
+                i++;
+
+            std::wstring directive = line.substr(wordStart, i - wordStart);
+            for (auto &c : directive) c = towlower(c);
+            if (directive == L"include")
+            {
+                out.push_back({firstNonBOM, i - firstNonBOM, TokenType::Preprocessor});
+
+                int wsStart = i;
+                while (wsStart < n && iswspace(line[wsStart]))
+                    wsStart++;
+                if (wsStart > i)
+                    out.push_back({i, wsStart - i, TokenType::Normal});
+
+                if (wsStart < n && (line[wsStart] == L'<' || line[wsStart] == L'"'))
+                {
+                    wchar_t endCh = (line[wsStart] == L'<') ? L'>' : L'"';
+                    int incStart = wsStart;
+                    int j = wsStart + 1;
+                    while (j < n && line[j] != endCh)
+                        j++;
+                    if (j < n)
+                        j++;
+                    out.push_back({incStart, j - incStart, TokenType::String});
+                    if (j < n)
+                        out.push_back({j, n - j, TokenType::Normal});
+                }
+                else if (wsStart < n)
+                {
+                    out.push_back({wsStart, n - wsStart, TokenType::Normal});
+                }
+
+                return out;
+            }
+        }
+    }
+
     int i = 0;
     int n = (int)line.size();
     while (i < n)

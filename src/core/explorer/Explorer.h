@@ -135,6 +135,9 @@ public:
     // Public helper to load an SVG icon into an ID2D1Bitmap (wraps internal loader)
     ID2D1Bitmap *LoadSvgIconPublic(ID2D1RenderTarget *ctx, const std::string &iconPath, int pxSize, UINT dpi);
 
+    // Warm up icon map loading on a background thread (avoids UI stalls on first draw)
+    void PreloadIconMapAsync();
+
     // File system watcher control
     void StartWatching();
     void StopWatching();
@@ -177,6 +180,9 @@ private:
     Input::Type inlineType_ = Input::Type::File;
     std::wstring inlineText_;
     int inlineCursorPos_ = 0;
+    bool inlineHasSelection_ = false;
+    int inlineSelStart_ = 0;
+    int inlineSelEnd_ = 0;
     D2D1_RECT_F inlineRect_ = D2D1::RectF(0,0,0,0);
     // Locked target path for inline create (prevents watcher/hover from moving it)
     bool inlineTargetLocked_ = false;
@@ -204,6 +210,7 @@ public:
     // Rename state: index being renamed and original full path
     int renameTargetIndex_ = -1;
     std::wstring renameOriginalFullPath_;
+    bool renameTargetIsDir_ = false;
 
     // Thread entry (private static so it can access private members)
     static DWORD WINAPI WatcherThreadStatic(LPVOID param);

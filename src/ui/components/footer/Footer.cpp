@@ -84,10 +84,11 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
     D2D1_ELLIPSE inner = D2D1::Ellipse(D2D1::Point2F(iconCx, iconCy + 1.0f), (FLOAT)(notifR * 0.45f), (FLOAT)(notifR * 0.45f));
     ctx->FillEllipse(inner, innerBrush);
 
-    // Prepare right-side status text (line/column + language)
+    // Prepare right-side status text (line/column + language + encoding)
     std::wstring lang = DetectLanguageFromPath(filePath);
     wchar_t buf[256];
-    swprintf_s(buf, 256, L"Ln %d, Col %d — %s — %s", (line + 1), (column + 1), lang.c_str(), encoding.c_str());
+    swprintf_s(buf, 256, L"Ln %d, Col %d — %s — %s",
+               (line + 1), (column + 1), lang.c_str(), encoding.c_str());
 
     // Create right-aligned format for status (use JetBrains Mono to match editor)
     IDWriteTextFormat *statusFmt = nullptr;

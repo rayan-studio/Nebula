@@ -191,6 +191,7 @@ void TerminalPanel::UpdateLayout(HWND hwnd, float left, float top, float right, 
     (void)hwnd;
 
     left_ = left; top_ = top; right_ = right; bottom_ = bottom;
+    heightPx_ = bottom_ - top_;
 
     state_.leftEdge = left;
     state_.topEdge = top;
@@ -203,14 +204,14 @@ void TerminalPanel::UpdateLayout(HWND hwnd, float left, float top, float right, 
     }
 
     SyncTabBar();
-    tabBar_.UpdateLayout(left_, top_, TabsBarRightEdge());
+    tabBar_.UpdateLayout(left_, top_ + resizeZoneH_, TabsBarRightEdge());
 
     // Update viewport for active session (content area under tabs bar)
     TerminalSession* s = ActiveSession();
     if (s)
     {
         float tabsH = TabsBarHeightPx();
-        float contentTop = top_ + tabsH;
+        float contentTop = top_ + resizeZoneH_ + tabsH;
         s->SetViewport(left_, contentTop, right_, bottom_);
         UpdatePseudoConsoleSizeFromPixelsForActive();
     }
@@ -230,14 +231,26 @@ bool TerminalPanel::IsPointInResizeZone(POINT pt) const
         && pt.y >= (LONG)top_ && pt.y <= (LONG)(top_ + resizeZoneH_);
 }
 
+bool TerminalPanel::IsPointInTabsBarArea(POINT pt) const
+{
+    if (!visible_) return false;
+    return IsPointInTabsBar(pt);
+}
+
+bool TerminalPanel::IsPointInPlusButton(POINT pt) const
+{
+    if (!visible_) return false;
+    return HitTestPlus(pt);
+}
+
 // ---------------- Tabs UI rects ----------------
 RECT TerminalPanel::TabsBarRectClient() const
 {
     RECT r;
     r.left = (LONG)left_;
-    r.top = (LONG)top_;
+    r.top = (LONG)(top_ + resizeZoneH_);
     r.right = (LONG)right_;
-    r.bottom = (LONG)(top_ + TabsBarHeightPx());
+    r.bottom = (LONG)(top_ + resizeZoneH_ + TabsBarHeightPx());
     return r;
 }
 
@@ -253,12 +266,13 @@ float TerminalPanel::TabsBarRightEdge() const
 RECT TerminalPanel::PlusButtonRectClient() const
 {
     RECT t = TabsBarRectClient();
-    int size = (int)TabsBarHeightPx();
+    int size = (int)TabsBarHeightPx() - 6;
+    if (size < 14) size = 14;
     RECT r;
-    r.right = t.right - 8;
+    r.right = t.right - 10;
     r.left  = r.right - size;
-    r.top   = t.top + 2;
-    r.bottom= t.bottom - 2;
+    r.top   = t.top + 3;
+    r.bottom= r.top + size;
     return r;
 }
 
@@ -333,6 +347,16 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
         }
     }
 
+    // Resize zone
+    if (IsPointInResizeZone(pt))
+    {
+        resizing_ = true;
+        dragStart_ = pt;
+        startTop_ = top_;
+        SetCapture(hwnd);
+        return;
+    }
+
     // Scrollbar capture for active session
     if (TerminalSession* s = ActiveSession())
     {
@@ -342,16 +366,6 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
             focused_ = true;
             return;
         }
-    }
-
-    // Resize zone
-    if (IsPointInResizeZone(pt))
-    {
-        resizing_ = true;
-        dragStart_ = pt;
-        startTop_ = top_;
-        SetCapture(hwnd);
-        return;
     }
 
     if (IsPointInPanel(pt))
@@ -401,6 +415,53 @@ bool TerminalPanel::OnMouseMove(HWND hwnd, POINT pt)
     if (!visible_) return false;
 
     bool changed = false;
+    bool lmbDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+
+    // Resizing drag should not forward events to tabs/scrollbar/session
+    if (resizing_)
+    {
+        int dy = (pt.y - dragStart_.y);
+        float newTop = startTop_ + (float)dy;
+
+        float maxTop = bottom_ - minHeight_;
+        if (newTop < 0.0f) newTop = 0.0f;
+        if (newTop > maxTop) newTop = maxTop;
+
+        if (newTop != top_)
+        {
+            top_ = newTop;
+            heightPx_ = bottom_ - top_;
+
+            // update state + viewport
+            state_.topEdge = top_;
+
+    if (TerminalSession* s = ActiveSession())
+    {
+        float tabsH = TabsBarHeightPx();
+        s->SetViewport(left_, top_ + resizeZoneH_ + tabsH, right_, bottom_);
+                UpdatePseudoConsoleSizeFromPixelsForActive();
+            }
+            return true;
+        }
+        return changed;
+    }
+
+    bool inResizeZone = IsPointInResizeZone(pt);
+    if (inResizeZone && !lmbDown)
+    {
+        bool prev = resizeHover_;
+        resizeHover_ = true;
+        if (prev != resizeHover_)
+            changed = true;
+        if (hoveredPlus_)
+        {
+            hoveredPlus_ = false;
+            changed = true;
+        }
+        if (tabBar_.ClearHover())
+            changed = true;
+        return changed;
+    }
 
     // Hover tabs / plus
     bool prevPlus = hoveredPlus_;
@@ -427,43 +488,14 @@ bool TerminalPanel::OnMouseMove(HWND hwnd, POINT pt)
             changed = true;
     }
 
-    bool lmbDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
     if (TerminalSession* s = ActiveSession())
     {
         if (s->OnMouseMove(pt, lmbDown))
             changed = true;
     }
 
-    // Resizing drag
-    if (resizing_)
-    {
-        int dy = (pt.y - dragStart_.y);
-        float newTop = startTop_ + (float)dy;
-
-        float maxTop = bottom_ - minHeight_;
-        if (newTop < 0.0f) newTop = 0.0f;
-        if (newTop > maxTop) newTop = maxTop;
-
-        if (newTop != top_)
-        {
-            top_ = newTop;
-
-            // update state + viewport
-            state_.topEdge = top_;
-
-            if (TerminalSession* s = ActiveSession())
-            {
-                float tabsH = TabsBarHeightPx();
-                s->SetViewport(left_, top_ + tabsH, right_, bottom_);
-                UpdatePseudoConsoleSizeFromPixelsForActive();
-            }
-            return true;
-        }
-        return changed;
-    }
-
     bool prev = resizeHover_;
-    resizeHover_ = IsPointInResizeZone(pt);
+    resizeHover_ = false;
     if (prev != resizeHover_)
         changed = true;
 
@@ -516,7 +548,7 @@ void TerminalPanel::UpdatePseudoConsoleSizeFromPixelsForActive()
     float tabsH = TabsBarHeightPx();
 
     float contentW = (right_ - left_) - 20.0f; // pads approximatifs
-    float contentH = (bottom_ - (top_ + tabsH)) - 16.0f;
+    float contentH = (bottom_ - (top_ + resizeZoneH_ + tabsH)) - 16.0f;
 
     s->UpdatePseudoConsoleSizeFromPixels(contentW, contentH, fontFamily_, fontSize_, fontCollection_);
 }
@@ -533,23 +565,43 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
 
     EnsureAtLeastOneSession(NULL);
     SyncTabBar();
-    tabBar_.UpdateLayout(left_, top_, TabsBarRightEdge());
+    tabBar_.UpdateLayout(left_, top_ + resizeZoneH_, TabsBarRightEdge());
 
     // Tabs bar background
     ID2D1SolidColorBrush* bg = nullptr;
     ID2D1SolidColorBrush* fg = nullptr;
     ID2D1SolidColorBrush* border = nullptr;
+    ID2D1SolidColorBrush* resizeBg = nullptr;
+    ID2D1SolidColorBrush* resizeLine = nullptr;
 
     rt->CreateSolidColorBrush(D2D1::ColorF(0.06f, 0.06f, 0.06f, 1.0f), &bg);
     rt->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.90f, 0.90f, 1.0f), &fg);
     rt->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f), &border);
+    rt->CreateSolidColorBrush(D2D1::ColorF(0.06f, 0.06f, 0.06f, 1.0f), &resizeBg);
+    rt->CreateSolidColorBrush(resizeHover_ || resizing_
+                                  ? D2D1::ColorF(0.35f, 0.35f, 0.35f, 1.0f)
+                                  : D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f),
+                              &resizeLine);
 
-    if (!bg || !fg || !border)
+    if (!bg || !fg || !border || !resizeBg || !resizeLine)
     {
         if (bg) bg->Release();
         if (fg) fg->Release();
         if (border) border->Release();
+        if (resizeBg) resizeBg->Release();
+        if (resizeLine) resizeLine->Release();
         return;
+    }
+
+    // Resize bar (above tabs)
+    D2D1_RECT_F resizeBar = D2D1::RectF(left_, top_, right_, top_ + resizeZoneH_);
+    rt->FillRectangle(resizeBar, resizeBg);
+    if (resizeHover_ || resizing_)
+    {
+        float gripY = top_ + resizeZoneH_ * 0.5f;
+        rt->DrawLine(D2D1::Point2F(left_ + 10.0f, gripY),
+                     D2D1::Point2F(right_ - 10.0f, gripY),
+                     resizeLine, 1.0f);
     }
 
     RECT tabsR = TabsBarRectClient();
@@ -565,31 +617,46 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
     D2D1_RECT_F plus = D2D1::RectF((float)pr.left, (float)pr.top, (float)pr.right, (float)pr.bottom);
 
     ID2D1SolidColorBrush* plusBg = nullptr;
+    ID2D1SolidColorBrush* plusBorder = nullptr;
     if (hoveredPlus_)
-        rt->CreateSolidColorBrush(D2D1::ColorF(0.15f, 0.15f, 0.15f, 1.0f), &plusBg);
-    else
-        rt->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.10f, 0.10f, 1.0f), &plusBg);
-
-    if (plusBg)
     {
-        rt->FillRectangle(plus, plusBg);
-        plusBg->Release();
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.22f, 1.0f), &plusBg);
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.40f, 0.40f, 1.0f), &plusBorder);
+        if (plusBg)
+        {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(plus, 5.0f, 5.0f), plusBg);
+            plusBg->Release();
+        }
+        if (plusBorder)
+        {
+            rt->DrawRoundedRectangle(D2D1::RoundedRect(plus, 5.0f, 5.0f), plusBorder, 1.0f);
+            plusBorder->Release();
+        }
     }
 
     // draw "+"
     float cx = (plus.left + plus.right) * 0.5f;
     float cy = (plus.top + plus.bottom) * 0.5f;
-    float halfSize = (plus.bottom - plus.top) * 0.25f;
+    float halfSize = (plus.bottom - plus.top) * 0.28f;
 
-    rt->DrawLine(D2D1::Point2F(cx - halfSize, cy), D2D1::Point2F(cx + halfSize, cy), fg, 1.6f);
-    rt->DrawLine(D2D1::Point2F(cx, cy - halfSize), D2D1::Point2F(cx, cy + halfSize), fg, 1.6f);
+    ID2D1SolidColorBrush* plusStroke = nullptr;
+    D2D1_COLOR_F plusStrokeColor = hoveredPlus_
+        ? D2D1::ColorF(0.95f, 0.95f, 0.95f, 1.0f)
+        : D2D1::ColorF(0.70f, 0.70f, 0.70f, 1.0f);
+    rt->CreateSolidColorBrush(plusStrokeColor, &plusStroke);
+    if (plusStroke)
+    {
+        rt->DrawLine(D2D1::Point2F(cx - halfSize, cy), D2D1::Point2F(cx + halfSize, cy), plusStroke, 1.2f);
+        rt->DrawLine(D2D1::Point2F(cx, cy - halfSize), D2D1::Point2F(cx, cy + halfSize), plusStroke, 1.2f);
+        plusStroke->Release();
+    }
 
     // Content viewport
     TerminalSession* s = ActiveSession();
     if (s)
     {
         float tabsH = TabsBarHeightPx();
-        s->SetViewport(left_, top_ + tabsH, right_, bottom_);
+        s->SetViewport(left_, top_ + resizeZoneH_ + tabsH, right_, bottom_);
 
         // draw session content (chrome + text + scrollbar)
         s->DrawContent(rt, dwrite, fontFamily_, fontSize_, fontCollection_, (resizeHover_ || resizing_), focused_);
@@ -598,4 +665,6 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
     bg->Release();
     fg->Release();
     border->Release();
+    resizeBg->Release();
+    resizeLine->Release();
 }

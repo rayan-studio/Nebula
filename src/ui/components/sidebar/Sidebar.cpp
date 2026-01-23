@@ -1,6 +1,7 @@
 #include "Sidebar.h"
 #include "helpers/window_helpers.h"
 #include "ui/panels/PanelManager.h"
+#include "core/window/Window.h"
 #include <d2d1.h>
 #include <dwrite.h>
 #include <windows.h>
@@ -283,6 +284,23 @@ bool SidebarRenderer::HandleLeftClick(HWND hwnd, POINT clientPoint)
     
     if (hitIndex >= 0 && hitIndex < static_cast<int>(itemStates_.size())) {
         PanelId clickedPanel = itemStates_[hitIndex].panelId;
+
+        if (clickedPanel == PanelId::Settings) {
+            PostMessageW(hwnd, WM_OPEN_SETTINGS, 0, 0);
+
+            if (GetPanelManager().IsPanelActive(PanelId::Settings)) {
+                GetPanelManager().SetActivePanel(PanelId::Explorer);
+            }
+
+            Panel* settingsPanel = GetPanelManager().GetPanel(PanelId::Settings);
+            if (settingsPanel) {
+                settingsPanel->SetVisible(false);
+            }
+
+            SetFocus(hwnd);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return true;
+        }
         
         // CORRECTION : Vérifier si c'est le panel actif ET visible
         bool isCurrentlyActive = GetPanelManager().IsPanelActive(clickedPanel);
