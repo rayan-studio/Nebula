@@ -61,11 +61,10 @@ static void DrawMinimizeIcon(ID2D1RenderTarget *ctx, ID2D1SolidColorBrush *brush
     float centerY = std::round((rect.top + rect.bottom) / 2.0f);
     float lineWidth = 10.0f;
 
-    D2D1_RECT_F lineRect = D2D1::RectF(
-        centerX - lineWidth / 2.0f,
-        centerY - 0.5f,
-        centerX + lineWidth / 2.0f,
-        centerY + 0.5f);
+    float left = std::floor(centerX - lineWidth / 2.0f) + 0.5f;
+    float right = std::floor(centerX + lineWidth / 2.0f) + 0.5f;
+    float y = std::floor(centerY) + 0.5f;
+    D2D1_RECT_F lineRect = D2D1::RectF(left, y - 0.5f, right, y + 0.5f);
 
     ctx->FillRectangle(lineRect, brush);
 }
@@ -77,11 +76,13 @@ static void DrawMaximizeIcon(ID2D1RenderTarget *ctx, ID2D1SolidColorBrush *brush
     float centerY = std::round((rect.top + rect.bottom) / 2.0f);
     float size = 10.0f;
 
-    D2D1_RECT_F iconRect = D2D1::RectF(
-        centerX - size / 2.0f,
-        centerY - size / 2.0f,
-        centerX + size / 2.0f,
-        centerY + size / 2.0f);
+    float half = size / 2.0f;
+    float left = std::floor(centerX - half) + 0.5f;
+    float right = std::floor(centerX + half) + 0.5f;
+    float top = std::floor(centerY - half) + 0.5f;
+    float bottom = std::floor(centerY + half) + 0.5f;
+
+    D2D1_RECT_F iconRect = D2D1::RectF(left, top, right, bottom);
 
     ctx->DrawRectangle(iconRect, brush, 1.0f);
 }
@@ -125,10 +126,17 @@ static void DrawCloseIcon(ID2D1RenderTarget *ctx, ID2D1SolidColorBrush *brush, D
     float centerY = std::round((rect.top + rect.bottom) / 2.0f);
     float size = 10.0f;
 
-    D2D1_POINT_2F p1 = D2D1::Point2F(centerX - size / 2.0f, centerY - size / 2.0f);
-    D2D1_POINT_2F p2 = D2D1::Point2F(centerX + size / 2.0f, centerY + size / 2.0f);
-    D2D1_POINT_2F p3 = D2D1::Point2F(centerX + size / 2.0f, centerY - size / 2.0f);
-    D2D1_POINT_2F p4 = D2D1::Point2F(centerX - size / 2.0f, centerY + size / 2.0f);
+    // Align strokes to pixel grid for crisp 1px lines
+    float half = size / 2.0f;
+    float left = std::floor(centerX - half) + 0.5f;
+    float right = std::floor(centerX + half) + 0.5f;
+    float top = std::floor(centerY - half) + 0.5f;
+    float bottom = std::floor(centerY + half) + 0.5f;
+
+    D2D1_POINT_2F p1 = D2D1::Point2F(left, top);
+    D2D1_POINT_2F p2 = D2D1::Point2F(right, bottom);
+    D2D1_POINT_2F p3 = D2D1::Point2F(right, top);
+    D2D1_POINT_2F p4 = D2D1::Point2F(left, bottom);
 
     ctx->DrawLine(p1, p2, brush, 1.0f);
     ctx->DrawLine(p3, p4, brush, 1.0f);
@@ -180,6 +188,107 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     D2D1_TEXT_ANTIALIAS_MODE oldTextAA = ctx->GetTextAntialiasMode();
     ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
     ctx->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
+
+    Window *window = GetWindowFromHwnd(hwnd);
+    if (window && window->IsNewProjectOverlayVisible())
+    {
+        // Minimal titlebar for the new-project screen (no editor menus).
+        ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+        ID2D1SolidColorBrush *bgBrush = nullptr;
+        ID2D1SolidColorBrush *bottomBorder = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f), &bgBrush);
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f), &bottomBorder);
+        if (bgBrush)
+            ctx->FillRectangle(tb, bgBrush);
+        if (bottomBorder)
+            ctx->DrawLine(D2D1::Point2F(tb.left, tb.bottom - 0.5f), D2D1::Point2F(tb.right, tb.bottom - 0.5f), bottomBorder, 1.0f);
+
+        CustomTitleBarButtonRects button_rects = win32_get_title_bar_button_rects(hwnd, &title_bar_rect);
+        D2D1_RECT_F rMin = D2D1::RectF((FLOAT)button_rects.minimize.left, (FLOAT)button_rects.minimize.top, (FLOAT)button_rects.minimize.right, (FLOAT)button_rects.minimize.bottom);
+        D2D1_RECT_F rMax = D2D1::RectF((FLOAT)button_rects.maximize.left, (FLOAT)button_rects.maximize.top, (FLOAT)button_rects.maximize.right, (FLOAT)button_rects.maximize.bottom);
+        D2D1_RECT_F rClose = D2D1::RectF((FLOAT)button_rects.close.left, (FLOAT)button_rects.close.top, (FLOAT)button_rects.close.right, (FLOAT)button_rects.close.bottom);
+
+        ID2D1SolidColorBrush *hoverBrush = nullptr;
+        ID2D1SolidColorBrush *closeHoverBrush = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0x3e3e42), &hoverBrush);
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0xe81123), &closeHoverBrush);
+
+        if (hoveredButton == Window::Hovered_Minimize && hoverBrush)
+            ctx->FillRectangle(rMin, hoverBrush);
+        if (hoveredButton == Window::Hovered_Maximize && hoverBrush)
+            ctx->FillRectangle(rMax, hoverBrush);
+        if (hoveredButton == Window::Hovered_Close && closeHoverBrush)
+            ctx->FillRectangle(rClose, closeHoverBrush);
+
+        ID2D1SolidColorBrush *iconBrush = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &iconBrush);
+        if (iconBrush)
+        {
+            ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+            DrawMinimizeIcon(ctx, iconBrush, rMin);
+            if (win32_window_is_maximized(hwnd))
+                DrawRestoreIcon(ctx, dwrite, iconBrush, rMax);
+            else
+                DrawMaximizeIcon(ctx, iconBrush, rMax);
+            DrawCloseIcon(ctx, iconBrush, rClose);
+        }
+
+        // App icon + title
+        ID2D1Bitmap *iconBitmap = LoadIconBitmap(ctx, L"assets/favicon.ico");
+        UINT dpi = GetDpiForWindow(hwnd);
+        float padding = (float)win32_dpi_scale(12, dpi);
+        float currentX = tb.left + padding;
+        if (iconBitmap)
+        {
+            float iconSize = 16.0f;
+            D2D1_RECT_F iconRect = D2D1::RectF(
+                std::round(currentX),
+                std::round((tb.top + tb.bottom - iconSize) / 2.0f),
+                std::round(currentX + iconSize),
+                std::round((tb.top + tb.bottom + iconSize) / 2.0f));
+            ctx->DrawBitmap(iconBitmap, iconRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            currentX += iconSize + 8.0f;
+        }
+
+        if (dwrite)
+        {
+            IDWriteTextFormat *titleFmt = nullptr;
+            dwrite->CreateTextFormat(
+                L"Segoe UI Variable Text",
+                NULL,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                12.5f,
+                L"en-us",
+                &titleFmt);
+            if (titleFmt)
+            {
+                titleFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                titleFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                D2D1_RECT_F titleRect = D2D1::RectF(currentX, tb.top, rMax.left - 10.0f, tb.bottom);
+                ID2D1SolidColorBrush *titleBrush = nullptr;
+                ctx->CreateSolidColorBrush(D2D1::ColorF(0xe0e0e0), &titleBrush);
+                if (titleBrush)
+                {
+                    ctx->DrawTextW(L"Nebula - Commencez", 19, titleFmt, titleRect, titleBrush);
+                    titleBrush->Release();
+                }
+                titleFmt->Release();
+            }
+        }
+
+        if (iconBrush) iconBrush->Release();
+        if (hoverBrush) hoverBrush->Release();
+        if (closeHoverBrush) closeHoverBrush->Release();
+        if (bottomBorder) bottomBorder->Release();
+        if (bgBrush) bgBrush->Release();
+
+        ctx->SetAntialiasMode(oldAA);
+        ctx->SetTextAntialiasMode(oldTextAA);
+        return;
+    }
 
     // Background - dark theme
     ID2D1SolidColorBrush *bgBrush = nullptr;

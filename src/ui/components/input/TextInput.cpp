@@ -40,9 +40,9 @@ bool TextInput::HitTest(POINT pt) const
 
 void TextInput::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite)
 {
-    // Temporarily disable antialiasing for input rendering to avoid darker blended borders
+    // Use per-primitive AA to keep rounded corners clean
     D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
-    ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+    ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
     if (style_.useSearchBoxStyle) {
         DrawSearchBoxStyle(ctx, dwrite);
@@ -114,7 +114,7 @@ void TextInput::DrawStandardStyle(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite
     
     // Create text format
     IDWriteTextFormat* textFormat = nullptr;
-    dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL,
+    dwrite->CreateTextFormat(style_.fontFamily, style_.fontCollection, DWRITE_FONT_WEIGHT_NORMAL,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
                              style_.fontSize, L"en-us", &textFormat);
     if (textFormat) {
@@ -195,7 +195,7 @@ float TextInput::GetCharPosition(IDWriteFactory* dwrite, int index)
     if (index > (int)text_.length()) index = (int)text_.length();
     
     IDWriteTextFormat* tf = nullptr;
-    dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL,
+    dwrite->CreateTextFormat(style_.fontFamily, style_.fontCollection, DWRITE_FONT_WEIGHT_NORMAL,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
                              style_.fontSize, L"en-us", &tf);
     if (!tf) return 0.0f;
@@ -221,7 +221,7 @@ int TextInput::GetCharIndexAtPosition(IDWriteFactory* dwrite, float x)
     if (text_.empty()) return 0;
     
     IDWriteTextFormat* tf = nullptr;
-    dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL,
+    dwrite->CreateTextFormat(style_.fontFamily, style_.fontCollection, DWRITE_FONT_WEIGHT_NORMAL,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
                              style_.fontSize, L"en-us", &tf);
     if (!tf) return 0;

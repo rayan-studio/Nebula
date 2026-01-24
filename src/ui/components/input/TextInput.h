@@ -71,6 +71,8 @@ public:
         D2D1_COLOR_F selectionColor = D2D1::ColorF(0.2f, 0.572549f, 1.0f, 0.266667f);
         D2D1_COLOR_F cursorColor = D2D1::ColorF(1.0f, 1.0f, 1.0f);
         D2D1_COLOR_F iconColor = D2D1::ColorF(0.5f, 0.5f, 0.5f);
+        const wchar_t *fontFamily = L"Segoe UI";
+        IDWriteFontCollection *fontCollection = nullptr; // non-owning
         float cornerRadius = 4.0f;
         float fontSize = 13.0f;
         float iconSize = 14.0f;
