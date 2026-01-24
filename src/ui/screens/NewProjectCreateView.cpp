@@ -44,7 +44,7 @@ void NewProjectCreateView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteF
     if (rc.labelFmt && rc.muted)
     {
         D2D1_RECT_F formTitle = D2D1::RectF(rightPanel.left + 14.0f * rc.scale, formTitleY, rightPanel.right - 14.0f * rc.scale, formTitleY + 16.0f * rc.scale);
-        ctx->DrawTextW(L"Nouveau projet", 14, rc.labelFmt, formTitle, rc.muted);
+        ctx->DrawTextW(L"Creer un projet", 15, rc.labelFmt, formTitle, rc.muted);
     }
 
     float inputPad = 14.0f * rc.scale;
@@ -66,18 +66,28 @@ void NewProjectCreateView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteF
     styleName.fontCollection = rc.uiCollection;
     window.newProjNameInput_.Draw(ctx, dwrite);
 
-    if (rc.labelFmt && rc.muted)
-    {
-        D2D1_RECT_F nameLabelRect = D2D1::RectF(rightPanel.left + inputPad, nameY - 14.0f * rc.scale, rightPanel.right - inputPad, nameY + 6.0f * rc.scale);
-        ctx->DrawTextW(L"NOM DU PROJET", 13, rc.labelFmt, nameLabelRect, rc.muted);
-    }
-
     // Template list
     window.newProjTemplateRects_.clear();
-    const wchar_t *templates[] = {L"C++ Console", L"C++ Empty", L"C++ Library"};
-    int templateCount = 3;
-    float tY = nameY + inputH + 14.0f * rc.scale;
-    float tH = 28.0f * rc.scale;
+    const wchar_t *templateTitles[] = {
+        L"Application console (C++)",
+        L"Application GUI (Win32)",
+        L"Bibliotheque C++",
+        L"Script Python",
+        L"Projet Web"};
+    const wchar_t *templateSubs[] = {
+        L"main.cpp + Hello World",
+        L"WinMain minimal",
+        L"Header + source de base",
+        L"main.py pret a lancer",
+        L"index.html + style + script"};
+    const int templateCount = (int)(sizeof(templateTitles) / sizeof(templateTitles[0]));
+    float tY = nameY + inputH + 22.0f * rc.scale;
+    if (rc.sectionFmt && rc.muted)
+    {
+        D2D1_RECT_F templatesLabel = D2D1::RectF(rightPanel.left + inputPad, tY - 16.0f * rc.scale, rightPanel.right - inputPad, tY);
+        ctx->DrawTextW(L"Modeles", 7, rc.sectionFmt, templatesLabel, rc.muted);
+    }
+    float tH = 44.0f * rc.scale;
     for (int i = 0; i < templateCount; ++i)
     {
         D2D1_RECT_F tRect = D2D1::RectF(rightPanel.left + inputPad, tY + i * (tH + 8.0f * rc.scale), rightPanel.right - inputPad,
@@ -87,13 +97,13 @@ void NewProjectCreateView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteF
     ID2D1SolidColorBrush *tBorder = nullptr;
     ctx->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.24f, 0.24f, 1.0f), &tBorder);
     IDWriteTextFormat *tFmt = nullptr;
-    dwrite->CreateTextFormat(rc.uiFont, rc.uiCollection, DWRITE_FONT_WEIGHT_NORMAL,
+    dwrite->CreateTextFormat(rc.uiFont, rc.uiCollection, DWRITE_FONT_WEIGHT_SEMI_BOLD,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                             11.0f * rc.scale, L"en-us", &tFmt);
+                             11.5f * rc.scale, L"en-us", &tFmt);
     if (tFmt)
     {
         tFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        tFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        tFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
     }
     for (int i = 0; i < templateCount; ++i)
     {
@@ -114,8 +124,15 @@ void NewProjectCreateView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteF
             ctx->DrawRoundedRectangle(D2D1::RoundedRect(r, 6.0f * rc.scale, 6.0f * rc.scale), tBorder, 1.0f);
         if (tFmt && rc.text)
         {
-            D2D1_RECT_F tr = D2D1::RectF(r.left + 10.0f * rc.scale, r.top, r.right - 10.0f * rc.scale, r.bottom);
-            ctx->DrawTextW(templates[i], (UINT32)wcslen(templates[i]), tFmt, tr, rc.text);
+            D2D1_RECT_F tr = D2D1::RectF(r.left + 10.0f * rc.scale, r.top + 6.0f * rc.scale, r.right - 10.0f * rc.scale, r.bottom);
+            ctx->DrawTextW(templateTitles[i], (UINT32)wcslen(templateTitles[i]), tFmt, tr, rc.text);
+        }
+        if (rc.subFmt && rc.muted)
+        {
+            D2D1_RECT_F sr = D2D1::RectF(r.left + 10.0f * rc.scale, r.top + 22.0f * rc.scale, r.right - 10.0f * rc.scale, r.bottom - 6.0f * rc.scale);
+            rc.subFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            rc.subFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            ctx->DrawTextW(templateSubs[i], (UINT32)wcslen(templateSubs[i]), rc.subFmt, sr, rc.muted);
         }
     }
     if (tBorder) tBorder->Release();

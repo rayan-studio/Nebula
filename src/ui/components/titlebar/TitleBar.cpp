@@ -13,7 +13,10 @@ static ID2D1Bitmap *g_iconBitmap = nullptr;
 
 // État global des menus
 static std::vector<MenuItem> g_menuItems;
-static MenuDropdown g_activeDropdown = {-1, std::vector<std::wstring>(), D2D1::RectF(), -1, false, 0, std::vector<bool>()};
+static MenuDropdown g_activeDropdown = {-1, std::vector<std::wstring>(), std::vector<std::wstring>(), std::vector<wchar_t>(),
+    std::vector<bool>(), std::vector<bool>(), D2D1::RectF(), -1, false, 0, std::vector<bool>()};
+static MenuDropdown g_subDropdown = {-1, std::vector<std::wstring>(), std::vector<std::wstring>(), std::vector<wchar_t>(),
+    std::vector<bool>(), std::vector<bool>(), D2D1::RectF(), -1, false, 0, std::vector<bool>()};
 
 // Helper pour charger l'icône
 static ID2D1Bitmap *LoadIconBitmap(ID2D1RenderTarget *ctx, const wchar_t *filename)
@@ -214,8 +217,8 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
         ctx->CreateSolidColorBrush(D2D1::ColorF(0x3e3e42), &hoverBrush);
         ctx->CreateSolidColorBrush(D2D1::ColorF(0xe81123), &closeHoverBrush);
 
-        if (hoveredButton == Window::Hovered_Minimize && hoverBrush)
-            ctx->FillRectangle(rMin, hoverBrush);
+    if (hoveredButton == Window::Hovered_Minimize && hoverBrush)
+        ctx->FillRectangle(rMin, hoverBrush);
         if (hoveredButton == Window::Hovered_Maximize && hoverBrush)
             ctx->FillRectangle(rMax, hoverBrush);
         if (hoveredButton == Window::Hovered_Close && closeHoverBrush)
@@ -644,18 +647,32 @@ void ShowMenuDropdown(HWND hwnd, int menuIndex, D2D1_RECT_F menuRect)
     g_activeDropdown.menuIndex = menuIndex;
     g_activeDropdown.visible = true;
     g_activeDropdown.hoveredItem = -1;
+    g_activeDropdown.shortcuts.clear();
+    g_activeDropdown.icons.clear();
+    g_activeDropdown.separators.clear();
+    g_activeDropdown.hasSubmenu.clear();
 
     switch (menuIndex)
     {
     case 0:
-        // Simplified File menu with Open Project added.
-        g_activeDropdown.items = {L"New", L"New Window", L"Open...", L"Open Project", L"Close"};
+        // File menu with Open Recent submenu.
+        g_activeDropdown.items = {L"New", L"New Window", L"Open...", L"Open Recent", L"Open Project", L"Close"};
+        g_activeDropdown.shortcuts = {L"Ctrl+N", L"", L"Ctrl+O", L"", L"Ctrl+Shift+O", L"Ctrl+W"};
+        g_activeDropdown.icons = {0xE710, 0xE8A7, 0xE8B7, 0xE8B7, 0xE8B7, 0xE8BB};
+        g_activeDropdown.separators = {false, false, false, false, false, false};
+        g_activeDropdown.hasSubmenu = {false, false, false, true, false, false};
         break;
 
     case 1:
         g_activeDropdown.items = {
             L"Undo", L"Redo", L"Cut", L"Copy", L"Paste", L"Paste Without Formatting", L"Delete",
             L"Select All", L"Find", L"Replace", L"Find in Files", L"Replace in Files", L"Toggle Comment", L"Format Document"};
+        g_activeDropdown.shortcuts = {
+            L"Ctrl+Z", L"Ctrl+Y", L"Ctrl+X", L"Ctrl+C", L"Ctrl+V", L"Ctrl+Shift+V", L"Del",
+            L"Ctrl+A", L"Ctrl+F", L"Ctrl+H", L"Ctrl+Shift+F", L"Ctrl+Shift+H", L"Ctrl+/", L"Shift+Alt+F"};
+        g_activeDropdown.icons.assign(g_activeDropdown.items.size(), 0);
+        g_activeDropdown.separators.assign(g_activeDropdown.items.size(), false);
+        g_activeDropdown.hasSubmenu.assign(g_activeDropdown.items.size(), false);
         // Initialize enabled flags based on editor state and clipboard
         g_activeDropdown.enabled.clear();
         g_activeDropdown.enabled.resize(g_activeDropdown.items.size(), true);
@@ -703,28 +720,52 @@ void ShowMenuDropdown(HWND hwnd, int menuIndex, D2D1_RECT_F menuRect)
         break;
     case 2:
         g_activeDropdown.items = {L"Select All", L"Expand Selection", L"Shrink Selection", L"Select Line"};
+        g_activeDropdown.shortcuts = {L"Ctrl+A", L"Shift+Alt+Right", L"Shift+Alt+Left", L"Ctrl+L"};
+        g_activeDropdown.icons.assign(g_activeDropdown.items.size(), 0);
+        g_activeDropdown.separators.assign(g_activeDropdown.items.size(), false);
+        g_activeDropdown.hasSubmenu.assign(g_activeDropdown.items.size(), false);
         break;
     case 3:
         // Add New Terminal as a View action
         g_activeDropdown.items = {L"New Terminal", L"Command Palette", L"Open View", L"Toggle Sidebar", L"Show Extensions", L"Keyboard Shortcuts"};
+        g_activeDropdown.shortcuts = {L"Ctrl+`", L"Ctrl+Shift+P", L"", L"Ctrl+B", L"Ctrl+Shift+X", L"Ctrl+K, Ctrl+S"};
+        g_activeDropdown.icons.assign(g_activeDropdown.items.size(), 0);
+        g_activeDropdown.separators.assign(g_activeDropdown.items.size(), false);
+        g_activeDropdown.hasSubmenu.assign(g_activeDropdown.items.size(), false);
         break;
     case 4:
         g_activeDropdown.items = {L"Go to File", L"Go to Line", L"Go to Symbol", L"Go to Definition"};
+        g_activeDropdown.shortcuts = {L"Ctrl+P", L"Ctrl+G", L"Ctrl+Shift+O", L"F12"};
+        g_activeDropdown.icons.assign(g_activeDropdown.items.size(), 0);
+        g_activeDropdown.separators.assign(g_activeDropdown.items.size(), false);
+        g_activeDropdown.hasSubmenu.assign(g_activeDropdown.items.size(), false);
         break;
     case 5:
         g_activeDropdown.items = {L"Start Debugging", L"Run", L"Stop", L"Restart Debugging", L"Step Over", L"Step Into"};
+        g_activeDropdown.shortcuts = {L"F5", L"Ctrl+F5", L"Shift+F5", L"Ctrl+Shift+F5", L"F10", L"F11"};
+        g_activeDropdown.icons.assign(g_activeDropdown.items.size(), 0);
+        g_activeDropdown.separators.assign(g_activeDropdown.items.size(), false);
+        g_activeDropdown.hasSubmenu.assign(g_activeDropdown.items.size(), false);
         break;
     case 6:
         // Help menu (moved from index 7 after removing Terminal)
         g_activeDropdown.items = {L"Welcome", L"Documentation", L"About", L"Release Notes", L"Report Issue"};
+        g_activeDropdown.shortcuts = {L"", L"", L"", L"", L""};
+        g_activeDropdown.icons.assign(g_activeDropdown.items.size(), 0);
+        g_activeDropdown.separators.assign(g_activeDropdown.items.size(), false);
+        g_activeDropdown.hasSubmenu.assign(g_activeDropdown.items.size(), false);
         break;
     default:
         g_activeDropdown.items = {L"Item 1", L"Item 2", L"Item 3", L"Item 4", L"Item 5", L"Item 6", L"Item 7", L"Item 8", L"Item 9", L"Item 10"};
+        g_activeDropdown.shortcuts.assign(g_activeDropdown.items.size(), L"");
+        g_activeDropdown.icons.assign(g_activeDropdown.items.size(), 0);
+        g_activeDropdown.separators.assign(g_activeDropdown.items.size(), false);
+        g_activeDropdown.hasSubmenu.assign(g_activeDropdown.items.size(), false);
         break;
     }
 
-    float itemHeight = 32.0f;
-    float width = 180.0f;
+    float itemHeight = 28.0f;
+    float width = 210.0f;
     if (g_activeDropdown.items.size() > 6)
     {
         width = 260.0f;
@@ -758,6 +799,8 @@ void HideMenuDropdown(HWND hwnd)
     {
         SetMenuItemHovered((int)i, false);
     }
+    g_subDropdown.visible = false;
+    g_subDropdown.hoveredItem = -1;
     if (hwnd)
     {
         RECT tb = win32_titlebar_rect(hwnd);
@@ -777,45 +820,27 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
 
     D2D1_RECT_F r = g_activeDropdown.rect;
 
-    // Layered shadow (VS Code-like depth)
-    ID2D1SolidColorBrush *shadowBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.16f), &shadowBrush);
-    if (shadowBrush)
-    {
-        D2D1_RECT_F shadowRect1 = D2D1::RectF(r.left + 2.0f, r.top + 6.0f, r.right + 2.0f, r.bottom + 6.0f);
-        D2D1_ROUNDED_RECT shadowRounded1 = D2D1::RoundedRect(shadowRect1, 6.0f, 6.0f);
-        ctx->FillRoundedRectangle(shadowRounded1, shadowBrush);
-        shadowBrush->Release();
-    }
-    ID2D1SolidColorBrush *shadowBrush2 = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.08f), &shadowBrush2);
-    if (shadowBrush2)
-    {
-        D2D1_RECT_F shadowRect2 = D2D1::RectF(r.left + 1.0f, r.top + 3.0f, r.right + 1.0f, r.bottom + 3.0f);
-        D2D1_ROUNDED_RECT shadowRounded2 = D2D1::RoundedRect(shadowRect2, 6.0f, 6.0f);
-        ctx->FillRoundedRectangle(shadowRounded2, shadowBrush2);
-        shadowBrush2->Release();
-    }
-
+    // VS Code style: flat dark panel, subtle border, minimal radius
     ID2D1SolidColorBrush *bgBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0x242526), &bgBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0x252526), &bgBrush);
     D2D1_ROUNDED_RECT bgRounded = D2D1::RoundedRect(r, 6.0f, 6.0f);
     ctx->FillRoundedRectangle(bgRounded, bgBrush);
 
     ID2D1SolidColorBrush *borderBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0x323436), &borderBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0x2d2d30), &borderBrush);
     if (borderBrush)
     {
-        ctx->DrawRoundedRectangle(bgRounded, borderBrush, 1.0f);
+        ctx->DrawRoundedRectangle(bgRounded, borderBrush, 0.8f);
         borderBrush->Release();
     }
 
     ID2D1SolidColorBrush *hoverBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0x2f3336), &hoverBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0x2a2a2d), &hoverBrush);
     ID2D1SolidColorBrush *textBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0xf1f1f1), &textBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0xf0f0f0), &textBrush);
     ID2D1SolidColorBrush *disabledBrush = nullptr;
     ctx->CreateSolidColorBrush(D2D1::ColorF(0x8a8a8a), &disabledBrush);
+    // Icons removed for menu items
 
     IDWriteTextFormat *textFormat = nullptr;
     if (dwrite)
@@ -862,34 +887,88 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
         bool isEnabled = true;
         if (!g_activeDropdown.enabled.empty() && i < g_activeDropdown.enabled.size())
             isEnabled = g_activeDropdown.enabled[i];
+        bool isSeparator = (!g_activeDropdown.separators.empty() && i < g_activeDropdown.separators.size() && g_activeDropdown.separators[i]);
+
+        if (isSeparator)
+        {
+            float y = std::floor(itemRect.top + itemHeight * 0.5f) + 0.5f;
+            ID2D1SolidColorBrush *sepBrush = nullptr;
+            ctx->CreateSolidColorBrush(D2D1::ColorF(0x3c3c3c), &sepBrush);
+            if (sepBrush)
+            {
+                ctx->DrawLine(D2D1::Point2F(itemRect.left + 10.0f, y),
+                              D2D1::Point2F(itemRect.right - 10.0f, y), sepBrush, 1.0f);
+                sepBrush->Release();
+            }
+            continue;
+        }
 
         if (isEnabled && (int)i == g_activeDropdown.hoveredItem)
         {
-            D2D1_ROUNDED_RECT hoverRounded = D2D1::RoundedRect(
-                D2D1::RectF(itemRect.left + 6.0f, itemRect.top + 4.0f, itemRect.right - 6.0f, itemRect.bottom - 4.0f),
-                5.0f, 5.0f);
+            D2D1_RECT_F hoverRect = D2D1::RectF(itemRect.left + 6.0f, itemRect.top + 3.0f,
+                                                itemRect.right - 6.0f, itemRect.bottom - 3.0f);
+            D2D1_ROUNDED_RECT hoverRounded = D2D1::RoundedRect(hoverRect, 4.0f, 4.0f);
             ctx->FillRoundedRectangle(hoverRounded, hoverBrush);
         }
 
         if (textFormat)
         {
-            D2D1_RECT_F textRect = D2D1::RectF(
-                itemRect.left + 16.0f,
-                itemRect.top,
-                itemRect.right - 12.0f,
-                itemRect.bottom);
+            const float iconPad = 12.0f;
+            const float rightPad = 12.0f;
+            const float shortcutGap = 14.0f;
+            D2D1_RECT_F shortcutRect = D2D1::RectF(itemRect.right - 78.0f, itemRect.top,
+                                                   itemRect.right - rightPad, itemRect.bottom);
+            D2D1_RECT_F textRect = D2D1::RectF(itemRect.left + iconPad, itemRect.top,
+                                               shortcutRect.left - shortcutGap, itemRect.bottom);
 
             ID2D1SolidColorBrush *brushToUse = isEnabled ? textBrush : disabledBrush;
 
-            ctx->DrawTextW(
-                g_activeDropdown.items[i].c_str(),
-                (UINT32)g_activeDropdown.items[i].size(),
-                textFormat,
-                textRect,
-                brushToUse,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL);
+            // Label with ellipsis
+            IDWriteTextLayout *labelLayout = nullptr;
+            dwrite->CreateTextLayout(g_activeDropdown.items[i].c_str(), (UINT32)g_activeDropdown.items[i].size(),
+                                     textFormat, textRect.right - textRect.left, itemHeight, &labelLayout);
+            if (labelLayout)
+            {
+                labelLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                DWRITE_TRIMMING trimming = {};
+                trimming.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
+                IDWriteInlineObject *ellipsis = nullptr;
+                if (SUCCEEDED(dwrite->CreateEllipsisTrimmingSign(textFormat, &ellipsis)))
+                {
+                    labelLayout->SetTrimming(&trimming, ellipsis);
+                    ellipsis->Release();
+                }
+                ctx->DrawTextLayout(D2D1::Point2F(textRect.left, textRect.top), labelLayout, brushToUse);
+                labelLayout->Release();
+            }
 
+            // Shortcut (right aligned)
+            if (!g_activeDropdown.shortcuts.empty() && i < g_activeDropdown.shortcuts.size() && !g_activeDropdown.shortcuts[i].empty())
+            {
+                IDWriteTextLayout *scLayout = nullptr;
+                dwrite->CreateTextLayout(g_activeDropdown.shortcuts[i].c_str(), (UINT32)g_activeDropdown.shortcuts[i].size(),
+                                         textFormat, shortcutRect.right - shortcutRect.left, itemHeight, &scLayout);
+                if (scLayout)
+                {
+                    scLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+                    scLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                    ctx->DrawTextLayout(D2D1::Point2F(shortcutRect.left, shortcutRect.top), scLayout, brushToUse);
+                    scLayout->Release();
+                }
+            }
+
+            // Chevron indicator for submenu (File -> Open Recent)
+            bool hasSub = (!g_activeDropdown.hasSubmenu.empty() && i < g_activeDropdown.hasSubmenu.size() && g_activeDropdown.hasSubmenu[i]);
+            if (hasSub)
+            {
+                D2D1_RECT_F chevronRect = D2D1::RectF(
+                    itemRect.right - 22.0f,
+                    itemRect.top,
+                    itemRect.right - 8.0f,
+                    itemRect.bottom);
+                ctx->DrawTextW(L"\u203A", 1, textFormat, chevronRect, brushToUse,
+                               D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            }
         }
     }
 
@@ -903,6 +982,98 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
         hoverBrush->Release();
     if (bgBrush)
         bgBrush->Release();
+}
+
+void ShowSubmenuDropdown(HWND hwnd, const std::vector<std::wstring> &items, D2D1_POINT_2F position, int baseId)
+{
+    g_subDropdown.menuIndex = -2;
+    g_subDropdown.visible = true;
+    g_subDropdown.hoveredItem = -1;
+    g_subDropdown.items = items;
+    g_subDropdown.shortcuts.clear();
+    g_subDropdown.icons.clear();
+    g_subDropdown.separators.clear();
+    g_subDropdown.hasSubmenu.clear();
+    g_subDropdown.baseId = baseId;
+    g_subDropdown.enabled.clear();
+    g_subDropdown.enabled.resize(items.size(), true);
+
+    float itemHeight = 28.0f;
+    float width = 320.0f;
+    float height = itemHeight * items.size();
+
+    g_subDropdown.rect = D2D1::RectF(
+        position.x,
+        position.y,
+        position.x + width,
+        position.y + height);
+
+    if (hwnd)
+        InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+void HideSubmenuDropdown(HWND hwnd)
+{
+    g_subDropdown.visible = false;
+    g_subDropdown.hoveredItem = -1;
+    if (hwnd)
+        InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+bool IsSubmenuDropdownVisible()
+{
+    return g_subDropdown.visible;
+}
+
+void DrawSubmenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
+{
+    if (!g_subDropdown.visible || !ctx)
+        return;
+
+    // Reuse the same rendering as the main dropdown
+    MenuDropdown backup = g_activeDropdown;
+    g_activeDropdown = g_subDropdown;
+    DrawMenuDropdown(ctx, dwrite);
+    g_activeDropdown = backup;
+}
+
+int GetSubmenuHoveredItem(POINT pt)
+{
+    if (!g_subDropdown.visible)
+        return -1;
+    D2D1_RECT_F r = g_subDropdown.rect;
+    if (pt.x < r.left || pt.x > r.right || pt.y < r.top || pt.y > r.bottom)
+        return -1;
+    float itemHeight = (r.bottom - r.top) / (g_subDropdown.items.empty() ? 1.0f : (float)g_subDropdown.items.size());
+    int index = (int)((pt.y - r.top) / itemHeight);
+    if (index >= 0 && index < (int)g_subDropdown.items.size())
+    {
+        if (!g_subDropdown.enabled.empty() && index < (int)g_subDropdown.enabled.size())
+        {
+            if (!g_subDropdown.enabled[index])
+                return -1;
+        }
+        return index;
+    }
+    return -1;
+}
+
+void SetSubmenuHoveredItem(int index)
+{
+    g_subDropdown.hoveredItem = index;
+}
+
+bool IsPointInSubmenu(POINT pt)
+{
+    if (!g_subDropdown.visible)
+        return false;
+    D2D1_RECT_F r = g_subDropdown.rect;
+    return pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom;
+}
+
+MenuDropdown &GetSubmenuDropdown()
+{
+    return g_subDropdown;
 }
 
 int GetDropdownHoveredItem(POINT pt)
@@ -921,6 +1092,11 @@ int GetDropdownHoveredItem(POINT pt)
 
     if (index >= 0 && index < (int)g_activeDropdown.items.size())
     {
+        if (!g_activeDropdown.separators.empty() && index < (int)g_activeDropdown.separators.size())
+        {
+            if (g_activeDropdown.separators[index])
+                return -1;
+        }
         if (!g_activeDropdown.enabled.empty() && index < (int)g_activeDropdown.enabled.size())
         {
             if (!g_activeDropdown.enabled[index])

@@ -12,6 +12,7 @@
 #include <shellapi.h>
 #include <vector>
 #include <cwctype>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <thread>
@@ -248,14 +249,19 @@ static bool RunCommandAndWait(const std::wstring &command, const std::filesystem
     return exitCode == 0;
 }
 
-static bool LaunchExecutable(const std::filesystem::path &exePath)
+static bool LaunchExecutable(const std::filesystem::path &exePath, bool keepConsoleOpen = false)
 {
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi = {};
 
-    std::wstring exe = exePath.wstring();
-    wchar_t *mutableCmd = _wcsdup(exe.c_str());
+    std::wstring cmdLine;
+    if (keepConsoleOpen)
+        cmdLine = L"cmd.exe /K " + QuotePath(exePath);
+    else
+        cmdLine = QuotePath(exePath);
+
+    wchar_t *mutableCmd = _wcsdup(cmdLine.c_str());
     BOOL ok = CreateProcessW(
         nullptr,
         mutableCmd,
@@ -569,6 +575,80 @@ bool Window::CreateProjectFromOverlay()
     return false;
 }
 
+static std::string GetProjectTypeFromRoot(const std::filesystem::path &root)
+{
+    std::filesystem::path projPath = root / ".nebula" / "project.json";
+    std::ifstream ifs(projPath, std::ios::binary);
+    if (!ifs)
+        return {};
+
+    std::string contents((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    auto pos = contents.find("\"type\"");
+    if (pos == std::string::npos)
+        return {};
+    pos = contents.find(':', pos);
+    if (pos == std::string::npos)
+        return {};
+    pos = contents.find('"', pos);
+    if (pos == std::string::npos)
+        return {};
+    auto end = contents.find('"', pos + 1);
+    if (end == std::string::npos)
+        return {};
+    return contents.substr(pos + 1, end - pos - 1);
+}
+
+static bool IsPointInTitlebarMenuArea(HWND hwnd, POINT pt)
+{
+    RECT tb = win32_titlebar_rect(hwnd);
+    if (pt.y < tb.top || pt.y >= tb.bottom)
+        return false;
+
+    CustomTitleBarButtonRects button_rects = win32_get_title_bar_button_rects(hwnd, &tb);
+    // Ignore area occupied by custom window controls (run/min/max/close)
+    if (pt.x >= button_rects.run.left)
+        return false;
+
+    // Avoid resize border clicks being treated as menu clicks
+    const int border = 4;
+    if (pt.x < tb.left + border || pt.x > tb.right - border)
+        return false;
+
+    return true;
+}
+
+static bool IsPointInMenuSafeZone(POINT pt)
+{
+    if (!IsMenuDropdownVisible())
+        return false;
+
+    D2D1_RECT_F mainR = GetActiveDropdown().rect;
+    D2D1_RECT_F subR = IsSubmenuDropdownVisible() ? GetSubmenuDropdown().rect : D2D1::RectF(0, 0, 0, 0);
+
+    auto inRect = [&](const D2D1_RECT_F &r) -> bool
+    {
+        return pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom;
+    };
+
+    if (inRect(mainR))
+        return true;
+    if (IsSubmenuDropdownVisible() && inRect(subR))
+        return true;
+
+    if (IsSubmenuDropdownVisible())
+    {
+        float left = (std::min)(mainR.right, subR.right);
+        float right = (std::max)(mainR.right, subR.left);
+        float top = (std::min)(mainR.top, subR.top);
+        float bottom = (std::max)(mainR.bottom, subR.bottom);
+        const float pad = 10.0f;
+        D2D1_RECT_F corridor = D2D1::RectF(left - pad, top - pad, right + pad, bottom + pad);
+        if (inRect(corridor))
+            return true;
+    }
+
+    return false;
+}
 void Window::OpenProjectAtPath(const std::wstring &path)
 {
     if (path.empty())
@@ -729,50 +809,187 @@ bool Window::CreateCppConsoleProject(const std::wstring &rootPath, const std::ws
             return false;
         }
 
-        fs::create_directories(root / "src");
-        fs::create_directories(root / "include");
         fs::create_directories(root / ".nebula");
 
-        // main.cpp
-        fs::path mainPath = root / "src" / "main.cpp";
         std::string nameUtf8 = toUtf8(projectName);
+        auto toTargetName = [](std::string value) -> std::string
         {
-            std::ofstream ofs(mainPath, std::ios::binary);
-            if (newProjTemplateIndex_ == 1)
+            for (auto &c : value)
             {
-                ofs << "int main() {\n";
-                ofs << "    return 0;\n";
-                ofs << "}\n";
+                if (!std::isalnum(static_cast<unsigned char>(c)))
+                    c = '_';
             }
-            else if (newProjTemplateIndex_ == 2)
-            {
-                ofs << "#include \"" << nameUtf8 << ".h\"\n\n";
-                ofs << "int main() {\n";
-                ofs << "    return 0;\n";
-                ofs << "}\n";
-            }
-            else
-            {
-                ofs << "#include <iostream>\n\n";
-                ofs << "int main() {\n";
-                ofs << "    std::cout << \"Hello from " << nameUtf8 << "!\" << std::endl;\n";
-                ofs << "    return 0;\n";
-                ofs << "}\n";
-            }
-        }
+            if (value.empty())
+                value = "app";
+            return value;
+        };
+        std::string targetName = toTargetName(nameUtf8);
+        std::string projType = "cpp-console";
+        std::string entryPath = "src/main.cpp";
+        fs::path mainPath;
+        bool needsCMake = false;
 
-        if (newProjTemplateIndex_ == 2)
+        if (newProjTemplateIndex_ == 0)
         {
-            fs::path headerPath = root / "include" / (projectName + L".h");
-            fs::path implPath = root / "src" / (projectName + L".cpp");
+            fs::create_directories(root / "src");
+            fs::create_directories(root / "include");
+            mainPath = root / "src" / "main.cpp";
+            needsCMake = true;
+            std::ofstream ofs(mainPath, std::ios::binary);
+            ofs << "#include <iostream>\n\n";
+            ofs << "int main() {\n";
+            ofs << "    std::cout << \"Hello from " << nameUtf8 << "!\" << std::endl;\n";
+            ofs << "    return 0;\n";
+            ofs << "}\n";
+        }
+        else if (newProjTemplateIndex_ == 1)
+        {
+            fs::create_directories(root / "src");
+            fs::create_directories(root / "include");
+            projType = "cpp-win32";
+            mainPath = root / "src" / "main.cpp";
+            needsCMake = true;
+            std::ofstream ofs(mainPath, std::ios::binary);
+            ofs << "#include <windows.h>\n\n";
+            ofs << "static const wchar_t *kClassName = L\"NebulaWin32Window\";\n\n";
+            ofs << "LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {\n";
+            ofs << "    switch (msg) {\n";
+            ofs << "    case WM_DESTROY:\n";
+            ofs << "        PostQuitMessage(0);\n";
+            ofs << "        return 0;\n";
+            ofs << "    default:\n";
+            ofs << "        return DefWindowProcW(hwnd, msg, wParam, lParam);\n";
+            ofs << "    }\n";
+            ofs << "}\n\n";
+            ofs << "int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {\n";
+            ofs << "    WNDCLASSW wc = {};\n";
+            ofs << "    wc.lpfnWndProc = WndProc;\n";
+            ofs << "    wc.hInstance = hInstance;\n";
+            ofs << "    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);\n";
+            ofs << "    wc.lpszClassName = kClassName;\n";
+            ofs << "    RegisterClassW(&wc);\n\n";
+            ofs << "    HWND hwnd = CreateWindowExW(0, kClassName, L\"Win32 App\",\n";
+            ofs << "        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 900, 600,\n";
+            ofs << "        nullptr, nullptr, hInstance, nullptr);\n";
+            ofs << "    if (!hwnd) return 0;\n";
+            ofs << "    ShowWindow(hwnd, nCmdShow);\n\n";
+            ofs << "    MSG msg;\n";
+            ofs << "    while (GetMessageW(&msg, nullptr, 0, 0)) {\n";
+            ofs << "        TranslateMessage(&msg);\n";
+            ofs << "        DispatchMessageW(&msg);\n";
+            ofs << "    }\n";
+            ofs << "    return (int)msg.wParam;\n";
+            ofs << "}\n";
+        }
+        else if (newProjTemplateIndex_ == 2)
+        {
+            fs::create_directories(root / "src");
+            fs::create_directories(root / "include");
+            projType = "cpp-library";
+            needsCMake = true;
+            std::wstring targetNameW(targetName.begin(), targetName.end());
+            fs::path headerPath = root / "include" / (targetNameW + L".h");
+            fs::path implPath = root / "src" / (targetNameW + L".cpp");
             {
                 std::ofstream ofs(headerPath, std::ios::binary);
                 ofs << "#pragma once\n\n";
-                ofs << "// " << nameUtf8 << " library API\n";
+                ofs << "int add(int a, int b);\n";
             }
             {
                 std::ofstream ofs(implPath, std::ios::binary);
-                ofs << "#include \"" << nameUtf8 << ".h\"\n";
+                ofs << "#include \"" << targetName << ".h\"\n\n";
+                ofs << "int add(int a, int b) {\n";
+                ofs << "    return a + b;\n";
+                ofs << "}\n";
+            }
+            mainPath = implPath;
+            entryPath = "src/" + targetName + ".cpp";
+        }
+        else if (newProjTemplateIndex_ == 3)
+        {
+            fs::create_directories(root / "src");
+            projType = "python";
+            mainPath = root / "src" / "main.py";
+            std::ofstream ofs(mainPath, std::ios::binary);
+            ofs << "def main():\n";
+            ofs << "    print(\"Hello from " << nameUtf8 << "!\")\n\n";
+            ofs << "if __name__ == \"__main__\":\n";
+            ofs << "    main()\n";
+            entryPath = "src/main.py";
+        }
+        else if (newProjTemplateIndex_ == 4)
+        {
+            fs::create_directories(root / "src");
+            projType = "web";
+            fs::path htmlPath = root / "src" / "index.html";
+            fs::path cssPath = root / "src" / "style.css";
+            fs::path jsPath = root / "src" / "app.js";
+            {
+                std::ofstream ofs(htmlPath, std::ios::binary);
+                ofs << "<!doctype html>\n";
+                ofs << "<html lang=\"fr\">\n";
+                ofs << "<head>\n";
+                ofs << "  <meta charset=\"utf-8\" />\n";
+                ofs << "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n";
+                ofs << "  <title>" << nameUtf8 << "</title>\n";
+                ofs << "  <link rel=\"stylesheet\" href=\"style.css\" />\n";
+                ofs << "</head>\n";
+                ofs << "<body>\n";
+                ofs << "  <main>\n";
+                ofs << "    <h1>" << nameUtf8 << "</h1>\n";
+                ofs << "    <p>Votre projet web est pret.</p>\n";
+                ofs << "  </main>\n";
+                ofs << "  <script src=\"app.js\"></script>\n";
+                ofs << "</body>\n";
+                ofs << "</html>\n";
+            }
+            {
+                std::ofstream ofs(cssPath, std::ios::binary);
+                ofs << "body {\n";
+                ofs << "  font-family: system-ui, sans-serif;\n";
+                ofs << "  margin: 0;\n";
+                ofs << "  padding: 40px;\n";
+                ofs << "  background: #0f1115;\n";
+                ofs << "  color: #e6e6e6;\n";
+                ofs << "}\n";
+                ofs << "main {\n";
+                ofs << "  max-width: 720px;\n";
+                ofs << "}\n";
+            }
+            {
+                std::ofstream ofs(jsPath, std::ios::binary);
+                ofs << "console.log(\"" << nameUtf8 << " ready\");\n";
+            }
+            mainPath = htmlPath;
+            entryPath = "src/index.html";
+        }
+        else
+        {
+            return false;
+        }
+
+        if (needsCMake)
+        {
+            fs::path cmakePath = root / "CMakeLists.txt";
+            std::ofstream ofs(cmakePath, std::ios::binary);
+            ofs << "cmake_minimum_required(VERSION 3.20)\n";
+            ofs << "project(" << targetName << " LANGUAGES CXX)\n\n";
+            ofs << "set(CMAKE_CXX_STANDARD 17)\n";
+            ofs << "set(CMAKE_CXX_STANDARD_REQUIRED ON)\n\n";
+            if (projType == "cpp-console")
+            {
+                ofs << "add_executable(" << targetName << " src/main.cpp)\n";
+                ofs << "target_include_directories(" << targetName << " PRIVATE include)\n";
+            }
+            else if (projType == "cpp-win32")
+            {
+                ofs << "add_executable(" << targetName << " WIN32 src/main.cpp)\n";
+                ofs << "target_include_directories(" << targetName << " PRIVATE include)\n";
+            }
+            else if (projType == "cpp-library")
+            {
+                ofs << "add_library(" << targetName << " STATIC src/" << targetName << ".cpp)\n";
+                ofs << "target_include_directories(" << targetName << " PUBLIC include)\n";
             }
         }
 
@@ -782,10 +999,10 @@ bool Window::CreateCppConsoleProject(const std::wstring &rootPath, const std::ws
             std::ofstream ofs(projPath, std::ios::binary);
             ofs << "{\n";
             ofs << "  \"name\": \"" << nameUtf8 << "\",\n";
-            ofs << "  \"type\": \"cpp-console\",\n";
+            ofs << "  \"type\": \"" << projType << "\",\n";
             ofs << "  \"version\": 1,\n";
             ofs << "  \"sourceRoot\": \"src\",\n";
-            ofs << "  \"entry\": \"src/main.cpp\"\n";
+            ofs << "  \"entry\": \"" << entryPath << "\"\n";
             ofs << "}\n";
         }
 
@@ -836,6 +1053,7 @@ void Window::ShowNewProjectOverlay()
 {
     newProjectVisible_ = true;
     newProjPage_ = NewProjectPage::Home;
+    hoveredButton_ = Hovered_None;
     newProjNameFocused_ = false;
     newProjLocationFocused_ = false;
     newProjNameInput_.SetFocused(false);
@@ -1019,7 +1237,7 @@ void Window::RunActiveProject()
             return;
         }
 
-        if (!LaunchExecutable(outExe))
+        if (!LaunchExecutable(outExe, true))
         {
             MessageBoxW(hwnd_, L"Impossible de lancer l'exécutable.", L"Run", MB_OK | MB_ICONERROR);
             return;
@@ -1033,7 +1251,9 @@ void Window::RunActiveProject()
         return;
     }
 
-    std::thread([rootPath, hwnd = hwnd_]()
+    const std::string projType = GetProjectTypeFromRoot(rootPath);
+    const bool keepConsoleOpen = (projType == "cpp-console");
+    std::thread([rootPath, hwnd = hwnd_, keepConsoleOpen]()
     {
         Logger::Instance().Log(L"Run: CMake configure/build started.");
 
@@ -1047,7 +1267,7 @@ void Window::RunActiveProject()
             return;
         }
 
-        std::wstring buildCmd = L"cmake --build " + QuotePath(buildDir) + L" --config Debug";
+        std::wstring buildCmd = L"cmake --build " + QuotePath(buildDir) + L" --config Release";
         if (!RunCommandAndWait(buildCmd, rootPath, exitCode))
         {
             Logger::Instance().Log(L"Run: Build failed.");
@@ -1055,9 +1275,9 @@ void Window::RunActiveProject()
             return;
         }
 
-        std::filesystem::path exe = FindNewestExecutable(buildDir / "Debug");
+        std::filesystem::path exe = FindNewestExecutable(buildDir / "Release");
         if (exe.empty())
-            exe = FindNewestExecutable(buildDir / "Release");
+            exe = FindNewestExecutable(buildDir / "Debug");
         if (exe.empty())
             exe = FindNewestExecutable(buildDir);
 
@@ -1068,7 +1288,7 @@ void Window::RunActiveProject()
             return;
         }
 
-        if (!LaunchExecutable(exe))
+        if (!LaunchExecutable(exe, keepConsoleOpen))
         {
             Logger::Instance().Log(L"Run: Failed to launch executable.");
             MessageBoxW(hwnd, L"Impossible de lancer l'exécutable.", L"Run", MB_OK | MB_ICONERROR);
@@ -1313,6 +1533,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         case HTBOTTOMRIGHT:
         case HTBOTTOM:
         case HTBOTTOMLEFT:
+            if (newProjectVisible_)
+                return HTCLIENT;
             return hit;
         }
 
@@ -1380,6 +1602,28 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         ScreenToClient(hwnd_, &cursor_point);
 
         RECT title_bar_rect = win32_titlebar_rect(hwnd_);
+
+        if (newProjectVisible_)
+        {
+            // Only allow system buttons hover when the overlay is visible.
+            CustomTitleBarButtonRects button_rects = win32_get_title_bar_button_rects(hwnd_, &title_bar_rect);
+            Window::CustomTitleBarHoveredButton new_hovered_button = Window::Hovered_None;
+            if (PtInRect(&button_rects.close, cursor_point))
+                new_hovered_button = Window::Hovered_Close;
+            else if (PtInRect(&button_rects.minimize, cursor_point))
+                new_hovered_button = Window::Hovered_Minimize;
+            else if (PtInRect(&button_rects.maximize, cursor_point))
+                new_hovered_button = Window::Hovered_Maximize;
+
+            if (new_hovered_button != hoveredButton_)
+            {
+                InvalidateRect(hwnd_, &button_rects.close, FALSE);
+                InvalidateRect(hwnd_, &button_rects.minimize, FALSE);
+                InvalidateRect(hwnd_, &button_rects.maximize, FALSE);
+                hoveredButton_ = new_hovered_button;
+            }
+            return DefWindowProc(hwnd_, uMsg, wParam, lParam);
+        }
 
         int hoveredMenu = GetHoveredMenuItem(hwnd_, cursor_point);
         for (int i = 0; i < 8; i++)
@@ -1567,6 +1811,21 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         // If a titlebar menu dropdown is visible, let it handle clicks first
         if (IsMenuDropdownVisible())
         {
+            if (IsSubmenuDropdownVisible() && IsPointInSubmenu(pt))
+            {
+                int subIndex = GetSubmenuHoveredItem(pt);
+                if (subIndex >= 0)
+                {
+                    int baseId = GetSubmenuDropdown().baseId;
+                    int commandId = baseId + subIndex;
+                    PostMessageW(hwnd_, WM_COMMAND, commandId, 0);
+                    HideSubmenuDropdown(hwnd_);
+                    HideMenuDropdown(hwnd_);
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
             int itemIndex = GetDropdownHoveredItem(pt);
             if (itemIndex >= 0)
             {
@@ -1576,7 +1835,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                     int commandId = baseId + itemIndex;
                     GetExplorerManager().HandleContextCommand(commandId);
                 }
-                else if (baseId >= 7000 && baseId < 8000)
+                else if (baseId >= 7000 && baseId < 9000)
                 {
                     int commandId = baseId + itemIndex;
                     PostMessageW(hwnd_, WM_COMMAND, commandId, 0);
@@ -1584,16 +1843,49 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 else
                 {
                     int menuIndex = GetActiveDropdown().menuIndex;
+                    if (menuIndex == 0 && itemIndex == 3)
+                    {
+                        // Open Recent submenu
+                        LoadRecentProjects();
+                        D2D1_RECT_F r = GetActiveDropdown().rect;
+                        MenuDropdown &dd = GetActiveDropdown();
+                        float itemHeight = (r.bottom - r.top) / (dd.items.empty() ? 1.0f : (float)dd.items.size());
+                        D2D1_RECT_F itemRect = D2D1::RectF(r.left, r.top + itemIndex * itemHeight, r.right, r.top + (itemIndex + 1) * itemHeight);
+
+                        std::vector<std::wstring> items;
+                        for (const auto &p : recentProjects_)
+                        {
+                            std::filesystem::path fp(p.path);
+                            std::wstring name = fp.filename().wstring();
+                            if (name.empty())
+                                name = p.path;
+                            items.push_back(name + L"  \u2014  " + p.path);
+                        }
+                        if (items.empty())
+                            items.push_back(L"(Aucun recent)");
+
+                        ShowSubmenuDropdown(hwnd_, items, D2D1::Point2F(itemRect.right + 6.0f, itemRect.top), 8000);
+                        if (items.size() == 1 && recentProjects_.empty())
+                        {
+                            MenuDropdown &sd = GetSubmenuDropdown();
+                            sd.enabled.clear();
+                            sd.enabled.resize(items.size(), false);
+                        }
+                        InvalidateRect(hwnd_, nullptr, FALSE);
+                        return 0;
+                    }
                     int commandId = 3000 + menuIndex * 100 + itemIndex;
                     PostMessageW(hwnd_, WM_COMMAND, commandId, 0);
                 }
+                HideSubmenuDropdown(hwnd_);
                 HideMenuDropdown(hwnd_);
                 InvalidateRect(hwnd_, nullptr, FALSE);
                 return 0;
             }
 
-            if (!IsPointInDropdown(pt))
+            if (!IsPointInMenuSafeZone(pt))
             {
+                HideSubmenuDropdown(hwnd_);
                 HideMenuDropdown(hwnd_);
                 InvalidateRect(hwnd_, nullptr, FALSE);
             }
@@ -1694,7 +1986,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             }
         }
 
-        int hoveredMenu = GetHoveredMenuItem(hwnd_, pt);
+        int hoveredMenu = -1;
+        if (IsPointInTitlebarMenuArea(hwnd_, pt))
+            hoveredMenu = GetHoveredMenuItem(hwnd_, pt);
         if (hoveredMenu >= 0)
         {
             if (IsMenuDropdownVisible() && GetActiveDropdown().menuIndex == hoveredMenu)
@@ -1706,6 +2000,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 D2D1_RECT_F menuRect = GetMenuItems()[hoveredMenu].rect;
                 ShowMenuDropdown(hwnd_, hoveredMenu, menuRect);
             }
+            HideSubmenuDropdown(hwnd_);
             InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
         }
@@ -2122,6 +2417,19 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         // Menu dropdown handling
         if (IsMenuDropdownVisible())
         {
+            if (IsSubmenuDropdownVisible() && IsPointInSubmenu(pt))
+            {
+                int subHovered = GetSubmenuHoveredItem(pt);
+                if (subHovered != GetSubmenuDropdown().hoveredItem)
+                {
+                    SetSubmenuHoveredItem(subHovered);
+                    needsRedraw = true;
+                }
+                if (needsRedraw)
+                    ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+
             int hoveredItem = GetDropdownHoveredItem(pt);
             if (hoveredItem != GetActiveDropdown().hoveredItem)
             {
@@ -2133,6 +2441,37 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             for (size_t i = 0; i < GetMenuItems().size(); ++i)
                 SetMenuItemHovered((int)i, (int)i == originMenu);
 
+            if (originMenu == 0 && hoveredItem == 3)
+            {
+                LoadRecentProjects();
+                std::vector<std::wstring> items;
+                for (const auto &p : recentProjects_)
+                {
+                    std::filesystem::path fp(p.path);
+                    std::wstring name = fp.filename().wstring();
+                    if (name.empty())
+                        name = p.path;
+                    items.push_back(name + L"  \u2014  " + p.path);
+                }
+                if (items.empty())
+                    items.push_back(L"(Aucun recent)");
+
+                D2D1_RECT_F r = GetActiveDropdown().rect;
+                float itemHeight = (r.bottom - r.top) / (GetActiveDropdown().items.empty() ? 1.0f : (float)GetActiveDropdown().items.size());
+                D2D1_RECT_F itemRect = D2D1::RectF(r.left, r.top + hoveredItem * itemHeight, r.right, r.top + (hoveredItem + 1) * itemHeight);
+                ShowSubmenuDropdown(hwnd_, items, D2D1::Point2F(itemRect.right + 6.0f, itemRect.top), 8000);
+                if (items.size() == 1 && recentProjects_.empty())
+                {
+                    MenuDropdown &dd = GetSubmenuDropdown();
+                    dd.enabled.clear();
+                    dd.enabled.resize(items.size(), false);
+                }
+            }
+            else if (IsSubmenuDropdownVisible())
+            {
+                HideSubmenuDropdown(hwnd_);
+            }
+
             if (needsRedraw)
                 ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
 
@@ -2141,7 +2480,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 
         // Title bar menu hover
         RECT title_bar_rect = win32_titlebar_rect(hwnd_);
-        if (pt.y < title_bar_rect.bottom)
+        if (pt.y < title_bar_rect.bottom && IsPointInTitlebarMenuArea(hwnd_, pt))
         {
             GetPanelManager().ClearResizeHover(hwnd_);
 
@@ -2417,7 +2756,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             // Menu handling: implement core File menu actions and keep existing stubs for others.
             if (menu == 0)
             {
-                // File menu simplified: New, New Window, Open..., Close
+                // File menu: New, New Window, Open..., Open Recent, Open Project, Close
                 switch (index)
                 {
                 case 0: // New -> create untitled tab
@@ -2472,7 +2811,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                     }
                     return 0;
                 }
-                case 3: // Open Project -> pick folder and initialize Explorer
+                case 3: // Open Recent -> handled via submenu
+                {
+                    return 0;
+                }
+                case 4: // Open Project -> pick folder and initialize Explorer
                 {
                     IFileOpenDialog *pFileOpen = nullptr;
                     HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFileOpen));
@@ -2496,6 +2839,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                                     // Initialize Explorer to this folder (open project)
                                     GetExplorerManager().Initialize(selectedFolder);
                                     GetExplorerManager().SetVisible(true);
+                                    AddRecentProject(selectedFolder);
                                     InvalidateRect(hwnd_, nullptr, FALSE);
                                 }
                                 pItem->Release();
@@ -2505,7 +2849,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                     }
                     return 0;
                 }
-                case 4: // Close -> close active tab
+                case 5: // Close -> close active tab
                 {
                     int active = tabBar_.GetActiveTabIndex();
                     if (active >= 0)
@@ -2639,6 +2983,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             MessageBoxW(hwnd_, buf, L"Menu", MB_OK);
             return 0;
         }
+
+        // Recent projects submenu commands (8000..8999)
+        if (id >= 8000 && id < 9000)
+        {
+            int rel = id - 8000;
+            if (rel >= 0 && rel < (int)recentProjects_.size())
+            {
+                OpenProjectAtPath(recentProjects_[rel].path);
+                return 0;
+            }
+        }
         break;
     }
     case WM_NCLBUTTONDOWN:
@@ -2653,6 +3008,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     case WM_NCLBUTTONUP:
     {
         auto current = hoveredButton_;
+        if (newProjectVisible_ && current == Window::Hovered_Run)
+        {
+            hoveredButton_ = Hovered_None;
+            return 0;
+        }
         if (current == Window::Hovered_Close)
         {
             PostMessageW(hwnd_, WM_CLOSE, 0, 0);

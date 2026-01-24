@@ -325,6 +325,7 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
 
     // Dessiner le dropdown par-dessus tout
     DrawMenuDropdown(pRenderTarget_, pDWriteFactory_);
+    DrawSubmenuDropdown(pRenderTarget_, pDWriteFactory_);
 
 
     HRESULT hr = pRenderTarget_->EndDraw();
