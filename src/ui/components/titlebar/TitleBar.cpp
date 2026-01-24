@@ -176,7 +176,6 @@ static void DrawPlayIcon(
 
 void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, int hoveredButton, bool hasFocus, const std::wstring &title)
 {
-    (void)hasFocus;
     (void)title;
     if (!ctx)
         return;
@@ -198,7 +197,8 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
         ID2D1SolidColorBrush *bgBrush = nullptr;
         ID2D1SolidColorBrush *bottomBorder = nullptr;
         ctx->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f), &bgBrush);
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f), &bottomBorder);
+                ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f), &bottomBorder);
+
         if (bgBrush)
             ctx->FillRectangle(tb, bgBrush);
         if (bottomBorder)

@@ -10,6 +10,7 @@ namespace Orion::Geometry
     {
         int line;
         int visualCol;
+        wchar_t kind;
     };
 
     std::vector<IndentGuide> ComputeCppBraceGuides(
@@ -120,23 +121,64 @@ namespace Orion::Geometry
                         continue;
                     }
 
-                    if (c == L'{')
+                    if (c == L'{' || c == L'(' || c == L'[')
                     {
-                        int vc = 0;
+                        int braceVc = 0;
                         for (size_t k = 0; k < i; ++k)
-                            vc = AdvanceVisual(vc, L[k]);
+                            braceVc = AdvanceVisual(braceVc, L[k]);
 
-                        stack.push_back(OpenBrace{li, vc});
+                        // Determine leading indent of the line (visual columns).
+                        int indentVc = 0;
+                        for (size_t k = 0; k < L.size(); ++k)
+                        {
+                            if (!iswspace(L[k]))
+                                break;
+                            indentVc = AdvanceVisual(indentVc, L[k]);
+                        }
+
+                        // If brace is inline after code, guide should align with inner block indent.
+                        bool inlineBrace = false;
+                        for (size_t k = 0; k < i; ++k)
+                        {
+                            if (!iswspace(L[k]))
+                            {
+                                inlineBrace = true;
+                                break;
+                            }
+                        }
+
+                        // Place guide at the block's base indent (VS-like for multi-line pairs).
+                        int guideVc = indentVc;
+                        if (guideVc < 0)
+                            guideVc = 0;
+
+                        stack.push_back(OpenBrace{li, guideVc, c});
                     }
-                    else if (c == L'}')
+                    else if (c == L'}' || c == L')' || c == L']')
                     {
                         if (!stack.empty())
                         {
-                            OpenBrace ob = stack.back();
-                            stack.pop_back();
+                            // Pop until we find a matching kind
+                            wchar_t expected = (c == L'}') ? L'{' : (c == L')') ? L'(' : L'[';
+                            OpenBrace ob = {};
+                            bool found = false;
+                            for (int s = (int)stack.size() - 1; s >= 0; --s)
+                            {
+                                if (stack[s].kind == expected)
+                                {
+                                    ob = stack[s];
+                                    stack.erase(stack.begin() + s);
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (!found)
+                                continue;
 
                             if (emitGuides)
                             {
+                                if (li == ob.line)
+                                    continue; // same-line pairs don't get guides
                                 IndentGuide g;
                                 g.startLine = ob.line;
                                 g.endLine = li;

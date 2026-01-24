@@ -165,12 +165,13 @@ namespace Orion
                 continue;
 
             const float cw = metrics_.characterWidth;
+            const int tabSize = GetIndentConfig().tabSize;
 
             int visualCol = 0;
             for (size_t col = 0; col < line.size(); ++col)
             {
                 wchar_t ch = line[col];
-                int visualColNext = Orion::Geometry::AdvanceVisualCol(visualCol, ch, 4);
+                int visualColNext = Orion::Geometry::AdvanceVisualCol(visualCol, ch, tabSize);
 
                 float charX = contentLeft - state_.scrollOffsetX + (visualCol * cw);
                 float nextX = contentLeft - state_.scrollOffsetX + (visualColNext * cw);
@@ -230,6 +231,8 @@ namespace Orion
             format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
             format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
             format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            const float tabStop = metrics_.characterWidth * (float)GetIndentConfig().tabSize;
+            format->SetIncrementalTabStop(tabStop);
         }
 
         int firstVisibleLine = (int)(state_.scrollOffsetY / metrics_.lineHeight);
@@ -288,6 +291,8 @@ namespace Orion
             renderCtx.scrollOffsetY = state_.scrollOffsetY;
             renderCtx.scrollOffsetX = state_.scrollOffsetX;
             renderCtx.lineHeight = metrics_.lineHeight;
+            renderCtx.charWidth = metrics_.characterWidth;
+            renderCtx.lines = &state_.lines;
             renderCtx.firstVisibleLine = firstVisibleLine;
             renderCtx.lastVisibleLine = lastVisibleLine;
             renderCtx.dwriteFactory = pDWriteFactory_;

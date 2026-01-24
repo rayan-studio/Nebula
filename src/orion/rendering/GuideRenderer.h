@@ -13,8 +13,8 @@ namespace Orion::Rendering
         D2D1_COLOR_F normalColor = D2D1::ColorF(0.3f, 0.3f, 0.35f, 0.5f);
         D2D1_COLOR_F activeColor = D2D1::ColorF(0.4f, 0.4f, 0.5f, 0.7f);
         float lineWidth = 1.0f;
-        float topMargin = 0.10f;
-        float bottomMargin = 0.10f;
+        float topMargin = 0.15f;
+        float bottomMargin = 0.15f;
     };
 
     struct GuideRenderContext
@@ -27,6 +27,9 @@ namespace Orion::Rendering
 
         // ✅ largeur char utilisée par ton rendu texte
         float charWidth = 0.0f;
+
+        // Optional: lines for per-line indent clipping (avoid drawing over text)
+        const std::vector<std::wstring>* lines = nullptr;
 
         int firstVisibleLine = 0;
         int lastVisibleLine = 0; // exclusif

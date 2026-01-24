@@ -15,6 +15,8 @@
 #include <filesystem>
 #include <fstream>
 #include <thread>
+#include <unordered_map>
+#include <ctime>
 #include <uxtheme.h>
 #include <vssym32.h>
 #include <commctrl.h>
@@ -107,6 +109,28 @@ static void EnableMicaIfAvailable(HWND hwnd)
     FreeLibrary(hDwm);
 }
 
+static void SetDwmBorderColor(HWND hwnd, bool focused)
+{
+    HMODULE hDwm = LoadLibraryW(L"dwmapi.dll");
+    if (!hDwm)
+        return;
+
+    using DwmSetWindowAttribute_t = HRESULT(WINAPI *)(HWND, DWORD, LPCVOID, DWORD);
+    auto pDwmSetWindowAttribute = reinterpret_cast<DwmSetWindowAttribute_t>(GetProcAddress(hDwm, "DwmSetWindowAttribute"));
+    if (!pDwmSetWindowAttribute)
+    {
+        FreeLibrary(hDwm);
+        return;
+    }
+
+    // DWMWA_BORDER_COLOR = 34 (Windows 11+). Use COLORREF (0x00bbggrr).
+    const DWORD DWMWA_BORDER_COLOR = 34;
+    COLORREF color = focused ? RGB(61, 143, 242) : RGB(51, 51, 51);
+    pDwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &color, sizeof(color));
+
+    FreeLibrary(hDwm);
+}
+
 static const wchar_t *WINDOW_CLASS_NAME = L"NebulaTextWindowClass";
 static const std::wstring kSettingsTabPath = L"__settings__";
 
@@ -121,6 +145,22 @@ static void ThrottledInvalidateRect(HWND hwnd, const RECT *rect, BOOL erase)
         InvalidateRect(hwnd, rect, erase);
         g_lastInvalidateTime = now;
     }
+}
+
+static std::filesystem::path GetRecentProjectsStorePath()
+{
+    PWSTR appDataPath = nullptr;
+    std::filesystem::path out;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appDataPath)) && appDataPath)
+    {
+        std::filesystem::path base(appDataPath);
+        CoTaskMemFree(appDataPath);
+        out = base / L"Nebula";
+        std::error_code ec;
+        std::filesystem::create_directories(out, ec);
+        out /= L"recent_projects.txt";
+    }
+    return out;
 }
 
 static constexpr UINT CARET_TIMER_ID = 1;
@@ -445,6 +485,7 @@ bool Window::Create(int nCmdShow)
 
     SetWindowPos(hwnd_, NULL, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
     EnableMicaIfAvailable(hwnd_);
+    SetDwmBorderColor(hwnd_, true);
 
     return true;
 }
@@ -471,540 +512,32 @@ void Window::SetText(const std::wstring &text)
 
 void Window::DrawNewProjectOverlay(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, const RECT &clientRect)
 {
-    if (!newProjectVisible_ || !ctx || !dwrite)
-        return;
-
-    D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
-    D2D1_TEXT_ANTIALIAS_MODE oldTextAA = ctx->GetTextAntialiasMode();
-    ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    ctx->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
-
-    UINT dpi = GetDpiForWindow(hwnd_);
-    float scale = (float)dpi / 96.0f;
-
-    RECT tbRect = win32_titlebar_rect(hwnd_);
-    D2D1_RECT_F full = D2D1::RectF((float)clientRect.left, (float)tbRect.bottom, (float)clientRect.right, (float)clientRect.bottom);
-
-    ID2D1SolidColorBrush *bg = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.10f, 0.10f, 1.0f), &bg);
-    if (bg)
-    {
-        ctx->FillRectangle(full, bg);
-        bg->Release();
-    }
-
-    float padX = 24.0f * scale;
-    float padY = 14.0f * scale;
-    float gap = 24.0f * scale;
-    float fullW = full.right - full.left;
-    float leftW = (fullW - padX * 2.0f - gap) * 0.68f;
-    float rightW = (fullW - padX * 2.0f - gap) - leftW;
-
-    D2D1_RECT_F leftPanel = D2D1::RectF(full.left + padX, full.top + padY, full.left + padX + leftW, full.bottom - padY);
-    D2D1_RECT_F rightPanel = D2D1::RectF(leftPanel.right + gap, leftPanel.top, leftPanel.right + gap + rightW, leftPanel.bottom);
-    newProjCardRect_ = rightPanel;
-
-    const wchar_t *uiFont = L"Segoe UI Variable Text";
-    const wchar_t *iconFont = L"Segoe Fluent Icons";
-    IDWriteFontCollection *uiCollection = nullptr;
-
-    ID2D1SolidColorBrush *panelBg = nullptr;
-    ID2D1SolidColorBrush *panelBorder = nullptr;
-    ID2D1SolidColorBrush *divider = nullptr;
-    ID2D1SolidColorBrush *muted = nullptr;
-    ID2D1SolidColorBrush *text = nullptr;
-    ID2D1SolidColorBrush *subtle = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.13f, 0.13f, 0.13f, 1.0f), &panelBg);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.22f, 1.0f), &panelBorder);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.22f, 1.0f), &divider);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.60f, 0.60f, 0.60f, 1.0f), &muted);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.93f, 0.93f, 0.93f, 1.0f), &text);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.17f, 0.17f, 0.17f, 1.0f), &subtle);
-
-    if (panelBg)
-        ctx->FillRoundedRectangle(D2D1::RoundedRect(rightPanel, 8.0f * scale, 8.0f * scale), panelBg);
-    if (panelBorder)
-        ctx->DrawRoundedRectangle(D2D1::RoundedRect(rightPanel, 8.0f * scale, 8.0f * scale), panelBorder, 1.0f);
-    if (divider)
-        ctx->DrawLine(D2D1::Point2F(rightPanel.left - gap * 0.5f, rightPanel.top),
-                      D2D1::Point2F(rightPanel.left - gap * 0.5f, rightPanel.bottom), divider, 1.0f);
-
-    IDWriteTextFormat *titleFmt = nullptr;
-    IDWriteTextFormat *sectionFmt = nullptr;
-    IDWriteTextFormat *labelFmt = nullptr;
-    IDWriteTextFormat *itemFmt = nullptr;
-    IDWriteTextFormat *subFmt = nullptr;
-    IDWriteTextFormat *iconFmt = nullptr;
-    IDWriteTextFormat *actionFmt = nullptr;
-    dwrite->CreateTextFormat(uiFont, uiCollection, DWRITE_FONT_WEIGHT_SEMI_BOLD,
-                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                             18.0f * scale, L"en-us", &titleFmt);
-    dwrite->CreateTextFormat(uiFont, uiCollection, DWRITE_FONT_WEIGHT_SEMI_BOLD,
-                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                             11.0f * scale, L"en-us", &sectionFmt);
-    dwrite->CreateTextFormat(uiFont, uiCollection, DWRITE_FONT_WEIGHT_SEMI_BOLD,
-                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                             10.0f * scale, L"en-us", &labelFmt);
-    dwrite->CreateTextFormat(uiFont, uiCollection, DWRITE_FONT_WEIGHT_SEMI_BOLD,
-                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                             12.0f * scale, L"en-us", &itemFmt);
-    dwrite->CreateTextFormat(uiFont, uiCollection, DWRITE_FONT_WEIGHT_NORMAL,
-                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                             10.0f * scale, L"en-us", &subFmt);
-    dwrite->CreateTextFormat(iconFont, uiCollection, DWRITE_FONT_WEIGHT_NORMAL,
-                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                             14.0f * scale, L"en-us", &iconFmt);
-    dwrite->CreateTextFormat(uiFont, uiCollection, DWRITE_FONT_WEIGHT_MEDIUM,
-                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                             11.0f * scale, L"en-us", &actionFmt);
-    if (iconFmt)
-        iconFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-
-    // Left header
-    D2D1_RECT_F leftTitle = D2D1::RectF(leftPanel.left, leftPanel.top, leftPanel.right, leftPanel.top + 26.0f * scale);
-    if (titleFmt && text)
-        ctx->DrawTextW(L"Commencez", 9, titleFmt, leftTitle, text);
-
-    // Search bar
-    float searchH = 30.0f * scale;
-    float searchY = leftTitle.bottom + 10.0f * scale;
-    newProjLocationInput_.SetRect(D2D1::RectF(leftPanel.left, searchY, leftPanel.right, searchY + searchH));
-    auto &searchStyle = newProjLocationInput_.GetStyle();
-    searchStyle.backgroundColor = D2D1::ColorF(0.16f, 0.16f, 0.16f, 1.0f);
-    searchStyle.borderColor = D2D1::ColorF(0.26f, 0.26f, 0.26f, 1.0f);
-    searchStyle.focusBorderColor = D2D1::ColorF(0.29f, 0.62f, 0.92f, 1.0f);
-    searchStyle.cornerRadius = 8.0f * scale;
-    searchStyle.fontSize = 12.0f * scale;
-    searchStyle.padding = 9.0f * scale;
-    searchStyle.textColor = D2D1::ColorF(0.92f, 0.92f, 0.92f, 1.0f);
-    searchStyle.placeholderColor = D2D1::ColorF(0.48f, 0.48f, 0.48f, 1.0f);
-    searchStyle.iconColor = D2D1::ColorF(0.55f, 0.55f, 0.55f, 1.0f);
-    searchStyle.iconSize = 14.0f * scale;
-    searchStyle.iconPadding = 26.0f * scale;
-    searchStyle.fontFamily = uiFont;
-    searchStyle.fontCollection = uiCollection;
-    newProjLocationInput_.Draw(ctx, dwrite);
-
-    // Recents list
-    float recentsLabelY = searchY + searchH + 14.0f * scale;
-    if (sectionFmt && muted)
-    {
-        D2D1_RECT_F recentsLabel = D2D1::RectF(leftPanel.left, recentsLabelY, leftPanel.right, recentsLabelY + 16.0f * scale);
-        ctx->DrawTextW(L"Aujourd'hui", 11, sectionFmt, recentsLabel, muted);
-    }
-    D2D1_RECT_F listRect = D2D1::RectF(leftPanel.left, recentsLabelY + 18.0f * scale, leftPanel.right, leftPanel.bottom - 10.0f * scale);
-    if (panelBorder)
-        ctx->DrawRoundedRectangle(D2D1::RoundedRect(listRect, 8.0f * scale, 8.0f * scale), panelBorder, 1.0f);
-
-    std::wstring defaultPath = GetDefaultSourceReposPath();
-    std::error_code ec;
-    bool hasDefault = !defaultPath.empty() && std::filesystem::exists(defaultPath, ec);
-    if (hasDefault)
-    {
-        D2D1_RECT_F rowRect = D2D1::RectF(listRect.left + 10.0f * scale, listRect.top + 10.0f * scale,
-                                          listRect.right - 10.0f * scale, listRect.top + 48.0f * scale);
-        if (subtle)
-            ctx->FillRoundedRectangle(D2D1::RoundedRect(rowRect, 6.0f * scale, 6.0f * scale), subtle);
-        if (panelBorder)
-            ctx->DrawRoundedRectangle(D2D1::RoundedRect(rowRect, 6.0f * scale, 6.0f * scale), panelBorder, 1.0f);
-
-        if (iconFmt && muted)
-        {
-            D2D1_RECT_F iconRect = D2D1::RectF(rowRect.left + 8.0f * scale, rowRect.top, rowRect.left + 30.0f * scale, rowRect.bottom);
-            ctx->DrawTextW(L"\uE8B7", 1, iconFmt, iconRect, muted);
-        }
-
-        std::filesystem::path p(defaultPath);
-        std::wstring name = p.filename().wstring();
-        if (name.empty())
-            name = L"repos";
-
-        if (itemFmt && text)
-        {
-            D2D1_RECT_F nameRect = D2D1::RectF(rowRect.left + 34.0f * scale, rowRect.top + 6.0f * scale, rowRect.right - 10.0f * scale, rowRect.top + 24.0f * scale);
-            ctx->DrawTextW(name.c_str(), (UINT32)name.size(), itemFmt, nameRect, text);
-        }
-        if (subFmt && muted)
-        {
-            D2D1_RECT_F pathRect = D2D1::RectF(rowRect.left + 34.0f * scale, rowRect.top + 22.0f * scale, rowRect.right - 10.0f * scale, rowRect.bottom - 6.0f * scale);
-            ctx->DrawTextW(defaultPath.c_str(), (UINT32)defaultPath.size(), subFmt, pathRect, muted);
-        }
-    }
-    else if (subFmt && muted)
-    {
-        D2D1_RECT_F emptyRect = D2D1::RectF(listRect.left + 10.0f * scale, listRect.top + 10.0f * scale,
-                                            listRect.right - 10.0f * scale, listRect.bottom - 10.0f * scale);
-        subFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        subFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        ctx->DrawTextW(L"Aucun projet recent", 19, subFmt, emptyRect, muted);
-        subFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        subFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-    }
-
-    // Right: actions
-    D2D1_RECT_F actionsTitle = D2D1::RectF(rightPanel.left + 14.0f * scale, rightPanel.top + 12.0f * scale,
-                                           rightPanel.right - 14.0f * scale, rightPanel.top + 30.0f * scale);
-    if (sectionFmt && text)
-        ctx->DrawTextW(L"Actions", 7, sectionFmt, actionsTitle, text);
-
-    float actionH = 34.0f * scale;
-    float actionGap = 8.0f * scale;
-    float actionY = actionsTitle.bottom + 8.0f * scale;
-    newProjCreateRect_ = D2D1::RectF(rightPanel.left + 12.0f * scale, actionY, rightPanel.right - 12.0f * scale, actionY + actionH);
-    newProjOpenRect_ = D2D1::RectF(rightPanel.left + 12.0f * scale, actionY + actionH + actionGap,
-                                   rightPanel.right - 12.0f * scale, actionY + (actionH + actionGap) + actionH);
-
-    auto drawAction = [&](const D2D1_RECT_F &rect, const wchar_t *icon, const wchar_t *label, bool hovered)
-    {
-        ID2D1SolidColorBrush *btnBg = nullptr;
-        ctx->CreateSolidColorBrush(hovered ? D2D1::ColorF(0.22f, 0.22f, 0.22f, 1.0f)
-                                           : D2D1::ColorF(0.18f, 0.18f, 0.18f, 1.0f), &btnBg);
-        if (btnBg)
-        {
-            ctx->FillRoundedRectangle(D2D1::RoundedRect(rect, 6.0f * scale, 6.0f * scale), btnBg);
-            btnBg->Release();
-        }
-        if (panelBorder)
-            ctx->DrawRoundedRectangle(D2D1::RoundedRect(rect, 6.0f * scale, 6.0f * scale), panelBorder, 1.0f);
-
-        if (iconFmt && muted)
-        {
-            D2D1_RECT_F iconRect = D2D1::RectF(rect.left + 10.0f * scale, rect.top, rect.left + 28.0f * scale, rect.bottom);
-            ctx->DrawTextW(icon, 1, iconFmt, iconRect, muted);
-        }
-        if (actionFmt && text)
-        {
-            actionFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            actionFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-            D2D1_RECT_F labelRect = D2D1::RectF(rect.left + 32.0f * scale, rect.top, rect.right - 10.0f * scale, rect.bottom);
-            ctx->DrawTextW(label, (UINT32)wcslen(label), actionFmt, labelRect, text);
-        }
-    };
-
-    if (newProjPage_ == NewProjectPage::Home)
-    {
-        drawAction(newProjCreateRect_, L"\uE710", L"Creer un projet", newProjCreateHover_);
-        drawAction(newProjOpenRect_, L"\uE8B7", L"Ouvrir un dossier", newProjOpenHover_);
-
-        newProjTemplateRects_.clear();
-        newProjNameInput_.SetRect(D2D1::RectF(0, 0, 0, 0));
-
-        // Bottom continue button
-        float btnY = rightPanel.bottom - 36.0f * scale;
-        newProjCancelRect_ = D2D1::RectF(rightPanel.right - 190.0f * scale, btnY, rightPanel.right - 14.0f * scale, btnY + 28.0f * scale);
-        ID2D1SolidColorBrush *cancelBrush = nullptr;
-        ID2D1SolidColorBrush *btnText = nullptr;
-        ctx->CreateSolidColorBrush(newProjCancelHover_ ? D2D1::ColorF(0.22f, 0.22f, 0.22f, 1.0f)
-                                                       : D2D1::ColorF(0.16f, 0.16f, 0.16f, 1.0f), &cancelBrush);
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.96f, 0.96f, 0.96f, 1.0f), &btnText);
-        if (cancelBrush)
-        {
-            ctx->FillRoundedRectangle(D2D1::RoundedRect(newProjCancelRect_, 6.0f * scale, 6.0f * scale), cancelBrush);
-            cancelBrush->Release();
-        }
-        if (btnText)
-        {
-            IDWriteTextFormat *btnFmt = nullptr;
-            dwrite->CreateTextFormat(uiFont, uiCollection, DWRITE_FONT_WEIGHT_MEDIUM,
-                                     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                                     11.0f * scale, L"en-us", &btnFmt);
-            if (btnFmt)
-            {
-                btnFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-                btnFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-                ctx->DrawTextW(L"Continuer sans code", 20, btnFmt, newProjCancelRect_, btnText);
-                btnFmt->Release();
-            }
-            btnText->Release();
-        }
-    }
-    else
-    {
-        // Create page
-        drawAction(newProjOpenRect_, L"\uE8B7", L"Retour", newProjOpenHover_);
-
-        float formTitleY = rightPanel.top + 14.0f * scale;
-        if (labelFmt && muted)
-        {
-            D2D1_RECT_F formTitle = D2D1::RectF(rightPanel.left + 14.0f * scale, formTitleY, rightPanel.right - 14.0f * scale, formTitleY + 16.0f * scale);
-            ctx->DrawTextW(L"Nouveau projet", 14, labelFmt, formTitle, muted);
-        }
-
-        float inputPad = 14.0f * scale;
-        float inputW = (rightPanel.right - rightPanel.left) - inputPad * 2.0f;
-        float inputH = 32.0f * scale;
-        float nameY = formTitleY + 18.0f * scale;
-        newProjNameInput_.SetRect(D2D1::RectF(rightPanel.left + inputPad, nameY, rightPanel.left + inputPad + inputW, nameY + inputH));
-
-        auto &styleName = newProjNameInput_.GetStyle();
-        styleName.backgroundColor = D2D1::ColorF(0.16f, 0.16f, 0.16f, 1.0f);
-        styleName.borderColor = D2D1::ColorF(0.26f, 0.26f, 0.26f, 1.0f);
-        styleName.focusBorderColor = D2D1::ColorF(0.29f, 0.62f, 0.92f, 1.0f);
-        styleName.cornerRadius = 8.0f * scale;
-        styleName.fontSize = 12.0f * scale;
-        styleName.padding = 9.0f * scale;
-        styleName.textColor = D2D1::ColorF(0.92f, 0.92f, 0.92f, 1.0f);
-        styleName.placeholderColor = D2D1::ColorF(0.48f, 0.48f, 0.48f, 1.0f);
-        styleName.fontFamily = uiFont;
-        styleName.fontCollection = uiCollection;
-        newProjNameInput_.Draw(ctx, dwrite);
-
-        if (labelFmt && muted)
-        {
-            D2D1_RECT_F nameLabelRect = D2D1::RectF(rightPanel.left + inputPad, nameY - 14.0f * scale, rightPanel.right - inputPad, nameY + 6.0f * scale);
-            ctx->DrawTextW(L"NOM DU PROJET", 13, labelFmt, nameLabelRect, muted);
-        }
-
-        // Template list
-        newProjTemplateRects_.clear();
-        const wchar_t *templates[] = {L"C++ Console", L"C++ Empty", L"C++ Library"};
-        int templateCount = 3;
-        float tY = nameY + inputH + 14.0f * scale;
-        float tH = 28.0f * scale;
-        for (int i = 0; i < templateCount; ++i)
-        {
-            D2D1_RECT_F tRect = D2D1::RectF(rightPanel.left + inputPad, tY + i * (tH + 8.0f * scale), rightPanel.right - inputPad,
-                                            tY + i * (tH + 8.0f * scale) + tH);
-            newProjTemplateRects_.push_back(tRect);
-        }
-        ID2D1SolidColorBrush *tBorder = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.24f, 0.24f, 1.0f), &tBorder);
-        IDWriteTextFormat *tFmt = nullptr;
-        dwrite->CreateTextFormat(uiFont, uiCollection, DWRITE_FONT_WEIGHT_NORMAL,
-                                 DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                                 11.0f * scale, L"en-us", &tFmt);
-        if (tFmt)
-        {
-            tFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-            tFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        }
-        for (int i = 0; i < templateCount; ++i)
-        {
-            D2D1_RECT_F r = newProjTemplateRects_[i];
-            bool selected = (i == newProjTemplateIndex_);
-            bool hovered = (i == newProjTemplateHover_);
-            ID2D1SolidColorBrush *selBg = nullptr;
-            if (selected)
-                ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.28f, 0.42f, 1.0f), &selBg);
-            else if (hovered)
-                ctx->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.18f, 0.18f, 1.0f), &selBg);
-            if (selBg)
-            {
-                ctx->FillRoundedRectangle(D2D1::RoundedRect(r, 6.0f * scale, 6.0f * scale), selBg);
-                selBg->Release();
-            }
-            if (tBorder)
-                ctx->DrawRoundedRectangle(D2D1::RoundedRect(r, 6.0f * scale, 6.0f * scale), tBorder, 1.0f);
-            if (tFmt && text)
-            {
-                D2D1_RECT_F tr = D2D1::RectF(r.left + 10.0f * scale, r.top, r.right - 10.0f * scale, r.bottom);
-                ctx->DrawTextW(templates[i], (UINT32)wcslen(templates[i]), tFmt, tr, text);
-            }
-        }
-        if (tBorder) tBorder->Release();
-        if (tFmt) tFmt->Release();
-
-        float btnY = rightPanel.bottom - 36.0f * scale;
-        newProjCancelRect_ = D2D1::RectF(rightPanel.right - 190.0f * scale, btnY, rightPanel.right - 14.0f * scale, btnY + 28.0f * scale);
-        ID2D1SolidColorBrush *cancelBrush = nullptr;
-        ID2D1SolidColorBrush *btnText = nullptr;
-        ctx->CreateSolidColorBrush(newProjCancelHover_ ? D2D1::ColorF(0.22f, 0.22f, 0.22f, 1.0f)
-                                                       : D2D1::ColorF(0.16f, 0.16f, 0.16f, 1.0f), &cancelBrush);
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.96f, 0.96f, 0.96f, 1.0f), &btnText);
-        if (cancelBrush)
-        {
-            ctx->FillRoundedRectangle(D2D1::RoundedRect(newProjCancelRect_, 6.0f * scale, 6.0f * scale), cancelBrush);
-            cancelBrush->Release();
-        }
-        if (btnText)
-        {
-            IDWriteTextFormat *btnFmt = nullptr;
-            dwrite->CreateTextFormat(uiFont, uiCollection, DWRITE_FONT_WEIGHT_MEDIUM,
-                                     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                                     11.0f * scale, L"en-us", &btnFmt);
-            if (btnFmt)
-            {
-                btnFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-                btnFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-                ctx->DrawTextW(L"Creer", 5, btnFmt, newProjCancelRect_, btnText);
-                btnFmt->Release();
-            }
-            btnText->Release();
-        }
-    }
-
-    if (panelBg) panelBg->Release();
-    if (panelBorder) panelBorder->Release();
-    if (divider) divider->Release();
-    if (muted) muted->Release();
-    if (text) text->Release();
-    if (subtle) subtle->Release();
-    if (titleFmt) titleFmt->Release();
-    if (sectionFmt) sectionFmt->Release();
-    if (labelFmt) labelFmt->Release();
-    if (itemFmt) itemFmt->Release();
-    if (subFmt) subFmt->Release();
-    if (iconFmt) iconFmt->Release();
-    if (actionFmt) actionFmt->Release();
-
-    ctx->SetAntialiasMode(oldAA);
-    ctx->SetTextAntialiasMode(oldTextAA);
+    newProjOverlay_.Draw(*this, ctx, dwrite, clientRect);
 }
 
 bool Window::HandleNewProjectMouseDown(HWND hwnd, POINT pt)
 {
-    if (!newProjectVisible_)
-        return false;
-
-    if (newProjNameInput_.HitTest(pt))
-    {
-        newProjNameFocused_ = true;
-        newProjLocationFocused_ = false;
-        newProjNameInput_.SetFocused(true);
-        newProjLocationInput_.SetFocused(false);
-        newProjNameInput_.OnLeftButtonDown(hwnd, pt);
-        return true;
-    }
-    if (newProjLocationInput_.HitTest(pt))
-    {
-        newProjNameFocused_ = false;
-        newProjLocationFocused_ = true;
-        newProjNameInput_.SetFocused(false);
-        newProjLocationInput_.SetFocused(true);
-        newProjLocationInput_.OnLeftButtonDown(hwnd, pt);
-        return true;
-    }
-    for (size_t i = 0; i < newProjTemplateRects_.size(); ++i)
-    {
-        const auto &r = newProjTemplateRects_[i];
-        if (pt.x >= (int)r.left && pt.x <= (int)r.right &&
-            pt.y >= (int)r.top && pt.y <= (int)r.bottom)
-        {
-            newProjTemplateIndex_ = (int)i;
-            InvalidateRect(hwnd_, nullptr, FALSE);
-            return true;
-        }
-    }
-
-    if (pt.x >= (int)newProjOpenRect_.left && pt.x <= (int)newProjOpenRect_.right &&
-        pt.y >= (int)newProjOpenRect_.top && pt.y <= (int)newProjOpenRect_.bottom)
-    {
-        OpenProjectDialog();
-        if (!GetExplorerManager().GetState().rootPath.empty())
-        {
-            HideNewProjectOverlay();
-            InvalidateRect(hwnd_, nullptr, FALSE);
-        }
-        return true;
-    }
-
-    if (pt.x >= (int)newProjCancelRect_.left && pt.x <= (int)newProjCancelRect_.right &&
-        pt.y >= (int)newProjCancelRect_.top && pt.y <= (int)newProjCancelRect_.bottom)
-    {
-        HideNewProjectOverlay();
-        return true;
-    }
-
-    if (pt.x >= (int)newProjCreateRect_.left && pt.x <= (int)newProjCreateRect_.right &&
-        pt.y >= (int)newProjCreateRect_.top && pt.y <= (int)newProjCreateRect_.bottom)
-    {
-        CreateProjectFromOverlay();
-        return true;
-    }
-
-    return true;
+    return newProjOverlay_.HandleMouseDown(*this, hwnd, pt);
 }
 
 bool Window::HandleNewProjectMouseUp(HWND hwnd, POINT pt)
 {
-    if (!newProjectVisible_)
-        return false;
-    bool used = false;
-    used |= newProjNameInput_.OnLeftButtonUp(hwnd, pt);
-    used |= newProjLocationInput_.OnLeftButtonUp(hwnd, pt);
-    return true;
+    return newProjOverlay_.HandleMouseUp(*this, hwnd, pt);
 }
 
 bool Window::HandleNewProjectMouseMove(HWND hwnd, POINT pt)
 {
-    if (!newProjectVisible_)
-        return false;
-
-    newProjNameInput_.OnMouseMove(hwnd, pt);
-    newProjLocationInput_.OnMouseMove(hwnd, pt);
-
-    int templateHover = -1;
-    for (size_t i = 0; i < newProjTemplateRects_.size(); ++i)
-    {
-        const auto &r = newProjTemplateRects_[i];
-        if (pt.x >= (int)r.left && pt.x <= (int)r.right &&
-            pt.y >= (int)r.top && pt.y <= (int)r.bottom)
-        {
-            templateHover = (int)i;
-            break;
-        }
-    }
-    bool hoverOpen = (pt.x >= (int)newProjOpenRect_.left && pt.x <= (int)newProjOpenRect_.right &&
-                      pt.y >= (int)newProjOpenRect_.top && pt.y <= (int)newProjOpenRect_.bottom);
-    bool hoverCancel = (pt.x >= (int)newProjCancelRect_.left && pt.x <= (int)newProjCancelRect_.right &&
-                        pt.y >= (int)newProjCancelRect_.top && pt.y <= (int)newProjCancelRect_.bottom);
-    bool hoverCreate = (pt.x >= (int)newProjCreateRect_.left && pt.x <= (int)newProjCreateRect_.right &&
-                        pt.y >= (int)newProjCreateRect_.top && pt.y <= (int)newProjCreateRect_.bottom);
-
-    bool changed = (templateHover != newProjTemplateHover_) || (hoverOpen != newProjOpenHover_) ||
-                   (hoverCancel != newProjCancelHover_) || (hoverCreate != newProjCreateHover_);
-    newProjTemplateHover_ = templateHover;
-    newProjOpenHover_ = hoverOpen;
-    newProjCancelHover_ = hoverCancel;
-    newProjCreateHover_ = hoverCreate;
-
-    if (changed)
-        InvalidateRect(hwnd_, nullptr, FALSE);
-
-    return true;
+    return newProjOverlay_.HandleMouseMove(*this, hwnd, pt);
 }
 
 bool Window::HandleNewProjectChar(wchar_t ch)
 {
-    if (!newProjectVisible_)
-        return false;
-    if (newProjNameFocused_)
-        return newProjNameInput_.OnChar(ch);
-    if (newProjLocationFocused_)
-        return newProjLocationInput_.OnChar(ch);
-    return false;
+    return newProjOverlay_.HandleChar(*this, ch);
 }
 
 bool Window::HandleNewProjectKeyDown(WPARAM key)
 {
-    if (!newProjectVisible_)
-        return false;
-
-    if (key == VK_ESCAPE)
-    {
-        HideNewProjectOverlay();
-        return true;
-    }
-
-    if (key == VK_TAB)
-    {
-        bool toLocation = newProjNameFocused_;
-        newProjNameFocused_ = !toLocation;
-        newProjLocationFocused_ = toLocation;
-        newProjNameInput_.SetFocused(!toLocation);
-        newProjLocationInput_.SetFocused(toLocation);
-        return true;
-    }
-
-    if (newProjNameFocused_)
-    {
-        if (key == VK_RETURN)
-            return CreateProjectFromOverlay();
-        return newProjNameInput_.OnKeyDown(key);
-    }
-    if (newProjLocationFocused_)
-        return newProjLocationInput_.OnKeyDown(key);
-    return false;
+    return newProjOverlay_.HandleKeyDown(*this, key);
 }
 
 bool Window::CreateProjectFromOverlay()
@@ -1027,12 +560,149 @@ bool Window::CreateProjectFromOverlay()
         HideNewProjectOverlay();
         GetExplorerManager().Initialize(root);
         GetExplorerManager().SetVisible(true);
+        AddRecentProject(root);
         if (!mainFile.empty())
             OpenFileInNewTab(mainFile, -1);
         InvalidateRect(hwnd_, nullptr, FALSE);
         return true;
     }
     return false;
+}
+
+void Window::OpenProjectAtPath(const std::wstring &path)
+{
+    if (path.empty())
+        return;
+    GetExplorerManager().Initialize(path);
+    GetExplorerManager().SetVisible(true);
+    AddRecentProject(path);
+    HideNewProjectOverlay();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void Window::LoadRecentProjects()
+{
+    recentProjects_.clear();
+    recentProjectRects_.clear();
+    recentProjectHover_ = -1;
+
+    std::filesystem::path store = GetRecentProjectsStorePath();
+    if (!store.empty())
+    {
+        std::wifstream ifs(store);
+        if (ifs)
+        {
+            std::unordered_map<std::wstring, std::time_t> latest;
+            std::wstring line;
+            while (std::getline(ifs, line))
+            {
+                if (line.empty())
+                    continue;
+                std::time_t ts = 0;
+                std::wstring path;
+                size_t sep = line.find(L'|');
+                if (sep != std::wstring::npos)
+                {
+                    try
+                    {
+                        ts = (std::time_t)std::stoll(line.substr(0, sep));
+                    }
+                    catch (...)
+                    {
+                        ts = 0;
+                    }
+                    path = line.substr(sep + 1);
+                }
+                else
+                {
+                    path = line;
+                }
+                if (path.empty())
+                    continue;
+                std::error_code ec;
+                if (!std::filesystem::exists(path, ec))
+                    continue;
+                auto it = latest.find(path);
+                if (it == latest.end() || ts > it->second)
+                    latest[path] = ts;
+            }
+
+            for (const auto &p : latest)
+                recentProjects_.push_back({p.first, p.second});
+        }
+    }
+
+    std::wstring defaultPath = GetDefaultSourceReposPath();
+    if (!defaultPath.empty())
+    {
+        bool exists = false;
+        for (const auto &p : recentProjects_)
+        {
+            if (p.path == defaultPath)
+            {
+                exists = true;
+                break;
+            }
+        }
+        std::error_code ec;
+        if (!exists && std::filesystem::exists(defaultPath, ec))
+            recentProjects_.push_back({defaultPath, 0});
+    }
+
+    std::sort(recentProjects_.begin(), recentProjects_.end(),
+              [](const RecentProjectEntry &a, const RecentProjectEntry &b)
+              { return a.lastOpened > b.lastOpened; });
+
+    const size_t maxItems = 10;
+    if (recentProjects_.size() > maxItems)
+        recentProjects_.resize(maxItems);
+}
+
+void Window::SaveRecentProjects() const
+{
+    std::filesystem::path store = GetRecentProjectsStorePath();
+    if (store.empty())
+        return;
+    std::wofstream ofs(store, std::ios::trunc);
+    if (!ofs)
+        return;
+    for (const auto &p : recentProjects_)
+    {
+        ofs << (long long)p.lastOpened << L"|" << p.path << L"\n";
+    }
+}
+
+void Window::AddRecentProject(const std::wstring &path)
+{
+    if (path.empty())
+        return;
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec))
+        return;
+
+    std::time_t now = std::time(nullptr);
+    bool found = false;
+    for (auto &p : recentProjects_)
+    {
+        if (p.path == path)
+        {
+            p.lastOpened = now;
+            found = true;
+            break;
+        }
+    }
+    if (!found)
+        recentProjects_.push_back({path, now});
+
+    std::sort(recentProjects_.begin(), recentProjects_.end(),
+              [](const RecentProjectEntry &a, const RecentProjectEntry &b)
+              { return a.lastOpened > b.lastOpened; });
+
+    const size_t maxItems = 10;
+    if (recentProjects_.size() > maxItems)
+        recentProjects_.resize(maxItems);
+
+    SaveRecentProjects();
 }
 
 bool Window::CreateCppConsoleProject(const std::wstring &rootPath, const std::wstring &projectName, std::wstring &outMainFile)
@@ -1152,6 +822,7 @@ void Window::OpenProjectDialog()
 
                     GetExplorerManager().Initialize(selectedFolder);
                     GetExplorerManager().SetVisible(true);
+                    AddRecentProject(selectedFolder);
                     InvalidateRect(hwnd_, nullptr, FALSE);
                 }
                 pItem->Release();
@@ -1164,9 +835,10 @@ void Window::OpenProjectDialog()
 void Window::ShowNewProjectOverlay()
 {
     newProjectVisible_ = true;
-    newProjNameFocused_ = true;
+    newProjPage_ = NewProjectPage::Home;
+    newProjNameFocused_ = false;
     newProjLocationFocused_ = false;
-    newProjNameInput_.SetFocused(true);
+    newProjNameInput_.SetFocused(false);
     newProjLocationInput_.SetFocused(false);
     newProjNameInput_.SetPlaceholder(L"Nom du projet");
     newProjLocationInput_.SetPlaceholder(L"Rechercher recent (Alt+E)");
@@ -1176,11 +848,13 @@ void Window::ShowNewProjectOverlay()
     newProjLocationInput_.SetText(L"");
     newProjTemplateIndex_ = 0;
     newProjTemplateHover_ = -1;
+    LoadRecentProjects();
 }
 
 void Window::HideNewProjectOverlay()
 {
     newProjectVisible_ = false;
+    newProjPage_ = NewProjectPage::Home;
     newProjNameFocused_ = false;
     newProjLocationFocused_ = false;
     newProjNameInput_.SetFocused(false);
@@ -1608,6 +1282,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     }
     case WM_ACTIVATE:
     {
+        bool focused = (LOWORD(wParam) != WA_INACTIVE);
+        SetDwmBorderColor(hwnd_, focused);
         RECT title_bar_rect = win32_titlebar_rect(hwnd_);
         // Clear hovered state when window activation changes
         hoveredButton_ = Hovered_None;
@@ -3147,6 +2823,7 @@ Window::Window(HINSTANCE hInstance)
 {
     untitledCounter_ = 1;
     settingsTab_ = std::make_unique<SettingsTabView>();
+    LoadRecentProjects();
 }
 
 Window::~Window()

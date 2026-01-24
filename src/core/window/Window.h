@@ -4,8 +4,11 @@
 #include <string>
 #include <map>
 #include <memory>
+#include <vector>
+#include <ctime>
 #include "lsp/LspManager.h"
 #include "ui/components/input/TextInput.h"
+#include "ui/screens/NewProjectOverlay.h"
 
 // Forward declare KeyMods used in message handling (defined in Window.cpp)
 struct KeyMods;
@@ -36,6 +39,9 @@ class SettingsTabView;
 class Window
 {
 private:
+    friend class UI::NewProjectOverlay;
+    friend class UI::NewProjectHomeView;
+    friend class UI::NewProjectCreateView;
     // Un éditeur par tab
     std::map<int, Orion::Editor *> editors_;
     TabBar tabBar_;
@@ -133,6 +139,9 @@ private:
     // New Project overlay state
     bool newProjectVisible_ = false;
     NewProjectPage newProjPage_ = NewProjectPage::Home;
+    UI::NewProjectOverlay newProjOverlay_;
+    UI::NewProjectHomeView newProjHomeView_;
+    UI::NewProjectCreateView newProjCreateView_;
     TextInput newProjNameInput_;
     TextInput newProjLocationInput_;
     bool newProjNameFocused_ = true;
@@ -149,7 +158,19 @@ private:
     std::vector<D2D1_RECT_F> newProjTemplateRects_;
     int newProjTemplateIndex_ = 0;
     int newProjTemplateHover_ = -1;
+    struct RecentProjectEntry
+    {
+        std::wstring path;
+        std::time_t lastOpened = 0;
+    };
+    std::vector<RecentProjectEntry> recentProjects_;
+    std::vector<D2D1_RECT_F> recentProjectRects_;
+    int recentProjectHover_ = -1;
     bool CreateProjectFromOverlay();
+    void LoadRecentProjects();
+    void SaveRecentProjects() const;
+    void AddRecentProject(const std::wstring &path);
+    void OpenProjectAtPath(const std::wstring &path);
 };
 
 // Fonctions globales pour récupérer Window depuis HWND

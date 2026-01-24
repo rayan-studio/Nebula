@@ -100,14 +100,29 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
 
     DrawCustomTitleBarD2D(pRenderTarget_, pDWriteFactory_, hwnd, titlebarHoveredButton, titlebarHasFocus, titleText);
 
+    Window* window = GetWindowFromHwnd(hwnd);
+    if (window && window->IsNewProjectOverlayVisible())
+    {
+        RECT clientOverlay;
+        GetClientRect(hwnd, &clientOverlay);
+        window->DrawNewProjectOverlay(pRenderTarget_, pDWriteFactory_, clientOverlay);
+
+        HRESULT hr = pRenderTarget_->EndDraw();
+        if (FAILED(hr))
+        {
+            // ignore for now
+        }
+        if (needRelease)
+            ReleaseDC(hwnd, localHdc);
+        return;
+    }
+
     // Sidebar GPU-rendered (sous la titlebar, à gauche)
     DrawSidebarD2D(pRenderTarget_, pDWriteFactory_, hwnd);
 
     // Panel (file explorer, search, etc.) - uses PanelManager
     GetPanelManager().UpdateLayout(hwnd);
     GetPanelManager().DrawActivePanel(pRenderTarget_, pDWriteFactory_, hwnd);
-
-    Window* window = GetWindowFromHwnd(hwnd);
 
     if (window)
     {
@@ -311,12 +326,6 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
     // Dessiner le dropdown par-dessus tout
     DrawMenuDropdown(pRenderTarget_, pDWriteFactory_);
 
-    if (window && window->IsNewProjectOverlayVisible())
-    {
-        RECT clientOverlay;
-        GetClientRect(hwnd, &clientOverlay);
-        window->DrawNewProjectOverlay(pRenderTarget_, pDWriteFactory_, clientOverlay);
-    }
 
     HRESULT hr = pRenderTarget_->EndDraw();
     if (FAILED(hr))

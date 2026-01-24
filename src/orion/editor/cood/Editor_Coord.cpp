@@ -35,7 +35,7 @@ namespace Orion
         if (col > (int)ln.size()) col = (int)ln.size();
 
         int visualCol = 0;
-        const int tabSize = 4;
+        const int tabSize = GetIndentConfig().tabSize;
         for (int i = 0; i < col; ++i)
             visualCol = Orion::Geometry::AdvanceVisualCol(visualCol, ln[i], tabSize);
 
@@ -64,7 +64,7 @@ namespace Orion
         int targetVisual = (int)std::floor((localX / metrics_.characterWidth) + 0.5f);
         if (targetVisual < 0) targetVisual = 0;
 
-        const int tabSize = 4;
+        const int tabSize = GetIndentConfig().tabSize;
 
         int visual = 0;
         int col = 0;

@@ -1,5 +1,6 @@
 #include "GuideRenderer.h"
 #include <algorithm>
+#include <cmath>
 
 #ifdef max
 #undef max
@@ -65,13 +66,17 @@ namespace Orion::Rendering
             int end   = (std::min)(g.endLine, vLast);
             if (end < start) continue;
 
-            float x = renderCtx.contentLeft + (g.visualCol * cw) - renderCtx.scrollOffsetX;
-
+            // Center guides within the indentation column, not on the left edge.
+            float x = renderCtx.contentLeft + (g.visualCol * cw) - renderCtx.scrollOffsetX + (cw * 0.5f);
+            x = std::floor(x) + 0.5f;
             float topY = renderCtx.topEdge + (start * renderCtx.lineHeight) - renderCtx.scrollOffsetY
                        + (renderCtx.lineHeight * style_.topMargin);
+            float bottomY = renderCtx.topEdge + ((end + 1) * renderCtx.lineHeight) - renderCtx.scrollOffsetY
+                          - (renderCtx.lineHeight * style_.bottomMargin);
 
-            float bottomY = renderCtx.topEdge + (end * renderCtx.lineHeight) - renderCtx.scrollOffsetY
-                          + renderCtx.lineHeight - (renderCtx.lineHeight * style_.bottomMargin);
+            // Pixel-align to reduce 1px wobble.
+            topY = std::floor(topY) + 0.5f;
+            bottomY = std::floor(bottomY) + 0.5f;
 
             DrawGuideSegment(ctx, x, topY, bottomY, g.active);
         }

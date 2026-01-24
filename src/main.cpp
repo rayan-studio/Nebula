@@ -29,7 +29,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
             std::vector<std::wstring> candidates;
             candidates.push_back(dir + L"\\assets\\font\\static\\JetBrainsMono-Regular.ttf");
             candidates.push_back(dir + L"\\..\\assets\\font\\static\\JetBrainsMono-Regular.ttf");
-            candidates.push_back(dir + L"\\..\\..\\assets\\font\\static\\JetBrainsMono-Regular.ttf");
+            candidates.push_back(dir + L"\\..\\..\\assets\\font\\static\\JetBrainsMono-Regular.ttf");                                            
 
             std::wstring foundPath;
             for (const auto &cand : candidates)

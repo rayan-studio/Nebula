@@ -107,6 +107,41 @@ namespace Orion
             }
         }
 
+        if (!fontMetricsInitialized_ && cachedTextFormat_ && pDWriteFactory_)
+        {
+            // Measure real advance using spaces (tab stops depend on space width).
+            const wchar_t *spaceSample = L"          ";
+            const UINT32 spaceLen = 10;
+            IDWriteTextLayout *layout = nullptr;
+            if (SUCCEEDED(pDWriteFactory_->CreateTextLayout(
+                    spaceSample,
+                    spaceLen,
+                    cachedTextFormat_,
+                    10000.0f,
+                    metrics_.lineHeight,
+                    &layout)) &&
+                layout)
+            {
+                DWRITE_TEXT_METRICS tm = {};
+                if (SUCCEEDED(layout->GetMetrics(&tm)) && tm.widthIncludingTrailingWhitespace > 0.0f)
+                {
+                    metrics_.characterWidth = tm.widthIncludingTrailingWhitespace / (float)spaceLen;
+                    if (tm.height > 0.0f)
+                        metrics_.lineHeight = (std::max)(metrics_.lineHeight, tm.height);
+                }
+                layout->Release();
+            }
+            if (metrics_.characterWidth <= 0.0f)
+                metrics_.characterWidth = 8.4f;
+            fontMetricsInitialized_ = true;
+        }
+
+        if (cachedTextFormat_)
+        {
+            const float tabStop = metrics_.characterWidth * (float)GetIndentConfig().tabSize;
+            cachedTextFormat_->SetIncrementalTabStop(tabStop);
+        }
+
         D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
         D2D1_TEXT_ANTIALIAS_MODE oldTextAA = ctx->GetTextAntialiasMode();
 
@@ -337,7 +372,7 @@ namespace Orion
             state_.scrollOffsetX,
             state_.scrollOffsetY,
             metrics_.lineHeight,
-            4,
+            GetIndentConfig().tabSize,
             metrics_.characterWidth,
             3.0f,
             pDWriteFactory_,
@@ -448,6 +483,8 @@ namespace Orion
 
                 if (format)
                 {
+                    const float tabStop = metrics_.characterWidth * (float)GetIndentConfig().tabSize;
+                    format->SetIncrementalTabStop(tabStop);
                     IDWriteTextLayout *layout = nullptr;
                     if (SUCCEEDED(pDWriteFactory_->CreateTextLayout(
                             line.c_str(),
