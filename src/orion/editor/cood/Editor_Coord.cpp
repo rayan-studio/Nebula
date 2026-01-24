@@ -61,7 +61,7 @@ namespace Orion
         float localX = (float)screenPoint.x - baseX;
         if (localX < 0.0f) localX = 0.0f;
 
-        int targetVisual = (int)std::floor((localX / metrics_.characterWidth) + 0.5f);
+        int targetVisual = (int)std::floor(localX / metrics_.characterWidth);
         if (targetVisual < 0) targetVisual = 0;
 
         const int tabSize = GetIndentConfig().tabSize;

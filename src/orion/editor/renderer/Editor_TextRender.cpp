@@ -613,6 +613,8 @@ namespace Orion
                 return D2D1::ColorF(0.56f, 0.87f, 0.56f);
             case ::Orion::Syntax::TokenType::Comment:
                 return D2D1::ColorF(0.5f, 0.5f, 0.5f);
+            case ::Orion::Syntax::TokenType::Preprocessor:
+                return D2D1::ColorF(0.9f, 0.7f, 0.4f);
             default:
                 return theme_.text;
             }

@@ -274,6 +274,8 @@ namespace Lsp
         bool inString = false;
         bool inChar = false;
         bool escape = false;
+        bool inRawString = false;
+        std::wstring rawDelimiter;
 
         struct StackItem
         {
@@ -309,6 +311,35 @@ namespace Lsp
             {
                 wchar_t c = ln[col];
 
+                if (inRawString)
+                {
+                    if (c == L')')
+                    {
+                        size_t closePos = (size_t)col + 1;
+                        bool match = true;
+                        size_t delimSize = rawDelimiter.size();
+                        if (closePos + delimSize < ln.size())
+                        {
+                            for (size_t k = 0; k < delimSize; ++k)
+                            {
+                                if (ln[closePos + k] != rawDelimiter[k])
+                                {
+                                    match = false;
+                                    break;
+                                }
+                            }
+                            if (match && closePos + delimSize < ln.size() && ln[closePos + delimSize] == L'"')
+                            {
+                                inRawString = false;
+                                rawDelimiter.clear();
+                                col = (int)(closePos + delimSize); // will be incremented by loop
+                                continue;
+                            }
+                        }
+                    }
+                    continue;
+                }
+
                 if (inBlockComment)
                 {
                     if (c == L'*' && col + 1 < (int)ln.size() && ln[col + 1] == L'/')
@@ -327,6 +358,19 @@ namespace Lsp
                     inBlockComment = true;
                     col++;
                     continue;
+                }
+
+                if (!inString && !inChar && c == L'R' && col + 1 < (int)ln.size() && ln[col + 1] == L'"')
+                {
+                    size_t delimStart = (size_t)col + 2;
+                    size_t parenPos = ln.find(L'(', delimStart);
+                    if (parenPos != std::wstring::npos)
+                    {
+                        rawDelimiter = ln.substr(delimStart, parenPos - delimStart);
+                        inRawString = true;
+                        col = (int)parenPos;
+                        continue;
+                    }
                 }
 
                 if (inString)
@@ -422,7 +466,69 @@ namespace Lsp
                 }
             }
 
-            // Naive missing semicolon check (simple statements)
+            // Naive missing semicolon check (simple statements) with comment stripping
+            auto stripComments = [](const std::wstring &s) -> std::wstring
+            {
+                std::wstring out;
+                out.reserve(s.size());
+                bool inStringLocal = false;
+                bool inCharLocal = false;
+                bool escapeLocal = false;
+                bool inBlock = false;
+                for (size_t i = 0; i < s.size(); ++i)
+                {
+                    wchar_t c = s[i];
+                    if (inBlock)
+                    {
+                        if (c == L'*' && i + 1 < s.size() && s[i + 1] == L'/')
+                        {
+                            inBlock = false;
+                            i++;
+                        }
+                        continue;
+                    }
+                    if (!inStringLocal && !inCharLocal && c == L'/' && i + 1 < s.size())
+                    {
+                        if (s[i + 1] == L'/')
+                            break;
+                        if (s[i + 1] == L'*')
+                        {
+                            inBlock = true;
+                            i++;
+                            continue;
+                        }
+                    }
+                    if (inStringLocal)
+                    {
+                        if (escapeLocal)
+                            escapeLocal = false;
+                        else if (c == L'\\')
+                            escapeLocal = true;
+                        else if (c == L'"')
+                            inStringLocal = false;
+                        out.push_back(c);
+                        continue;
+                    }
+                    if (inCharLocal)
+                    {
+                        if (escapeLocal)
+                            escapeLocal = false;
+                        else if (c == L'\\')
+                            escapeLocal = true;
+                        else if (c == L'\'')
+                            inCharLocal = false;
+                        out.push_back(c);
+                        continue;
+                    }
+                    if (c == L'"')
+                        inStringLocal = true;
+                    else if (c == L'\'')
+                        inCharLocal = true;
+                    out.push_back(c);
+                }
+                return out;
+            };
+
             auto trim = [](const std::wstring &s, size_t &startOut)
             {
                 size_t a = s.find_first_not_of(L" \t");
@@ -434,7 +540,8 @@ namespace Lsp
             };
 
             size_t startCol = 0;
-            std::wstring t = trim(ln, startCol);
+            std::wstring cleaned = stripComments(ln);
+            std::wstring t = trim(cleaned, startCol);
             if (!t.empty())
             {
                 if (t[0] != L'#')
@@ -467,16 +574,21 @@ namespace Lsp
                         bool looksLikeStmt = (t.find(L"=") != std::wstring::npos) ||
                                              (t.find(L"(") != std::wstring::npos) ||
                                              (t.find(L")") != std::wstring::npos);
+                        bool looksLikeDecl = (t.find(L"(") != std::wstring::npos && last == L')');
+                        bool looksLikeScope = (t.find(L"{") != std::wstring::npos || t.find(L"}") != std::wstring::npos);
                         if (looksLikeStmt)
                         {
-                            Diagnostic d;
-                            d.line = line;
-                            d.startCol = (int)startCol;
-                            d.endCol = (int)ln.size();
-                            d.severity = DiagnosticSeverity::Warning;
-                            d.message = L"Possible missing semicolon";
-                            d.suggestion = L"Add ';' at end of line";
-                            out.push_back(d);
+                            if (!looksLikeDecl && !looksLikeScope)
+                            {
+                                Diagnostic d;
+                                d.line = line;
+                                d.startCol = (int)startCol;
+                                d.endCol = (int)ln.size();
+                                d.severity = DiagnosticSeverity::Warning;
+                                d.message = L"Possible missing semicolon";
+                                d.suggestion = L"Add ';' at end of line";
+                                out.push_back(d);
+                            }
                         }
                     }
                 }

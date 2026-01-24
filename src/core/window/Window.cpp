@@ -1230,18 +1230,21 @@ void Window::RunActiveProject()
             cmd = L"g++ -std=c++17 -g " + QuotePath(filePath) + L" -o " + QuotePath(outExe);
         }
 
-        DWORD exitCode = 0;
-        if (!RunCommandAndWait(cmd, buildDir, exitCode))
+        std::thread([cmd, buildDir, outExe, hwnd = hwnd_]()
         {
-            MessageBoxW(hwnd_, L"Compilation échouée. Vérifie la console.", L"Run", MB_OK | MB_ICONERROR);
-            return;
-        }
+            DWORD exitCode = 0;
+            if (!RunCommandAndWait(cmd, buildDir, exitCode))
+            {
+                MessageBoxW(hwnd, L"Compilation echouee. Verifie la console.", L"Run", MB_OK | MB_ICONERROR);
+                return;
+            }
 
-        if (!LaunchExecutable(outExe, true))
-        {
-            MessageBoxW(hwnd_, L"Impossible de lancer l'exécutable.", L"Run", MB_OK | MB_ICONERROR);
-            return;
-        }
+            if (!LaunchExecutable(outExe, true))
+            {
+                MessageBoxW(hwnd, L"Impossible de lancer l'executable.", L"Run", MB_OK | MB_ICONERROR);
+                return;
+            }
+        }).detach();
         return;
     }
 
@@ -3122,6 +3125,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     {
         if (LOWORD(lParam) == HTCLIENT)
         {
+            if (newProjectVisible_)
+            {
+                SetCursor(LoadCursor(NULL, IDC_ARROW));
+                return TRUE;
+            }
+
             POINT pt;
             GetCursorPos(&pt);
             ScreenToClient(hwnd_, &pt);

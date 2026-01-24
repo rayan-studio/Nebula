@@ -165,6 +165,7 @@ private:
     };
     std::vector<RecentProjectEntry> recentProjects_;
     std::vector<D2D1_RECT_F> recentProjectRects_;
+    std::vector<int> recentProjectIndexMap_;
     int recentProjectHover_ = -1;
     bool CreateProjectFromOverlay();
     void LoadRecentProjects();

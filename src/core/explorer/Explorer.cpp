@@ -56,8 +56,7 @@ namespace
 // Icon Management
 // ============================================================================
 
-static std::string ReadFileToString(const std::wstring &wpath)
-{
+static std::string ReadFileToString(const std::wstring &wpath) {
     // Convert wide path to UTF-8 safely. WideCharToMultiByte returns the
     // required buffer size INCLUDING the terminating null, so allocate that
     // many bytes, perform the conversion, then remove the trailing '\0'

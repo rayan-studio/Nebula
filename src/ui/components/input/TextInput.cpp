@@ -40,6 +40,7 @@ bool TextInput::HitTest(POINT pt) const
 
 void TextInput::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite)
 {
+    lastDWrite_ = dwrite;
     // Use per-primitive AA to keep rounded corners clean
     D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
     ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -208,7 +209,7 @@ float TextInput::GetCharPosition(IDWriteFactory* dwrite, int index)
     if (layout) {
         DWRITE_TEXT_METRICS metrics;
         layout->GetMetrics(&metrics);
-        result = metrics.width;
+        result = metrics.widthIncludingTrailingWhitespace;
         layout->Release();
     }
     
@@ -266,10 +267,19 @@ bool TextInput::OnLeftButtonDown(HWND hwnd, POINT pt)
     float iconWidth = icon_.empty() ? 0.0f : style_.iconPadding;
     float textLeft = rect_.left + style_.padding + iconWidth;
     float clickX = pt.x - textLeft + textOffsetX_;
-    
+
     bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    int clickIndex = 0;
+    if (lastDWrite_)
+        clickIndex = GetCharIndexAtPosition(lastDWrite_, clickX);
+    if (clickIndex < 0) clickIndex = 0;
+    if (clickIndex > (int)text_.length()) clickIndex = (int)text_.length();
+
+    cursorPos_ = clickIndex;
     if (!shift) {
         selectionStart_ = selectionEnd_ = cursorPos_;
+    } else {
+        selectionEnd_ = cursorPos_;
     }
     selecting_ = true;
     SetCapture(hwnd);

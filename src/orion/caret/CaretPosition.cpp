@@ -117,7 +117,7 @@ namespace Orion
         float localX = (float)pt.x - baseX;
         if (localX < 0.0f) localX = 0.0f;
 
-        const int targetVisual = (int)std::floor((localX / metrics.characterWidth) + 0.5f);
+        const int targetVisual = (int)std::floor(localX / metrics.characterWidth);
         int col = VisualToLogicalCol(ln, targetVisual, tabSize);
 
         col = (std::max)(0, (std::min)(col, (int)ln.size()));

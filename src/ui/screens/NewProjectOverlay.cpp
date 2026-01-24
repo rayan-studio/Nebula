@@ -4,6 +4,8 @@
 #include "core/explorer/Explorer.h"
 #include <filesystem>
 #include <shlobj.h>
+#include <algorithm>
+#include <cwctype>
 
 namespace
 {
@@ -18,6 +20,25 @@ static std::wstring GetDefaultSourceReposPath()
         out = (base / L"source" / L"repos").wstring();
     }
     return out;
+}
+
+static std::wstring ToLowerCopy(std::wstring value)
+{
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](wchar_t c)
+                   { return (wchar_t)std::towlower(c); });
+    return value;
+}
+
+static std::wstring TrimWhitespace(const std::wstring &value)
+{
+    size_t start = 0;
+    size_t end = value.size();
+    while (start < end && std::iswspace(value[start]))
+        start++;
+    while (end > start && std::iswspace(value[end - 1]))
+        end--;
+    return value.substr(start, end - start);
 }
 }
 
@@ -160,16 +181,35 @@ void NewProjectOverlay::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFact
         ctx->DrawRoundedRectangle(D2D1::RoundedRect(listRect, 8.0f * scale, 8.0f * scale), rc.panelBorder, 1.0f);
 
     window.recentProjectRects_.clear();
+    window.recentProjectIndexMap_.clear();
     float rowH = 44.0f * scale;
     float rowGap = 6.0f * scale;
     float rowY = listRect.top + 10.0f * scale;
+    std::wstring filter = TrimWhitespace(window.newProjLocationInput_.GetText());
+    filter = ToLowerCopy(filter);
+    bool filterActive = !filter.empty();
+
     for (size_t i = 0; i < window.recentProjects_.size(); ++i)
     {
+        const std::wstring &path = window.recentProjects_[i].path;
+        std::filesystem::path p(path);
+        std::wstring name = p.filename().wstring();
+        if (name.empty())
+            name = path;
+
+        if (filterActive)
+        {
+            std::wstring nameLower = ToLowerCopy(name);
+            if (nameLower.find(filter) == std::wstring::npos)
+                continue;
+        }
+
         D2D1_RECT_F rowRect = D2D1::RectF(listRect.left + 10.0f * scale, rowY,
                                           listRect.right - 10.0f * scale, rowY + rowH);
         window.recentProjectRects_.push_back(rowRect);
+        window.recentProjectIndexMap_.push_back((int)i);
 
-        bool hovered = ((int)i == window.recentProjectHover_);
+        bool hovered = ((int)window.recentProjectRects_.size() - 1 == window.recentProjectHover_);
         if (hovered && rc.subtle)
             ctx->FillRoundedRectangle(D2D1::RoundedRect(rowRect, 6.0f * scale, 6.0f * scale), rc.subtle);
         if (rc.panelBorder)
@@ -180,12 +220,6 @@ void NewProjectOverlay::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFact
             D2D1_RECT_F iconRect = D2D1::RectF(rowRect.left + 8.0f * scale, rowRect.top, rowRect.left + 30.0f * scale, rowRect.bottom);
             ctx->DrawTextW(L"\uE8B7", 1, rc.iconFmt, iconRect, rc.muted);
         }
-
-        const std::wstring &path = window.recentProjects_[i].path;
-        std::filesystem::path p(path);
-        std::wstring name = p.filename().wstring();
-        if (name.empty())
-            name = path;
 
         if (rc.itemFmt && rc.text)
         {
@@ -205,13 +239,16 @@ void NewProjectOverlay::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFact
             break;
     }
 
-    if (window.recentProjects_.empty() && rc.subFmt && rc.muted)
+    if (window.recentProjectRects_.empty() && rc.subFmt && rc.muted)
     {
         D2D1_RECT_F emptyRect = D2D1::RectF(listRect.left + 10.0f * scale, listRect.top + 10.0f * scale,
                                             listRect.right - 10.0f * scale, listRect.bottom - 10.0f * scale);
         rc.subFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
         rc.subFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        ctx->DrawTextW(L"Aucun projet recent", 19, rc.subFmt, emptyRect, rc.muted);
+        if (filterActive)
+            ctx->DrawTextW(L"Aucun resultat", 13, rc.subFmt, emptyRect, rc.muted);
+        else
+            ctx->DrawTextW(L"Aucun projet recent", 19, rc.subFmt, emptyRect, rc.muted);
         rc.subFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         rc.subFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
     }
@@ -257,8 +294,12 @@ bool NewProjectOverlay::HandleMouseDown(Window &window, HWND hwnd, POINT pt)
             if (pt.x >= (int)r.left && pt.x <= (int)r.right &&
                 pt.y >= (int)r.top && pt.y <= (int)r.bottom)
             {
-                if (i < window.recentProjects_.size())
-                    window.OpenProjectAtPath(window.recentProjects_[i].path);
+                if (i < window.recentProjectIndexMap_.size())
+                {
+                    int idx = window.recentProjectIndexMap_[i];
+                    if (idx >= 0 && idx < (int)window.recentProjects_.size())
+                        window.OpenProjectAtPath(window.recentProjects_[idx].path);
+                }
                 return true;
             }
         }

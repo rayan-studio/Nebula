@@ -116,4 +116,7 @@ private:
     // Cursor blink
     DWORD lastBlinkTime_ = 0;
     bool cursorVisible_ = true;
+
+    // Non-owning pointer for hit-testing/caret metrics
+    IDWriteFactory *lastDWrite_ = nullptr;
 };

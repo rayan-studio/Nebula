@@ -7,6 +7,7 @@
 #include <mutex>
 #include <thread>
 #include <sstream>
+#include <cwctype>
 #include "lsp/LspManager.h"
 
 namespace Orion::Completion
@@ -125,6 +126,18 @@ namespace Orion::Completion
             }
         }
 
+        static bool IsPlainHeaderName(const std::wstring &name)
+        {
+            if (name.empty())
+                return false;
+            for (wchar_t c : name)
+            {
+                if (!(iswalnum(c) || c == L'_' || c == L'-' || c == L'.' || c == L'/'))
+                    return false;
+            }
+            return true;
+        }
+
         static void AddHeadersFromRoot(const std::filesystem::path &root, std::vector<std::wstring> &out, size_t &count)
         {
             std::error_code ec;
@@ -137,7 +150,9 @@ namespace Orion::Completion
                 if (!entry.is_regular_file(ec))
                     continue;
                 auto ext = entry.path().extension().wstring();
-                if (ext == L".h" || ext == L".hpp" || ext == L".hh" || ext == L".inc")
+                bool hasHeaderExt = (ext == L".h" || ext == L".hpp" || ext == L".hh" || ext == L".inc");
+                bool hasNoExt = ext.empty();
+                if (hasHeaderExt || hasNoExt)
                 {
                     std::filesystem::path rel = std::filesystem::relative(entry.path(), root, ec);
                     std::wstring ws;
@@ -145,10 +160,13 @@ namespace Orion::Completion
                         ws = rel.generic_wstring();
                     else
                         ws = entry.path().filename().wstring();
-                    out.push_back(ws);
-                    count++;
-                    if (count >= 8000)
-                        return;
+                    if (hasHeaderExt || IsPlainHeaderName(ws))
+                    {
+                        out.push_back(ws);
+                        count++;
+                        if (count >= 8000)
+                            return;
+                    }
                 }
             }
         }
