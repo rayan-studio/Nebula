@@ -231,7 +231,8 @@ bool TerminalSession::StartShellProcess(const std::wstring& startDir)
         workDir = cur;
     }
 
-    std::wstring cmd = L"powershell.exe -NoLogo";
+    // Lance le Developer Command Prompt portable
+    std::wstring cmd = L"NebulaDevPrompt.exe";
     std::vector<wchar_t> cmdline(cmd.begin(), cmd.end());
     cmdline.push_back(L'\0');
 

@@ -265,7 +265,7 @@ ExplorerManager::ExplorerManager()
     {
         HWND wnd = FindWindowW(L"NebulaTextWindowClass", NULL);
         if (wnd)
-            PostMessageW(wnd, WM_COMMAND, 3003, 0);
+            PostMessageW(wnd, WM_COMMAND, 3004, 0);
     });
 }
 

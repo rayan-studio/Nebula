@@ -1,8 +1,26 @@
 #include "ui/screens/NewProjectOverlay.h"
 #include "core/window/Window.h"
+#include <filesystem>
+#include <shlobj.h>
 
 namespace UI
 {
+namespace
+{
+static std::wstring GetDefaultSourceReposPath()
+{
+    PWSTR profilePath = nullptr;
+    std::wstring out;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Profile, 0, nullptr, &profilePath)) && profilePath)
+    {
+        std::filesystem::path base(profilePath);
+        CoTaskMemFree(profilePath);
+        out = (base / L"source" / L"repos").wstring();
+    }
+    return out;
+}
+}
+
 void NewProjectHomeView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, const NewProjectRenderContext &rc)
 {
     (void)dwrite;
@@ -20,6 +38,8 @@ void NewProjectHomeView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFac
     window.newProjCreateRect_ = D2D1::RectF(rightPanel.left + 12.0f * rc.scale, actionY, rightPanel.right - 12.0f * rc.scale, actionY + actionH);
     window.newProjOpenRect_ = D2D1::RectF(rightPanel.left + 12.0f * rc.scale, actionY + actionH + actionGap,
                                           rightPanel.right - 12.0f * rc.scale, actionY + (actionH + actionGap) + actionH);
+    window.newProjBrowseRect_ = D2D1::RectF(rightPanel.left + 12.0f * rc.scale, actionY + (actionH + actionGap) * 2.0f,
+                                            rightPanel.right - 12.0f * rc.scale, actionY + (actionH + actionGap) * 2.0f + actionH);
 
     auto drawAction = [&](const D2D1_RECT_F &rect, const wchar_t *icon, const wchar_t *label, bool hovered)
     {
@@ -58,6 +78,7 @@ void NewProjectHomeView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFac
 
     drawAction(window.newProjCreateRect_, L"\uE710", L"Creer un projet", window.newProjCreateHover_);
     drawAction(window.newProjOpenRect_, L"\uE8B7", L"Ouvrir un dossier", window.newProjOpenHover_);
+    drawAction(window.newProjBrowseRect_, L"\uE7C3", L"Ouvrir mes projets", window.newProjBrowseHover_);
 
     window.newProjTemplateRects_.clear();
     window.newProjNameInput_.SetRect(D2D1::RectF(0, 0, 0, 0));

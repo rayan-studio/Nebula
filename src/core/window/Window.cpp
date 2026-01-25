@@ -1,5 +1,6 @@
 #include "core/window/Window.h"
 #include "ui/graphics/Skia.h"
+#include "../../helpers/path_helpers.h"
 #include "utils/logger/Logger.h"
 #include <sstream>
 #include <algorithm>
@@ -426,9 +427,14 @@ bool Window::Create(int nCmdShow)
     wcex.hbrBackground = nullptr;
     wcex.hIcon = NULL;
     wcex.hIconSm = NULL;
+    auto iconPath = NebulaAssetPath(L"favicon.ico");
 
-    HICON hAppIcon = reinterpret_cast<HICON>(LoadImageW(nullptr, L"assets\\favicon.ico", IMAGE_ICON, 32, 32, LR_LOADFROMFILE | LR_DEFAULTSIZE));
-    HICON hAppIconSmall = reinterpret_cast<HICON>(LoadImageW(nullptr, L"assets\\favicon.ico", IMAGE_ICON, 16, 16, LR_LOADFROMFILE | LR_DEFAULTSIZE));
+    HICON hAppIcon = reinterpret_cast<HICON>(
+        LoadImageW(nullptr, iconPath.c_str(), IMAGE_ICON, 32, 32, LR_LOADFROMFILE | LR_DEFAULTSIZE));
+
+    HICON hAppIconSmall = reinterpret_cast<HICON>(
+        LoadImageW(nullptr, iconPath.c_str(), IMAGE_ICON, 16, 16, LR_LOADFROMFILE | LR_DEFAULTSIZE));
+
     if (hAppIcon)
         wcex.hIcon = hAppIcon;
     if (hAppIconSmall)
@@ -1302,12 +1308,12 @@ void Window::RunActiveProject()
     }).detach();
 }
 
-void Window::HandleCommandLineArgs()
+bool Window::HandleCommandLineArgs()
 {
     int argc = 0;
     LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    if (!argv || argc <= 1)
-        return;
+    if (!argv)
+        return false;
 
     std::vector<std::wstring> args;
     for (int i = 1; i < argc; ++i)
@@ -1315,12 +1321,14 @@ void Window::HandleCommandLineArgs()
 
     LocalFree(argv);
 
+    bool openedFromArgs = false;
     auto openDirectory = [&](const std::filesystem::path &path)
     {
         std::wstring folder = path.wstring();
         GetExplorerManager().Initialize(folder);
         GetExplorerManager().SetVisible(true);
         InvalidateRect(hwnd_, nullptr, FALSE);
+        openedFromArgs = true;
     };
 
     auto openFile = [&](const std::filesystem::path &path)
@@ -1330,6 +1338,7 @@ void Window::HandleCommandLineArgs()
             openDirectory(parent);
         OpenFileInNewTab(path.wstring(), -1);
         InvalidateRect(hwnd_, nullptr, FALSE);
+        openedFromArgs = true;
     };
 
     for (size_t i = 0; i < args.size(); ++i)
@@ -1367,6 +1376,44 @@ void Window::HandleCommandLineArgs()
             openFile(path);
         }
     }
+
+    if (!openedFromArgs)
+    {
+        wchar_t cwdBuf[MAX_PATH] = {0};
+        DWORD cwdLen = GetCurrentDirectoryW(MAX_PATH, cwdBuf);
+        if (cwdLen > 0)
+        {
+            std::filesystem::path cwdPath(cwdBuf);
+            std::filesystem::path exePath;
+            wchar_t exeBuf[MAX_PATH] = {0};
+            if (GetModuleFileNameW(NULL, exeBuf, MAX_PATH) > 0)
+                exePath = std::filesystem::path(exeBuf).parent_path();
+
+            std::error_code ec;
+            if (!exePath.empty() && std::filesystem::exists(cwdPath, ec))
+            {
+                std::filesystem::path normCwd = std::filesystem::weakly_canonical(cwdPath, ec);
+                std::filesystem::path normExe = std::filesystem::weakly_canonical(exePath, ec);
+                if (ec)
+                {
+                    normCwd = cwdPath;
+                    normExe = exePath;
+                }
+
+                if (normCwd != normExe)
+                {
+                    openDirectory(normCwd);
+                }
+            }
+        }
+    }
+
+    if (openedFromArgs)
+    {
+        skipNewProjectOverlayOnce_ = true;
+        HideNewProjectOverlay();
+    }
+    return openedFromArgs;
 }
 
 LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
@@ -1419,23 +1466,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 if (pos != std::wstring::npos)
                     dir = dir.substr(0, pos);
 
-                std::vector<std::wstring> candidates;
-                candidates.push_back(dir + L"\\assets\\font\\static\\JetBrainsMono-Regular.ttf");
-                candidates.push_back(dir + L"\\..\\assets\\font\\static\\JetBrainsMono-Regular.ttf");
-                candidates.push_back(dir + L"\\..\\..\\assets\\font\\static\\JetBrainsMono-Regular.ttf");
+                auto fontPath = NebulaAssetPath(L"font\\static\\JetBrainsMono-Regular.ttf");
 
-                for (const auto &cand : candidates)
+                if (std::filesystem::exists(fontPath))
                 {
-                    wchar_t full[MAX_PATH] = {0};
-                    if (GetFullPathNameW(cand.c_str(), MAX_PATH, full, NULL) > 0)
-                    {
-                        DWORD attr = GetFileAttributesW(full);
-                        if (attr != INVALID_FILE_ATTRIBUTES)
-                        {
-                            customFontPath_ = full;
-                            break;
-                        }
-                    }
+                    Logger::Instance().Log(L"[Window] Custom font path: " + fontPath.wstring());
+                    customFontPath_ = fontPath.wstring();
                 }
             }
         }
@@ -1483,15 +1519,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
         ggwave::Initialize();
 
-        // If no project yet, prompt for project creation on first launch
-        if (GetExplorerManager().GetState().rootPath.empty())
-            PostMessageW(hwnd_, WM_OPEN_NEW_PROJECT, 0, 0);
-
         // Initialize the panel system
         InitializePanelSystem();
         // Initialize keyboard manager when HWND is available
         keyboard_.Init(this);
-        HandleCommandLineArgs();
+        bool openedFromArgs = HandleCommandLineArgs();
+
+        // If no project yet and nothing opened from args, prompt for project creation
+        if (!openedFromArgs && GetExplorerManager().GetState().rootPath.empty())
+            PostMessageW(hwnd_, WM_OPEN_NEW_PROJECT, 0, 0);
 
         RECT clientRect;
         GetClientRect(hwnd_, &clientRect);
@@ -1518,6 +1554,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     }
     case WM_OPEN_NEW_PROJECT:
     {
+        if (skipNewProjectOverlayOnce_)
+        {
+            skipNewProjectOverlayOnce_ = false;
+            return 0;
+        }
         ShowNewProjectOverlay();
         InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
@@ -2302,6 +2343,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
+        // If Explorer scrollbar is dragging, keep routing moves even outside its bounds.
+        if (GetExplorerManager().IsVisible() && GetExplorerManager().IsScrollbarDragging())
+        {
+            GetExplorerManager().OnMouseMove(hwnd_, pt);
+            return 0;
+        }
+
         // Ensure we get WM_MOUSELEAVE when the cursor exits the window
         TRACKMOUSEEVENT tme = {};
         tme.cbSize = sizeof(tme);
@@ -2636,9 +2684,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
 
         // If click wasn't on a menu popup, forward to Explorer or editor to handle mouse-up
-        if (GetExplorerManager().IsVisible() && GetExplorerManager().IsPointInExplorer(pt))
+        if (GetExplorerManager().IsVisible() &&
+            (GetExplorerManager().IsPointInExplorer(pt) || GetExplorerManager().IsScrollbarDragging()))
         {
             GetExplorerManager().OnLeftButtonUp(hwnd_);
+            ReleaseCapture();
             return 0;
         }
         else

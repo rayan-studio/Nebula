@@ -59,7 +59,7 @@ private:
     // Reset hover state for all top-level UI controls
     void ClearAllHoverStates();
     void RunActiveProject();
-    void HandleCommandLineArgs();
+    bool HandleCommandLineArgs();
 
     HINSTANCE hInstance_;
     HWND hwnd_;
@@ -150,6 +150,7 @@ private:
     bool newProjOpenHover_ = false;
     bool newProjCreateHover_ = false;
     bool newProjCancelHover_ = false;
+    bool skipNewProjectOverlayOnce_ = false;
     D2D1_RECT_F newProjCardRect_ = {};
     D2D1_RECT_F newProjBrowseRect_ = {};
     D2D1_RECT_F newProjOpenRect_ = {};

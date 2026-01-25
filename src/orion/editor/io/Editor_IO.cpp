@@ -14,6 +14,8 @@
 #undef min
 #endif
 
+// Ajout de l'include Logger
+#include "utils/logger/Logger.h"
 namespace Orion
 {
     void Editor::LoadFile(const std::wstring &filePath)
@@ -238,11 +240,14 @@ namespace Orion
         IDWriteFactory1 *factory1 = nullptr;
         HRESULT hr = dwrite->QueryInterface(__uuidof(IDWriteFactory1), (void **)&factory1);
 
+        Logger::Instance().Log(L"[Editor] LoadCustomFont called with path: " + fontPath);
+
         fontLoader_ = new CustomFontCollectionLoader();
 
         HRESULT regHr = dwrite->RegisterFontCollectionLoader(fontLoader_);
         if (FAILED(regHr))
         {
+            Logger::Instance().Log(L"[Editor] Failed to register CustomFontCollectionLoader");
             fontLoader_->Release();
             fontLoader_ = nullptr;
             if (factory1)
@@ -261,6 +266,10 @@ namespace Orion
             collectionKey,
             collectionKeySize,
             &customFontCollection_);
+        if (FAILED(hr) || !customFontCollection_)
+        {
+            Logger::Instance().Log(L"[Editor] Failed to create custom font collection for: " + fontPath);
+        }
 
         if (FAILED(hr) || !customFontCollection_)
         {
@@ -278,8 +287,15 @@ namespace Orion
         UINT32 index = 0;
         BOOL exists = FALSE;
         hr = customFontCollection_->FindFamilyName(L"JetBrains Mono", &index, &exists);
-        if (FAILED(hr))
+        if (FAILED(hr)) {
+            Logger::Instance().Log(L"[Editor] FindFamilyName failed for JetBrains Mono");
             return false;
+        }
+
+        if (exists)
+            Logger::Instance().Log(L"[Editor] JetBrains Mono found in custom font collection!");
+        else
+            Logger::Instance().Log(L"[Editor] JetBrains Mono NOT found in custom font collection!");
 
         return exists == TRUE;
     }

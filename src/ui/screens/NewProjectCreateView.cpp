@@ -39,6 +39,7 @@ void NewProjectCreateView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteF
     };
 
     drawAction(window.newProjOpenRect_, L"\uE8B7", L"Retour", window.newProjOpenHover_);
+    window.newProjBrowseRect_ = D2D1::RectF(0, 0, 0, 0);
 
     float formTitleY = window.newProjOpenRect_.bottom + 12.0f * rc.scale;
     if (rc.labelFmt && rc.muted)

@@ -274,6 +274,7 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64
 UninstallDisplayIcon={{app}}\\{{#MyAppExeName}}
+{setup_icon_line}
 PrivilegesRequired=lowest
 
 [Languages]
@@ -287,17 +288,23 @@ Name: "desktopicon"; Description: "{{cm:CreateDesktopIcon}}"; GroupDescription: 
 {files_section}
 
 [Icons]
-Name: "{{group}}\\{{#MyAppName}}"; Filename: "{{app}}\\{{#MyAppExeName}}"
+Name: "{{group}}\\{{#MyAppName}}"; Filename: "{{app}}\\{{#MyAppExeName}}"; IconFilename: "{{app}}\\assets\\favicon.ico"
 Name: "{{group}}\\{{cm:UninstallProgram,{{#MyAppName}}}}"; Filename: "{{uninstallexe}}"
-Name: "{{autodesktop}}\\{{#MyAppName}}"; Filename: "{{app}}\\{{#MyAppExeName}}"; Tasks: desktopicon
+Name: "{{autodesktop}}\\{{#MyAppName}}"; Filename: "{{app}}\\{{#MyAppExeName}}"; Tasks: desktopicon; IconFilename: "{{app}}\\assets\\favicon.ico"
 
 [Registry]
-Root: HKCR; Subkey: "*\\shell\\Nebula"; ValueType: string; ValueName: ""; ValueData: "Ouvrir avec {{#MyAppName}}"; Flags: uninsdeletekey
-Root: HKCR; Subkey: "*\\shell\\Nebula\\command"; ValueType: string; ValueName: ""; ValueData: "\"{{app}}\\{{#MyAppExeName}}\" \"%1\""
-Root: HKCR; Subkey: "Directory\\shell\\Nebula"; ValueType: string; ValueName: ""; ValueData: "Ouvrir le dossier dans {{#MyAppName}}"; Flags: uninsdeletekey
-Root: HKCR; Subkey: "Directory\\shell\\Nebula\\command"; ValueType: string; ValueName: ""; ValueData: "\"{{app}}\\{{#MyAppExeName}}\" \"%1\""
-Root: HKCR; Subkey: "Directory\\Background\\shell\\Nebula"; ValueType: string; ValueName: ""; ValueData: "Ouvrir {{#MyAppName}} ici"; Flags: uninsdeletekey
-Root: HKCR; Subkey: "Directory\\Background\\shell\\Nebula\\command"; ValueType: string; ValueName: ""; ValueData: "\"{{app}}\\{{#MyAppExeName}}\" \"%V\""
+; Context menu (per-user, no admin required)
+Root: HKCU; Subkey: "Software\\Classes\\*\\shell\\Open with {{#MyAppName}}"; ValueType: string; ValueName: ""; ValueData: "Ouvrir avec {{#MyAppName}}"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\\Classes\\*\\shell\\Open with {{#MyAppName}}"; ValueType: string; ValueName: "Icon"; ValueData: "{{app}}\\assets\\favicon.ico"
+Root: HKCU; Subkey: "Software\\Classes\\*\\shell\\Open with {{#MyAppName}}\\command"; ValueType: string; ValueName: ""; ValueData: "\"\"{{app}}\\{{#MyAppExeName}}\"\" \"\"%1\"\""
+
+Root: HKCU; Subkey: "Software\\Classes\\Directory\\shell\\Open with {{#MyAppName}}"; ValueType: string; ValueName: ""; ValueData: "Ouvrir avec {{#MyAppName}}"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\\Classes\\Directory\\shell\\Open with {{#MyAppName}}"; ValueType: string; ValueName: "Icon"; ValueData: "{{app}}\\assets\\favicon.ico"
+Root: HKCU; Subkey: "Software\\Classes\\Directory\\shell\\Open with {{#MyAppName}}\\command"; ValueType: string; ValueName: ""; ValueData: "\"\"{{app}}\\{{#MyAppExeName}}\"\" \"\"%1\"\""
+
+Root: HKCU; Subkey: "Software\\Classes\\Directory\\Background\\shell\\Open with {{#MyAppName}}"; ValueType: string; ValueName: ""; ValueData: "Ouvrir {{#MyAppName}} ici"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\\Classes\\Directory\\Background\\shell\\Open with {{#MyAppName}}"; ValueType: string; ValueName: "Icon"; ValueData: "{{app}}\\assets\\favicon.ico"
+Root: HKCU; Subkey: "Software\\Classes\\Directory\\Background\\shell\\Open with {{#MyAppName}}\\command"; ValueType: string; ValueName: ""; ValueData: "\"\"{{app}}\\{{#MyAppExeName}}\"\" \"\"%V\"\""
 
 [Run]
 Filename: "{{app}}\\{{#MyAppExeName}}"; Description: "{{cm:LaunchProgram,{{#StringChange(MyAppName, '&', '&&')}}}}"; Flags: nowait postinstall skipifsilent

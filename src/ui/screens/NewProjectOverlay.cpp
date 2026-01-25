@@ -4,6 +4,7 @@
 #include "core/explorer/Explorer.h"
 #include <filesystem>
 #include <shlobj.h>
+#include <shellapi.h>
 #include <algorithm>
 #include <cwctype>
 
@@ -361,6 +362,19 @@ bool NewProjectOverlay::HandleMouseDown(Window &window, HWND hwnd, POINT pt)
         }
         return true;
     }
+    if (pt.x >= (int)window.newProjBrowseRect_.left && pt.x <= (int)window.newProjBrowseRect_.right &&
+        pt.y >= (int)window.newProjBrowseRect_.top && pt.y <= (int)window.newProjBrowseRect_.bottom)
+    {
+        if (window.newProjPage_ == Window::NewProjectPage::Home)
+        {
+            std::wstring root = GetDefaultSourceReposPath();
+            if (!root.empty())
+            {
+                ShellExecuteW(nullptr, L"open", root.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            }
+        }
+        return true;
+    }
 
     if (pt.x >= (int)window.newProjCreateRect_.left && pt.x <= (int)window.newProjCreateRect_.right &&
         pt.y >= (int)window.newProjCreateRect_.top && pt.y <= (int)window.newProjCreateRect_.bottom)
@@ -437,6 +451,12 @@ bool NewProjectOverlay::HandleMouseMove(Window &window, HWND hwnd, POINT pt)
 
     bool hoverOpen = (pt.x >= (int)window.newProjOpenRect_.left && pt.x <= (int)window.newProjOpenRect_.right &&
                       pt.y >= (int)window.newProjOpenRect_.top && pt.y <= (int)window.newProjOpenRect_.bottom);
+    bool hoverBrowse = false;
+    if (window.newProjPage_ == Window::NewProjectPage::Home)
+    {
+        hoverBrowse = (pt.x >= (int)window.newProjBrowseRect_.left && pt.x <= (int)window.newProjBrowseRect_.right &&
+                       pt.y >= (int)window.newProjBrowseRect_.top && pt.y <= (int)window.newProjBrowseRect_.bottom);
+    }
     bool hoverCancel = (pt.x >= (int)window.newProjCancelRect_.left && pt.x <= (int)window.newProjCancelRect_.right &&
                         pt.y >= (int)window.newProjCancelRect_.top && pt.y <= (int)window.newProjCancelRect_.bottom);
     bool hoverCreate = (pt.x >= (int)window.newProjCreateRect_.left && pt.x <= (int)window.newProjCreateRect_.right &&
@@ -458,10 +478,12 @@ bool NewProjectOverlay::HandleMouseMove(Window &window, HWND hwnd, POINT pt)
     }
 
     bool changed = (templateHover != window.newProjTemplateHover_) || (hoverOpen != window.newProjOpenHover_) ||
+                   (hoverBrowse != window.newProjBrowseHover_) ||
                    (hoverCancel != window.newProjCancelHover_) || (hoverCreate != window.newProjCreateHover_) ||
                    (recentHover != window.recentProjectHover_);
     window.newProjTemplateHover_ = templateHover;
     window.newProjOpenHover_ = hoverOpen;
+    window.newProjBrowseHover_ = hoverBrowse;
     window.newProjCancelHover_ = hoverCancel;
     window.newProjCreateHover_ = hoverCreate;
     window.recentProjectHover_ = recentHover;

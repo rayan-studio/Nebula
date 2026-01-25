@@ -287,19 +287,11 @@ namespace Orion
             float hRight = state_.rightEdge - (scrollbar_.IsVisible() ? 14.0f : 0.0f);
             float hTop = state_.bottomEdge - 14.0f;
             float hBottom = state_.bottomEdge;
-
-            ID2D1SolidColorBrush *trackBrush = nullptr;
-            D2D1_COLOR_F trackColor = theme_.gutterBackground;
-            trackColor.a = 1.0f;
-            ctx->CreateSolidColorBrush(trackColor, &trackBrush);
-            if (trackBrush)
-            {
-                ctx->FillRectangle(D2D1::RectF(hLeft, hTop, hRight, hBottom), trackBrush);
-                trackBrush->Release();
-            }
-
-            D2D1_COLOR_F thumbColor = theme_.text;
-            thumbColor.a = hIsDragging_ ? 0.9f : 0.4f;
+            D2D1_COLOR_F thumbColor;
+            if (hIsDragging_)
+                thumbColor = D2D1::ColorF(0.45f, 0.45f, 0.45f, 0.9f);
+            else
+                thumbColor = D2D1::ColorF(0.25f, 0.25f, 0.25f, 0.4f);
 
             ID2D1SolidColorBrush *thumbBrush = nullptr;
             ctx->CreateSolidColorBrush(thumbColor, &thumbBrush);
