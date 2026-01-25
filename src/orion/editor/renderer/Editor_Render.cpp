@@ -438,6 +438,7 @@ namespace Orion
         if (!searchBox_.IsVisible())
             return;
 
+        const std::wstring ext = GetFileExtension();
         const auto &matches = searchBox_.GetMatches();
         if (matches.empty())
             return;
@@ -514,6 +515,38 @@ namespace Orion
                             typography->Release();
                         }
 
+                        // Match markdown styling so hit-testing aligns with rendered glyphs
+                        if (highlighter_ && ext == L".md")
+                        {
+                            bool mdInCodeBlock = false;
+                            std::wstring mdFenceLang;
+                            for (int li = 0; li < match.line; ++li)
+                                highlighter_->AdvanceMarkdownState(state_.lines[li], mdInCodeBlock, mdFenceLang);
+
+                            auto tokens = highlighter_->TokenizeMarkdownLine(line, mdInCodeBlock, mdFenceLang);
+                            for (const auto &t : tokens)
+                            {
+                                DWRITE_TEXT_RANGE r;
+                                r.startPosition = (UINT32)t.start;
+                                r.length = (UINT32)t.length;
+                                switch (t.type)
+                                {
+                                case ::Orion::Syntax::TokenType::MarkdownHeading:
+                                case ::Orion::Syntax::TokenType::MarkdownStrong:
+                                    layout->SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, r);
+                                    break;
+                                case ::Orion::Syntax::TokenType::MarkdownEmphasis:
+                                    layout->SetFontStyle(DWRITE_FONT_STYLE_ITALIC, r);
+                                    break;
+                                case ::Orion::Syntax::TokenType::MarkdownLinkText:
+                                    layout->SetUnderline(TRUE, r);
+                                    break;
+                                default:
+                                    break;
+                                }
+                            }
+                        }
+
                         float hitStartX = 0.0f;
                         float hitStartY = 0.0f;
                         float hitEndX = 0.0f;
@@ -529,7 +562,7 @@ namespace Orion
                                 &metricsStart)) &&
                             SUCCEEDED(layout->HitTestTextPosition(
                                 (UINT32)match.endColumn,
-                                TRUE,
+                                FALSE,
                                 &hitEndX,
                                 &hitEndY,
                                 &metricsEnd)))

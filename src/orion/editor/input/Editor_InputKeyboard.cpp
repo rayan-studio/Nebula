@@ -1034,12 +1034,21 @@ namespace Orion
                 return;
             }
 
-            if (activeField == SearchBox::InputField::Search &&
-                (key == VK_BACK || key == VK_DELETE || key == VK_RETURN))
+            if (activeField == SearchBox::InputField::Search)
             {
-                searchBox_.PerformSearch(state_.lines);
+                bool rescan = (key == VK_BACK || key == VK_DELETE);
+                if (rescan)
+                    searchBox_.PerformSearch(state_.lines);
 
-                if (!searchBox_.GetMatches().empty())
+                if (key == VK_RETURN && !searchBox_.GetMatches().empty())
+                {
+                    if (GetAsyncKeyState(VK_SHIFT) & 0x8000)
+                        searchBox_.FindPrevious();
+                    else
+                        searchBox_.FindNext();
+                }
+
+                if ((key == VK_RETURN || rescan) && !searchBox_.GetMatches().empty())
                 {
                     int idx = searchBox_.GetCurrentMatchIndex();
                     if (idx >= 0 && idx < (int)searchBox_.GetMatches().size())

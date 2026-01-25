@@ -198,6 +198,37 @@ namespace Orion
         drawInput(inputRect_, searchText_, L"Rechercher...", inputFocused_, caretPosition_);
         drawInput(replaceInputRect_, replaceText_, L"Remplacer...", replaceFocused_, replaceCaretPosition_);
 
+        if (!searchText_.empty())
+        {
+            int total = (int)matches_.size();
+            int current = (total > 0 && currentMatchIndex_ >= 0) ? (currentMatchIndex_ + 1) : 0;
+            wchar_t buf[32];
+            swprintf_s(buf, L"%d/%d", current, total);
+
+            IDWriteTextFormat* countFormat = nullptr;
+            dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                                    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                    11.0f, L"en-us", &countFormat);
+            if (countFormat)
+            {
+                countFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+                countFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+                D2D1_RECT_F countRect = inputRect_;
+                countRect.right -= 6.0f;
+                countRect.left = countRect.right - 80.0f;
+
+                ID2D1SolidColorBrush* countBrush = nullptr;
+                ctx->CreateSolidColorBrush(D2D1::ColorF(0.6f, 0.6f, 0.6f), &countBrush);
+                if (countBrush)
+                {
+                    ctx->DrawTextW(buf, (UINT32)wcslen(buf), countFormat, countRect, countBrush);
+                    countBrush->Release();
+                }
+                countFormat->Release();
+            }
+        }
+
         DrawButton(ctx, dwrite, replaceButtonRect_, L"\u2192", false, false);
     }
 
@@ -318,14 +349,7 @@ namespace Orion
             break;
         
         case VK_RETURN:
-            if (inputFocused_)
-            {
-                if (GetAsyncKeyState(VK_SHIFT) & 0x8000)
-                    FindPrevious();
-                else
-                    FindNext();
-            }
-            else if (replaceFocused_)
+            if (replaceFocused_)
             {
                 replaceRequested_ = true;
             }

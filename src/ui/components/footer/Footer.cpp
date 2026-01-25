@@ -87,7 +87,7 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
     // Prepare right-side status text (line/column + language + encoding)
     std::wstring lang = DetectLanguageFromPath(filePath);
     wchar_t buf[256];
-    swprintf_s(buf, 256, L"Ln %d, Col %d — %s — %s",
+    swprintf_s(buf, 256, L"Ln %d, Col %d - %s - %s",
                (line + 1), (column + 1), lang.c_str(), encoding.c_str());
 
     // Create right-aligned format for status (use JetBrains Mono to match editor)
