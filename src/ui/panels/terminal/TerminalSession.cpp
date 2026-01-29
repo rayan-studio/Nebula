@@ -5,6 +5,8 @@
 #include <cstring>
 #include <vector>
 
+#include "utils/logger/Logger.h"
+
 #ifdef min
 #undef min
 #endif
@@ -98,6 +100,33 @@ static std::string WideToUtf8Char(wchar_t ch)
     return out;
 }
 
+static std::string WideToUtf8(const std::wstring& w)
+{
+    if (w.empty())
+        return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), NULL, 0, NULL, NULL);
+    if (len <= 0)
+        return {};
+    std::string out((size_t)len, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), out.data(), len, NULL, NULL);
+    return out;
+}
+
+static bool FileExistsW(const std::wstring& path)
+{
+    DWORD attrs = GetFileAttributesW(path.c_str());
+    return (attrs != INVALID_FILE_ATTRIBUTES) && ((attrs & FILE_ATTRIBUTE_DIRECTORY) == 0);
+}
+
+static std::wstring ParentDirW(std::wstring path)
+{
+    size_t pos = path.find_last_of(L"\\/");
+    if (pos == std::wstring::npos)
+        return L"";
+    path.resize(pos);
+    return path;
+}
+
 TerminalSession::TerminalSession() {}
 TerminalSession::~TerminalSession() { Shutdown(); }
 
@@ -165,7 +194,10 @@ bool TerminalSession::Initialize(HWND hwndOwner, const std::wstring& startDir)
     hwndOwner_ = hwndOwner;
 
     if (!LoadConPTYOnce())
+    {
+        Logger::Instance().Log(L"[Terminal] ConPTY not available (LoadConPTYOnce failed).");
         return false;
+    }
 
     SECURITY_ATTRIBUTES sa{ sizeof(sa), NULL, TRUE };
 
@@ -174,11 +206,19 @@ bool TerminalSession::Initialize(HWND hwndOwner, const std::wstring& startDir)
 
     COORD sz{ (SHORT)cols_, (SHORT)rows_ };
     HRESULT hr = pCreatePseudoConsole(sz, hInR_, hOutW_, 0, (HPCON*)&hPC_);
-    if (FAILED(hr) || !hPC_) return false;
-
-    if (!StartShellProcess(startDir)) return false;
+    if (FAILED(hr) || !hPC_)
+    {
+        Logger::Instance().Log(L"[Terminal] CreatePseudoConsole failed.");
+        return false;
+    }
 
     InitVTerm();
+    if (!StartShellProcess(startDir)) {
+        DestroyVTerm();
+        CloseConPTY();
+        return false;
+    }
+
     initialized_ = true;
     pendingSnapToBottom_ = true;
     StartReadThread();
@@ -210,16 +250,23 @@ bool TerminalSession::StartShellProcess(const std::wstring& startDir)
     siex.lpAttributeList = (PPROC_THREAD_ATTRIBUTE_LIST)attrBuf.data();
 
     if (!InitializeProcThreadAttributeList(siex.lpAttributeList, 1, 0, &attrListSize))
+    {
+        Logger::Instance().Log(L"[Terminal] InitializeProcThreadAttributeList failed.");
         return false;
+    }
 
+    // --- Correction ici : passe un vrai HPCON et sizeof(HPCON) ---
+    HPCON hpc = (HPCON)hPC_;
     if (!UpdateProcThreadAttribute(
         siex.lpAttributeList,
         0,
         (DWORD_PTR)PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-        hPC_, sizeof(hPC_),
+        hpc,
+        sizeof(HPCON),
         NULL, NULL))
     {
         DeleteProcThreadAttributeList(siex.lpAttributeList);
+        Logger::Instance().Log(L"[Terminal] UpdateProcThreadAttribute failed.");
         return false;
     }
 
@@ -231,16 +278,56 @@ bool TerminalSession::StartShellProcess(const std::wstring& startDir)
         workDir = cur;
     }
 
-    // Lance le Developer Command Prompt portable
-    std::wstring cmd = L"NebulaDevPrompt.exe";
-    std::vector<wchar_t> cmdline(cmd.begin(), cmd.end());
+    // Chemin absolu vers NebulaDevShell.exe (multi-emplacements)
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(NULL, exePath, MAX_PATH);
+    std::wstring exeDir = exePath;
+    size_t pos = exeDir.find_last_of(L"\\/");
+    if (pos != std::wstring::npos) exeDir.resize(pos);
+
+    std::wstring shell;
+    auto pickShell = [&](const std::wstring& candidate) {
+        if (shell.empty() && FileExistsW(candidate))
+            shell = candidate;
+    };
+
+    // 1) Même dossier que l'exécutable
+    pickShell(exeDir + L"\\NebulaDevShell.exe");
+    // 2) tools\ dans le dossier de l'app (optionnel)
+    pickShell(exeDir + L"\\tools\\NebulaDevShell.exe");
+    // 3) external\Nebula Studio 2026\build\{Release,Debug}\ (dev)
+    // 4) external\Nebula Studio 2026\dist\ (packaging)
+    std::wstring base = exeDir;
+    for (int i = 0; i < 5 && !base.empty() && shell.empty(); ++i)
+    {
+        pickShell(base + L"\\external\\Nebula Studio 2026\\build\\Release\\NebulaDevShell.exe");
+        pickShell(base + L"\\external\\Nebula Studio 2026\\build\\Debug\\NebulaDevShell.exe");
+        pickShell(base + L"\\external\\Nebula Studio 2026\\dist\\NebulaDevShell.exe");
+        base = ParentDirW(base);
+    }
+
+    if (shell.empty())
+    {
+        Logger::Instance().Log(L"[Terminal] NebulaDevShell.exe not found in any search path.");
+        return false;
+    }
+
+    Logger::Instance().Log(L"[Terminal] Using shell: " + shell);
+
+    // NebulaDevShell expects an explicit --hpc= argument.
+    std::wstring hpcArg = L" --hpc=" + std::to_wstring((uintptr_t)hPC_);
+    std::wstring cmdLine = L"\"" + shell + L"\"" + hpcArg;
+    Logger::Instance().Log(L"[Terminal] CmdLine: " + cmdLine);
+    Logger::Instance().Log(L"[Terminal] WorkDir: " + workDir);
+    std::vector<wchar_t> cmdline(cmdLine.begin(), cmdLine.end());
     cmdline.push_back(L'\0');
 
     PROCESS_INFORMATION pi{};
     DWORD flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT;
 
+    // --- Correction ici : lpApplicationName = shell.c_str() ---
     BOOL ok = CreateProcessW(
-        NULL,
+        shell.c_str(),
         cmdline.data(),
         NULL, NULL,
         TRUE,
@@ -252,10 +339,16 @@ bool TerminalSession::StartShellProcess(const std::wstring& startDir)
 
     DeleteProcThreadAttributeList(siex.lpAttributeList);
 
-    if (!ok) return false;
+    if (!ok)
+    {
+        DWORD err = GetLastError();
+        Logger::Instance().Log(L"[Terminal] CreateProcessW failed. err=" + std::to_wstring(err));
+        return false;
+    }
 
     CloseHandle(pi.hThread);
     hChild_ = pi.hProcess;
+    Logger::Instance().Log(L"[Terminal] CreateProcessW ok. pid=" + std::to_wstring(pi.dwProcessId));
     return true;
 }
 
@@ -338,6 +431,18 @@ void TerminalSession::OnKeyDown(WPARAM vk)
     default:
         break;
     }
+}
+
+void TerminalSession::SendUtf8(const char* bytes, DWORD len)
+{
+    WriteUtf8(bytes, len);
+}
+
+void TerminalSession::SendText(const std::wstring& text)
+{
+    std::string u8 = WideToUtf8(text);
+    if (!u8.empty())
+        WriteUtf8(u8.data(), (DWORD)u8.size());
 }
 
 std::wstring TerminalSession::BuildRowText(int row) const

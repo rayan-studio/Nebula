@@ -2,3 +2,6 @@
 /build
 /dist
 /logs
+/external
+
+.idea

@@ -17,7 +17,6 @@ namespace ggwave
     
     bool Initialize()
     {
-        Logger::Instance().Log(L"ggwave: Initializing native ggwave library...");
         
         try
         {
@@ -52,7 +51,6 @@ namespace ggwave
                 return false;
             }
             
-            Logger::Instance().Log(L"ggwave: Initialization successful");
             return true;
         }
         catch (const std::exception& e)

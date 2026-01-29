@@ -42,8 +42,13 @@ namespace Orion::Rendering
         if (!b) return;
         if (bottomY <= topY) return;
 
-        D2D1_RECT_F rect = D2D1::RectF(x, topY, x + style_.lineWidth, bottomY);
-        ctx->FillRectangle(rect, b);
+        float width = style_.lineWidth > 0.0f ? style_.lineWidth : 1.0f;
+        D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
+        ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+        D2D1_POINT_2F p1 = D2D1::Point2F(x, topY);
+        D2D1_POINT_2F p2 = D2D1::Point2F(x, bottomY);
+        ctx->DrawLine(p1, p2, b, width);
+        ctx->SetAntialiasMode(oldAA);
     }
 
     void GuideRenderer::DrawGuides(

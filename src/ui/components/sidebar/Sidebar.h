@@ -42,6 +42,7 @@ private:
     
     void UpdateItemRects(HWND hwnd);
     int HitTest(HWND hwnd, POINT clientPoint) const;
+    bool HitTestOutput(POINT clientPoint) const;
     
     // Layout
     int logicalWidth_ = 52;
@@ -55,6 +56,10 @@ private:
     // State
     int hoveredIndex_ = -1;
     std::vector<SidebarItemState> itemStates_;
+    bool outputHovered_ = false;
+    bool outputVisible_ = false;
+    D2D1_RECT_F outputHitRect_{};
+    D2D1_RECT_F outputBgRect_{};
 };
 
 // API functions - backward compatible

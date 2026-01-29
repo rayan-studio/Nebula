@@ -102,8 +102,16 @@ class PackageBuilder:
         return dlls
     
     def collect_dependencies(self, exe_path: Path) -> list[Path]:
-        """Collecte les DLLs et fichiers nécessaires"""
         deps = []
+        # Ajoute le dossier toolchains et current.json si présents
+        toolchains_dir = self.project_root / "external" / "Nebula Studio 2026" / "toolchains"
+        if toolchains_dir.exists():
+            deps.append(toolchains_dir)
+            self.log(f"  Ajouté: toolchains/ (depuis Nebula Studio 2026)")
+            current_json = toolchains_dir / "current.json"
+            if current_json.exists():
+                deps.append(current_json)
+                self.log(f"  Ajouté: current.json")
         search_dirs = [
             exe_path.parent,
             self.build_dir / self.args.config,
@@ -137,7 +145,19 @@ class PackageBuilder:
         if assets_dir.exists():
             deps.append(assets_dir)
             self.log(f"  Trouvé (assets): {assets_dir.name}/")
-        
+
+        # Ajoute NebulaDevPrompt.exe depuis Nebula Studio 2026/dist si présent
+        nebula_prompt = self.project_root / "external" / "Nebula Studio 2026" / "dist" / "NebulaDevPrompt.exe"
+        if nebula_prompt.exists():
+            deps.append(nebula_prompt)
+            self.log(f"  Ajouté: NebulaDevPrompt.exe (depuis Nebula Studio 2026/dist)")
+
+        # Ajoute NebulaDevShell.exe depuis Nebula Studio 2026/dist si présent
+        nebula_shell = self.project_root / "external" / "Nebula Studio 2026" / "dist" / "NebulaDevShell.exe"
+        if nebula_shell.exists():
+            deps.append(nebula_shell)
+            self.log(f"  Ajouté: NebulaDevShell.exe (depuis Nebula Studio 2026/dist)")
+
         # Ajoute les DLLs externes (SDL, etc.)
         external_dir = self.project_root / "external"
         if external_dir.exists():
@@ -147,7 +167,7 @@ class PackageBuilder:
                     if dll not in deps:
                         deps.append(dll)
                         self.log(f"  Trouvé (external): {dll.name}")
-        
+
         return deps
     
     def create_portable(self, exe_path: Path, deps: list[Path]) -> Optional[Path]:

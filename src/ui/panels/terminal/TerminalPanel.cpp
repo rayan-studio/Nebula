@@ -24,6 +24,18 @@ TerminalPanel::~TerminalPanel()
     }
 }
 
+static std::string WideToUtf8(const std::wstring& w)
+{
+    if (w.empty())
+        return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), NULL, 0, NULL, NULL);
+    if (len <= 0)
+        return {};
+    std::string out((size_t)len, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), out.data(), len, NULL, NULL);
+    return out;
+}
+
 bool TerminalPanel::IsInitialized() const
 {
     for (auto& s : sessions_)
@@ -214,7 +226,7 @@ void TerminalPanel::UpdateLayout(HWND hwnd, float left, float top, float right, 
     }
 
     SyncTabBar();
-    tabBar_.UpdateLayout(left_, top_ + resizeZoneH_, TabsBarRightEdge());
+    tabBar_.UpdateLayout(left_, bottom_ - TabsBarHeightPx(), TabsBarRightEdge());
 
     // Update viewport for active session (content area under tabs bar)
     TerminalSession* s = ActiveSession();
@@ -258,16 +270,16 @@ RECT TerminalPanel::TabsBarRectClient() const
 {
     RECT r;
     r.left = (LONG)left_;
-    r.top = (LONG)(top_ + resizeZoneH_);
+    r.top = (LONG)(bottom_ - TabsBarHeightPx());
     r.right = (LONG)right_;
-    r.bottom = (LONG)(top_ + resizeZoneH_ + TabsBarHeightPx());
+    r.bottom = (LONG)bottom_;
     return r;
 }
 
 float TerminalPanel::TabsBarRightEdge() const
 {
-    RECT problems = ProblemsButtonRectClient();
-    float rightEdge = (float)problems.left - 6.0f;
+    RECT output = OutputButtonRectClient();
+    float rightEdge = (float)output.left - 6.0f;
     if (rightEdge < left_)
         rightEdge = left_;
     return rightEdge;
@@ -290,12 +302,25 @@ RECT TerminalPanel::ProblemsButtonRectClient() const
 {
     RECT plus = PlusButtonRectClient();
     int height = (int)TabsBarHeightPx();
-    int width = (int)std::round(height * 3.2f);
+    int width = (int)std::round(height * 4.6f);
     RECT r;
     r.right = plus.left - 6;
     r.left = r.right - width;
-    r.top = plus.top;
-    r.bottom = plus.bottom;
+    r.top = plus.top + 3;
+    r.bottom = plus.bottom - 3;
+    return r;
+}
+
+RECT TerminalPanel::OutputButtonRectClient() const
+{
+    RECT problems = ProblemsButtonRectClient();
+    int height = (int)TabsBarHeightPx();
+    int width = (int)std::round(height * 4.1f);
+    RECT r;
+    r.right = problems.left - 6;
+    r.left = r.right - width;
+    r.top = problems.top;
+    r.bottom = problems.bottom;
     return r;
 }
 
@@ -308,6 +333,12 @@ bool TerminalPanel::HitTestPlus(POINT pt) const
 bool TerminalPanel::HitTestProblems(POINT pt) const
 {
     RECT r = ProblemsButtonRectClient();
+    return (pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom);
+}
+
+bool TerminalPanel::HitTestOutput(POINT pt) const
+{
+    RECT r = OutputButtonRectClient();
     return (pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom);
 }
 
@@ -350,9 +381,19 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
 {
     if (!visible_) return;
 
+    if (HitTestOutput(pt))
+    {
+        showOutput_ = !showOutput_;
+        if (showOutput_)
+            showProblems_ = false;
+        return;
+    }
+
     if (HitTestProblems(pt))
     {
         showProblems_ = !showProblems_;
+        if (showProblems_)
+            showOutput_ = false;
         return;
     }
 
@@ -362,6 +403,12 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
         // Ici: fallback current dir
         NewTerminal(hwnd, L"");
         return;
+    }
+
+    if ((showOutput_ || showProblems_) && IsPointInPanel(pt))
+    {
+        showOutput_ = false;
+        showProblems_ = false;
     }
 
     if (IsPointInTabsBar(pt))
@@ -377,6 +424,8 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
         if (result >= 0)
         {
             SetActiveIndex(result);
+            showOutput_ = false;
+            showProblems_ = false;
             focused_ = true;
             EnsureActiveInitialized(hwnd);
             return;
@@ -473,8 +522,8 @@ bool TerminalPanel::OnMouseMove(HWND hwnd, POINT pt)
 
     if (TerminalSession* s = ActiveSession())
     {
-        float tabsH = TabsBarHeightPx();
-        s->SetViewport(left_, top_ + resizeZoneH_ + tabsH, right_, bottom_);
+    float tabsH = TabsBarHeightPx();
+    s->SetViewport(left_, top_ + resizeZoneH_, right_, bottom_ - tabsH);
                 UpdatePseudoConsoleSizeFromPixelsForActive();
             }
             return true;
@@ -510,7 +559,12 @@ bool TerminalPanel::OnMouseMove(HWND hwnd, POINT pt)
     if (prevProblems != hoveredProblems_)
         changed = true;
 
-    if (IsPointInTabsBar(pt) && !hoveredPlus_ && !hoveredProblems_)
+    bool prevOutput = hoveredOutput_;
+    hoveredOutput_ = HitTestOutput(pt);
+    if (prevOutput != hoveredOutput_)
+        changed = true;
+
+    if (IsPointInTabsBar(pt) && !hoveredPlus_ && !hoveredProblems_ && !hoveredOutput_)
     {
         int tabHover = tabBar_.OnMouseMove(pt);
         if (tabHover != -2)
@@ -606,7 +660,7 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
 
     EnsureAtLeastOneSession(NULL);
     SyncTabBar();
-    tabBar_.UpdateLayout(left_, top_ + resizeZoneH_, TabsBarRightEdge());
+    tabBar_.UpdateLayout(left_, bottom_ - TabsBarHeightPx(), TabsBarRightEdge());
 
     // Tabs bar background
     ID2D1SolidColorBrush* bg = nullptr;
@@ -615,13 +669,13 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
     ID2D1SolidColorBrush* resizeBg = nullptr;
     ID2D1SolidColorBrush* resizeLine = nullptr;
 
-    rt->CreateSolidColorBrush(D2D1::ColorF(0.06f, 0.06f, 0.06f, 1.0f), &bg);
-    rt->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.90f, 0.90f, 1.0f), &fg);
-    rt->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f), &border);
-    rt->CreateSolidColorBrush(D2D1::ColorF(0.06f, 0.06f, 0.06f, 1.0f), &resizeBg);
+    rt->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.09f, 1.0f), &bg);
+    rt->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.92f, 0.92f, 1.0f), &fg);
+    rt->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.18f, 0.20f, 1.0f), &border);
+    rt->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.09f, 1.0f), &resizeBg);
     rt->CreateSolidColorBrush(resizeHover_ || resizing_
-                                  ? D2D1::ColorF(0.35f, 0.35f, 0.35f, 1.0f)
-                                  : D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f),
+                                  ? D2D1::ColorF(0.40f, 0.40f, 0.45f, 1.0f)
+                                  : D2D1::ColorF(0.22f, 0.22f, 0.26f, 1.0f),
                               &resizeLine);
 
     if (!bg || !fg || !border || !resizeBg || !resizeLine)
@@ -648,25 +702,146 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
     RECT tabsR = TabsBarRectClient();
     D2D1_RECT_F tabs = D2D1::RectF((float)tabsR.left, (float)tabsR.top, (float)tabsR.right, (float)tabsR.bottom);
     rt->FillRectangle(tabs, bg);
-    if (!sessions_.empty())
-        rt->FillRectangle(D2D1::RectF(left_, tabs.bottom - 1.0f, right_, tabs.bottom), border);
+    rt->DrawLine(D2D1::Point2F(left_, tabs.top + 0.5f),
+                 D2D1::Point2F(right_, tabs.top + 0.5f), border, 1.0f);
 
     tabBar_.Draw(rt, dwrite, hwnd);
+
+    float tabsH = TabsBarHeightPx();
+    float contentTop = top_ + resizeZoneH_ + 6.0f;   // add padding
+    float contentBottom = bottom_ - tabsH - 6.0f;    // add padding
+
+
+    // Output button
+    RECT out = OutputButtonRectClient();
+    D2D1_RECT_F outputRect = D2D1::RectF((float)out.left, (float)out.top, (float)out.right, (float)out.bottom);
+    const float tabInset = 2.0f;
+    D2D1_RECT_F outputTab = D2D1::RectF(outputRect.left, outputRect.top - 4.0f, outputRect.right, outputRect.bottom);
+    D2D1_RECT_F outputTabOutline = outputTab;
+    if (showOutput_)
+    {
+        float tabH = outputTab.bottom - outputTab.top;
+        outputTabOutline.top = contentBottom - 1.0f; // align outline with content border
+        outputTabOutline.bottom = outputTabOutline.top + tabH;
+    }
+
+    ID2D1SolidColorBrush* outputBg = nullptr;
+    ID2D1SolidColorBrush* outputBorder = nullptr;
+    if (showOutput_)
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.15f, 0.15f, 0.18f, 1.0f), &outputBg);
+    else if (hoveredOutput_)
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.14f, 1.0f), &outputBg);
+    rt->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.26f, 1.0f), &outputBorder);
+
+    if (outputBg)
+    {
+        D2D1_RECT_F fillRect = showOutput_ ? outputTabOutline : outputTab;
+        if (showOutput_)
+            fillRect.top += 1.0f; // keep border line visible
+        rt->FillRectangle(fillRect, outputBg);
+        outputBg->Release();
+    }
+    if (outputBorder)
+    {
+        // draw left/right/bottom only for active tab to look connected
+        if (showOutput_)
+        {
+            // outline handled by panel border section
+        }
+        else
+        {
+            // no outline when inactive
+        }
+        outputBorder->Release();
+    }
+    if (showOutput_)
+    {
+        // no extra accent line; keep a single border
+    }
+
+    IDWriteTextFormat* outputFormat = nullptr;
+    dwrite->CreateTextFormat(
+        L"Segoe UI",
+        NULL,
+        DWRITE_FONT_WEIGHT_NORMAL,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        12.0f,
+        L"en-us",
+        &outputFormat);
+    if (outputFormat)
+    {
+        outputFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        outputFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+        size_t outputCount = 0;
+        {
+            std::lock_guard<std::mutex> lock(outputMutex_);
+            outputCount = outputLines_.size();
+        }
+        std::wstring label = L"Output (" + std::to_wstring(outputCount) + L")";
+        D2D1_RECT_F textRect = showOutput_ ? outputTabOutline : outputTab;
+        textRect.left += 14.0f;
+        textRect.right -= 8.0f;
+        ID2D1SolidColorBrush* labelBrush = fg;
+        if (!showOutput_ && !hoveredOutput_)
+        {
+            ID2D1SolidColorBrush* muted = nullptr;
+            rt->CreateSolidColorBrush(D2D1::ColorF(0.72f, 0.72f, 0.75f, 1.0f), &muted);
+            labelBrush = muted ? muted : fg;
+            rt->DrawTextW(label.c_str(), (UINT32)label.size(), outputFormat, textRect, labelBrush);
+            if (muted) muted->Release();
+        }
+        else
+        {
+            rt->DrawTextW(label.c_str(), (UINT32)label.size(), outputFormat, textRect, labelBrush);
+        }
+        outputFormat->Release();
+    }
 
     // Problems button
     RECT prb = ProblemsButtonRectClient();
     D2D1_RECT_F problemsRect = D2D1::RectF((float)prb.left, (float)prb.top, (float)prb.right, (float)prb.bottom);
+    D2D1_RECT_F problemsTab = D2D1::RectF(problemsRect.left, problemsRect.top - 4.0f, problemsRect.right, problemsRect.bottom);
+    D2D1_RECT_F problemsTabOutline = problemsTab;
+    if (showProblems_)
+    {
+        float tabH = problemsTab.bottom - problemsTab.top;
+        problemsTabOutline.top = contentBottom - 1.0f;
+        problemsTabOutline.bottom = problemsTabOutline.top + tabH;
+    }
 
     ID2D1SolidColorBrush* problemsBg = nullptr;
-    if (hoveredProblems_ || showProblems_)
-        rt->CreateSolidColorBrush(D2D1::ColorF(0.16f, 0.16f, 0.16f, 1.0f), &problemsBg);
-    else
-        rt->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.10f, 0.10f, 1.0f), &problemsBg);
+    ID2D1SolidColorBrush* problemsBorder = nullptr;
+    if (showProblems_)
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.15f, 0.15f, 0.18f, 1.0f), &problemsBg);
+    else if (hoveredProblems_)
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.14f, 1.0f), &problemsBg);
+    rt->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.26f, 1.0f), &problemsBorder);
 
     if (problemsBg)
     {
-        rt->FillRectangle(problemsRect, problemsBg);
+        D2D1_RECT_F fillRect = showProblems_ ? problemsTabOutline : problemsTab;
+        if (showProblems_)
+            fillRect.top += 1.0f; // keep border line visible
+        rt->FillRectangle(fillRect, problemsBg);
         problemsBg->Release();
+    }
+    if (problemsBorder)
+    {
+        if (showProblems_)
+        {
+            // outline handled by panel border section
+        }
+        else
+        {
+            // no outline when inactive
+        }
+        problemsBorder->Release();
+    }
+    if (showProblems_)
+    {
+        // no extra accent line; keep a single border
     }
 
     IDWriteTextFormat* problemsFormat = nullptr;
@@ -681,11 +856,26 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
         &problemsFormat);
     if (problemsFormat)
     {
-        problemsFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        problemsFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         problemsFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
         std::wstring label = L"Problems (" + std::to_wstring(problems_.size()) + L")";
-        rt->DrawTextW(label.c_str(), (UINT32)label.size(), problemsFormat, problemsRect, fg);
+        D2D1_RECT_F textRect = showProblems_ ? problemsTabOutline : problemsTab;
+        textRect.left += 14.0f;
+        textRect.right -= 8.0f;
+        ID2D1SolidColorBrush* labelBrush = fg;
+        if (!showProblems_ && !hoveredProblems_)
+        {
+            ID2D1SolidColorBrush* muted = nullptr;
+            rt->CreateSolidColorBrush(D2D1::ColorF(0.72f, 0.72f, 0.75f, 1.0f), &muted);
+            labelBrush = muted ? muted : fg;
+            rt->DrawTextW(label.c_str(), (UINT32)label.size(), problemsFormat, textRect, labelBrush);
+            if (muted) muted->Release();
+        }
+        else
+        {
+            rt->DrawTextW(label.c_str(), (UINT32)label.size(), problemsFormat, textRect, labelBrush);
+        }
         problemsFormat->Release();
     }
 
@@ -696,19 +886,20 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
     ID2D1SolidColorBrush* plusBg = nullptr;
     ID2D1SolidColorBrush* plusBorder = nullptr;
     if (hoveredPlus_)
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.14f, 1.0f), &plusBg);
+    rt->CreateSolidColorBrush(hoveredPlus_
+                                  ? D2D1::ColorF(0.32f, 0.34f, 0.38f, 1.0f)
+                                  : D2D1::ColorF(0.20f, 0.20f, 0.24f, 1.0f),
+                              &plusBorder);
+    if (plusBg)
     {
-        rt->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.22f, 1.0f), &plusBg);
-        rt->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.40f, 0.40f, 1.0f), &plusBorder);
-        if (plusBg)
-        {
-            rt->FillRoundedRectangle(D2D1::RoundedRect(plus, 5.0f, 5.0f), plusBg);
-            plusBg->Release();
-        }
-        if (plusBorder)
-        {
-            rt->DrawRoundedRectangle(D2D1::RoundedRect(plus, 5.0f, 5.0f), plusBorder, 1.0f);
-            plusBorder->Release();
-        }
+        rt->FillRectangle(plus, plusBg);
+        plusBg->Release();
+    }
+    if (plusBorder)
+    {
+        rt->DrawRectangle(plus, plusBorder, 1.0f);
+        plusBorder->Release();
     }
 
     // draw "+"
@@ -730,11 +921,9 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
 
 
     // Content viewport
-    float tabsH = TabsBarHeightPx();
-    float contentTop = top_ + resizeZoneH_ + tabsH;
     if (showProblems_)
     {
-        D2D1_RECT_F contentRect = D2D1::RectF(left_, contentTop, right_, bottom_);
+        D2D1_RECT_F contentRect = D2D1::RectF(left_, contentTop, right_, contentBottom);
         ID2D1SolidColorBrush* contentBg = nullptr;
         rt->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.08f, 0.95f), &contentBg);
         if (contentBg)
@@ -764,8 +953,8 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
             rt->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.35f, 0.35f, 1.0f), &errorBrush);
             rt->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.70f, 0.30f, 1.0f), &warningBrush);
 
-            float y = contentRect.top + 8.0f;
-            float x = contentRect.left + 12.0f;
+            float y = contentRect.top + 12.0f;
+            float x = contentRect.left + 16.0f;
             float lineH = 18.0f;
 
             std::wstring header = L"Problems";
@@ -803,15 +992,127 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
             listFormat->Release();
         }
     }
+    else if (showOutput_)
+    {
+        D2D1_RECT_F contentRect = D2D1::RectF(left_, contentTop, right_, contentBottom);
+        ID2D1SolidColorBrush* contentBg = nullptr;
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.08f, 0.95f), &contentBg);
+        if (contentBg)
+        {
+            rt->FillRectangle(contentRect, contentBg);
+            contentBg->Release();
+        }
+
+        IDWriteTextFormat* listFormat = nullptr;
+        dwrite->CreateTextFormat(
+            L"Segoe UI",
+            NULL,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            12.0f,
+            L"en-us",
+            &listFormat);
+        if (listFormat)
+        {
+            listFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            listFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            listFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+
+            float y = contentRect.top + 12.0f;
+            float x = contentRect.left + 16.0f;
+            float lineH = 18.0f;
+
+            std::wstring header = L"Output";
+            rt->DrawTextW(header.c_str(), (UINT32)header.size(), listFormat,
+                          D2D1::RectF(x, y, contentRect.right - 8.0f, y + lineH), fg);
+            y += lineH + 4.0f;
+
+            std::vector<std::wstring> lines;
+            {
+                std::lock_guard<std::mutex> lock(outputMutex_);
+                lines = outputLines_;
+            }
+
+            if (lines.empty())
+            {
+                std::wstring empty = L"Aucun output pour l'instant";
+                rt->DrawTextW(empty.c_str(), (UINT32)empty.size(), listFormat,
+                              D2D1::RectF(x, y, contentRect.right - 8.0f, y + lineH), fg);
+            }
+            else
+            {
+                rt->PushAxisAlignedClip(contentRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+                int maxLines = (int)((contentRect.bottom - y) / lineH);
+                int start = 0;
+                if ((int)lines.size() > maxLines)
+                    start = (int)lines.size() - maxLines;
+
+                for (size_t i = (size_t)start; i < lines.size(); ++i)
+                {
+                    const std::wstring& line = lines[i];
+                    rt->DrawTextW(line.c_str(), (UINT32)line.size(), listFormat,
+                                  D2D1::RectF(x, y, contentRect.right - 8.0f, y + lineH), fg);
+                    y += lineH;
+                    if (y > contentRect.bottom - lineH)
+                        break;
+                }
+
+                rt->PopAxisAlignedClip();
+            }
+
+            listFormat->Release();
+        }
+    }
     else
     {
         TerminalSession* s = ActiveSession();
         if (s)
         {
-            s->SetViewport(left_, contentTop, right_, bottom_);
+            s->SetViewport(left_, contentTop, right_, contentBottom);
 
             // draw session content (chrome + text + scrollbar)
             s->DrawContent(rt, dwrite, fontFamily_, fontSize_, fontCollection_, (resizeHover_ || resizing_), focused_);
+        }
+    }
+
+    // Content border (VS-style) - draw last so it stays visible
+    {
+        ID2D1SolidColorBrush* panelBorder = nullptr;
+        D2D1_COLOR_F borderColor = D2D1::ColorF(0.30f, 0.50f, 0.80f, 1.0f); // app blue
+        rt->CreateSolidColorBrush(borderColor, &panelBorder);
+        if (panelBorder)
+        {
+            D2D1_RECT_F panelRect = D2D1::RectF(left_ + 2.0f, contentTop, right_ - 2.0f, contentBottom);
+            D2D1_ANTIALIAS_MODE oldAA = rt->GetAntialiasMode();
+            rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+            rt->DrawRectangle(panelRect, panelBorder, 1.0f);
+
+            if (showOutput_ || showProblems_)
+            {
+                D2D1_RECT_F tabRect = showOutput_ ? outputTabOutline : problemsTabOutline;
+                // cut the panel border under the active tab
+                D2D1_RECT_F cut = D2D1::RectF(tabRect.left - 1.0f, contentBottom - 1.0f,
+                                              tabRect.right + 1.0f, contentBottom + 2.0f);
+                rt->FillRectangle(cut, bg);
+
+                // draw active tab outline, connected to the panel border line
+                float connectY = contentBottom;
+                float leftX = tabRect.left;
+                float rightX = tabRect.right;
+                float bottomY = tabRect.bottom;
+
+                rt->DrawLine(D2D1::Point2F(leftX, connectY),
+                             D2D1::Point2F(leftX, bottomY), panelBorder, 1.0f);
+                rt->DrawLine(D2D1::Point2F(rightX, connectY),
+                             D2D1::Point2F(rightX, bottomY), panelBorder, 1.0f);
+                rt->DrawLine(D2D1::Point2F(leftX, bottomY),
+                             D2D1::Point2F(rightX, bottomY), panelBorder, 1.0f);
+            }
+
+            rt->SetAntialiasMode(oldAA);
+            panelBorder->Release();
         }
     }
 
@@ -826,4 +1127,114 @@ void TerminalPanel::SetProblems(const std::wstring& filePath, const std::vector<
 {
     problemsFilePath_ = filePath;
     problems_ = problems;
+}
+
+void TerminalPanel::ClearOutput()
+{
+    std::lock_guard<std::mutex> lock(outputMutex_);
+    outputLines_.clear();
+    outputBuffer_.clear();
+}
+
+void TerminalPanel::AppendOutputChunk(const std::wstring& text)
+{
+    if (text.empty())
+        return;
+
+    std::lock_guard<std::mutex> lock(outputMutex_);
+    std::wstring normalized;
+    normalized.reserve(text.size());
+    for (size_t i = 0; i < text.size(); ++i)
+    {
+        wchar_t c = text[i];
+        if (c == L'\r')
+        {
+            if (i + 1 < text.size() && text[i + 1] == L'\n')
+                ++i;
+            normalized.push_back(L'\n');
+        }
+        else
+        {
+            normalized.push_back(c);
+        }
+    }
+
+    outputBuffer_.append(normalized);
+
+    size_t pos = 0;
+    while (true)
+    {
+        size_t nl = outputBuffer_.find(L'\n', pos);
+        if (nl == std::wstring::npos)
+            break;
+
+        std::wstring line = outputBuffer_.substr(pos, nl - pos);
+        if (!line.empty() && line.back() == L'\r')
+            line.pop_back();
+
+        outputLines_.push_back(line);
+        pos = nl + 1;
+    }
+
+    if (pos > 0)
+        outputBuffer_.erase(0, pos);
+
+    const size_t kMaxLines = 2000;
+    if (outputLines_.size() > kMaxLines)
+        outputLines_.erase(outputLines_.begin(), outputLines_.begin() + (outputLines_.size() - kMaxLines));
+}
+
+void TerminalPanel::FlushOutputBuffer()
+{
+    std::lock_guard<std::mutex> lock(outputMutex_);
+    if (outputBuffer_.empty())
+        return;
+
+    std::wstring line = outputBuffer_;
+    if (!line.empty() && line.back() == L'\r')
+        line.pop_back();
+    outputLines_.push_back(line);
+    outputBuffer_.clear();
+
+    const size_t kMaxLines = 2000;
+    if (outputLines_.size() > kMaxLines)
+        outputLines_.erase(outputLines_.begin(), outputLines_.begin() + (outputLines_.size() - kMaxLines));
+}
+
+void TerminalPanel::ShowOutput(bool v)
+{
+    showOutput_ = v;
+    if (showOutput_)
+        showProblems_ = false;
+}
+
+bool TerminalPanel::SendCommandToActive(HWND hwnd, const std::wstring& startDir, const std::wstring& command)
+{
+    SetVisible(true);
+    showOutput_ = false;
+    showProblems_ = false;
+
+    EnsureSessionExists(hwnd);
+    TerminalSession* s = ActiveSession();
+    if (!s || !s->IsInitialized())
+    {
+        if (!startDir.empty())
+        {
+            NewTerminal(hwnd, startDir);
+        }
+        else
+        {
+            EnsureActiveInit(hwnd);
+        }
+    }
+
+    s = ActiveSession();
+    if (!s)
+        return false;
+
+    std::string u8 = WideToUtf8(command);
+    if (!u8.empty())
+        s->SendUtf8(u8.data(), (DWORD)u8.size());
+    s->SendUtf8("\r", 1);
+    return true;
 }

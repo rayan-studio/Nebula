@@ -45,11 +45,15 @@ namespace
 
     // Icon mapping cache
     std::unordered_map<std::string, std::string> g_iconMap;
+    std::unordered_map<std::string, std::string> g_folderNameMap;
+    std::unordered_map<std::string, std::string> g_folderNameExpandedMap;
     std::mutex g_iconMapMutex;
     std::atomic<bool> g_iconMapReady{false};
     std::atomic<bool> g_iconMapLoading{false};
+    std::atomic<bool> g_iconCacheDirty{false};
     const std::string g_defaultIconPath = "assets/ressource/icons/document.svg";
-
+    const std::string g_defaultFolderIconPath = "assets/ressource/icons/folder.svg";
+    const std::string g_defaultFolderOpenIconPath = "assets/ressource/icons/folder-open.svg";
 }
 
 // ============================================================================
@@ -87,11 +91,15 @@ static void LoadIconMapBlocking()
     std::wstring jsonPath = L"assets\\ressource\\material-icons.json";
     std::string content = ReadFileToString(jsonPath);
     std::unordered_map<std::string, std::string> local;
+    std::unordered_map<std::string, std::string> folderNames;
+    std::unordered_map<std::string, std::string> folderNamesExpanded;
     if (content.empty())
     {
         {
             std::lock_guard<std::mutex> lk(g_iconMapMutex);
             g_iconMap = std::move(local);
+            g_folderNameMap = std::move(folderNames);
+            g_folderNameExpandedMap = std::move(folderNamesExpanded);
         }
         g_iconMapReady.store(true);
         g_iconMapLoading.store(false);
@@ -117,12 +125,65 @@ static void LoadIconMapBlocking()
         it = m.suffix().first;
     }
 
+    auto ExtractJsonObject = [&](const std::string &key, std::string &out) -> bool
+    {
+        std::string needle = "\"" + key + "\"";
+        size_t pos = content.find(needle);
+        if (pos == std::string::npos)
+            return false;
+        size_t brace = content.find('{', pos + needle.size());
+        if (brace == std::string::npos)
+            return false;
+        int depth = 0;
+        for (size_t i = brace; i < content.size(); ++i)
+        {
+            if (content[i] == '{')
+                ++depth;
+            else if (content[i] == '}')
+            {
+                --depth;
+                if (depth == 0)
+                {
+                    out = content.substr(brace + 1, i - brace - 1);
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+
+    auto ParseNameMap = [&](const std::string &obj, std::unordered_map<std::string, std::string> &target)
+    {
+        if (obj.empty())
+            return;
+        std::regex entry(R"((?:"|')([^"']+)(?:"|')\s*:\s*(?:"|')([^"']+)(?:"|'))");
+        std::smatch mm;
+        auto it2 = obj.cbegin();
+        while (std::regex_search(it2, obj.cend(), mm, entry))
+        {
+            if (mm.size() >= 3)
+                target[mm[1].str()] = mm[2].str();
+            it2 = mm.suffix().first;
+        }
+    };
+
+    std::string folderNamesObj;
+    if (ExtractJsonObject("folderNames", folderNamesObj))
+        ParseNameMap(folderNamesObj, folderNames);
+
+    std::string folderNamesExpandedObj;
+    if (ExtractJsonObject("folderNamesExpanded", folderNamesExpandedObj))
+        ParseNameMap(folderNamesExpandedObj, folderNamesExpanded);
+
     {
         std::lock_guard<std::mutex> lk(g_iconMapMutex);
         g_iconMap = std::move(local);
+        g_folderNameMap = std::move(folderNames);
+        g_folderNameExpandedMap = std::move(folderNamesExpanded);
     }
     g_iconMapReady.store(true);
     g_iconMapLoading.store(false);
+    g_iconCacheDirty.store(true);
     InvalidateMainWindow();
 }
 
@@ -179,6 +240,44 @@ static std::string GetIconPathForExtension(const std::string &ext)
     }
 
     return g_defaultIconPath;
+}
+
+static std::string WStringToUtf8Lower(const std::wstring &input)
+{
+    if (input.empty())
+        return {};
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, input.c_str(), (int)input.size(), NULL, 0, NULL, NULL);
+    if (size_needed <= 0)
+        return {};
+    std::string out(size_needed, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, input.c_str(), (int)input.size(), &out[0], size_needed, NULL, NULL);
+    for (size_t i = 0; i < out.size(); ++i)
+        out[i] = (char)::tolower((unsigned char)out[i]);
+    return out;
+}
+
+static std::string GetFolderIconPath(const std::wstring &name, bool expanded)
+{
+    LoadIconMapIfNeeded(false);
+    if (!g_iconMapReady.load())
+        return expanded ? g_defaultFolderOpenIconPath : g_defaultFolderIconPath;
+
+    std::string key = WStringToUtf8Lower(name);
+    std::lock_guard<std::mutex> lk(g_iconMapMutex);
+    const auto &nameMap = expanded ? g_folderNameExpandedMap : g_folderNameMap;
+    auto it = nameMap.find(key);
+    if (it != nameMap.end())
+    {
+        auto iconIt = g_iconMap.find(it->second);
+        if (iconIt != g_iconMap.end())
+            return "assets/ressource/" + iconIt->second;
+    }
+
+    auto fallback = g_iconMap.find(expanded ? "folder-open" : "folder");
+    if (fallback != g_iconMap.end())
+        return "assets/ressource/" + fallback->second;
+
+    return expanded ? g_defaultFolderOpenIconPath : g_defaultFolderIconPath;
 }
 
 static ID2D1Bitmap *CreateBitmapFromRGBA(ID2D1RenderTarget *ctx, unsigned char *data, int w, int h, float dpi)
@@ -2139,7 +2238,29 @@ void ExplorerManager::OnKeyDownInline(WPARAM key)
 
 ID2D1Bitmap *ExplorerManager::GetIconForItem(ID2D1RenderTarget *ctx, const ExplorerItem &item, HWND hwnd)
 {
-    std::string iconKey = item.isDirectory ? "folder" : item.extension;
+    if (g_iconCacheDirty.exchange(false))
+    {
+        for (auto &pair : iconCache_)
+        {
+            if (pair.second)
+                pair.second->Release();
+        }
+        iconCache_.clear();
+    }
+
+    std::string iconKey;
+    std::string iconPath;
+    if (item.isDirectory)
+    {
+        std::string nameKey = WStringToUtf8Lower(item.name);
+        iconKey = std::string("folder::") + nameKey + (item.expanded ? "::open" : "::closed");
+        iconPath = GetFolderIconPath(item.name, item.expanded);
+    }
+    else
+    {
+        iconKey = item.extension;
+        iconPath = GetIconPathForExtension(iconKey);
+    }
 
     // Check cache
     auto it = iconCache_.find(iconKey);
@@ -2149,7 +2270,6 @@ ID2D1Bitmap *ExplorerManager::GetIconForItem(ID2D1RenderTarget *ctx, const Explo
     }
 
     // Load icon
-    std::string iconPath = GetIconPathForExtension(iconKey);
     if (iconPath.empty())
         return nullptr;
 
@@ -2203,8 +2323,15 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
     D2D1_COLOR_F hoverColor = D2D1::ColorF(30.0f / 255.0f, 30.0f / 255.0f, 30.0f / 255.0f, 1.0f);
     ctx->CreateSolidColorBrush(hoverColor, &hoverBrush);
 
+    ID2D1SolidColorBrush *guideBrush = nullptr;
+    D2D1_COLOR_F guideColor = D2D1::ColorF(42.0f / 255.0f, 42.0f / 255.0f, 42.0f / 255.0f, 0.9f);
+    ctx->CreateSolidColorBrush(guideColor, &guideBrush);
+
     UINT dpi = GetDpiForWindow(hwnd);
     float iconPx = (float)win32_dpi_scale((int)state_.iconSize, dpi);
+    float arrowSize = (float)win32_dpi_scale(12, dpi);
+    float arrowOffset = 2.0f;
+    float folderIconGap = (float)win32_dpi_scale(4, dpi);
 
     // Rounded background constants and helper for crisp rounded fills
     const float corner = 4.0f;           // petit arrondi (réduit)
@@ -2229,6 +2356,54 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
         ctx->SetAntialiasMode(oldAA);
     };
 
+    auto DrawIndentGuides = [&](const ExplorerItem &item, float baseLeft)
+    {
+        if (!guideBrush || item.depth <= 0)
+            return;
+
+        float yTop = std::round(item.yPosition);
+        float yBottom = std::round(item.yPosition + item.height + state_.itemSpacing);
+        for (int level = 0; level < item.depth; ++level)
+        {
+            float gx = std::round(baseLeft + state_.leftPadding + (float)(level * 12) + arrowOffset);
+            ctx->DrawLine(D2D1::Point2F(gx, yTop), D2D1::Point2F(gx, yBottom), guideBrush, 1.0f);
+        }
+    };
+
+    auto DrawChevron = [&](bool expanded, float centerX, float centerY)
+    {
+        std::string key = expanded ? "chevron_up" : "chevron_right";
+        ID2D1Bitmap *chevBmp = nullptr;
+        auto cit = iconCache_.find(key);
+        if (cit != iconCache_.end())
+        {
+            chevBmp = cit->second;
+        }
+        else
+        {
+            std::string assetPath = expanded ? "assets\\ressource\\icons\\chevron-up.svg" : "assets\\ressource\\icons\\chevron-right.svg";
+            ID2D1Bitmap *bmp = LoadSvgIcon(ctx, assetPath, (int)arrowSize, dpi);
+            if (bmp)
+            {
+                iconCache_[key] = bmp;
+                chevBmp = bmp;
+            }
+        }
+
+        if (chevBmp)
+        {
+            float left = centerX - arrowSize * 0.5f;
+            float top = centerY - arrowSize * 0.5f;
+            D2D1_RECT_F dst = D2D1::RectF(left, top, left + arrowSize, top + arrowSize);
+            ctx->DrawBitmap(chevBmp, dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+        }
+    };
+
+    auto GetFolderIconWidth = [&]() -> float
+    {
+        return arrowSize + folderIconGap + iconPx;
+    };
+
     for (size_t i = 0; i < state_.items.size(); ++i)
     {
         const auto &item = state_.items[i];
@@ -2237,7 +2412,7 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
         if (inlineVisible_ && renameTargetIndex_ == (int)i)
         {
             float indent = state_.leftPadding + (float)(item.depth * 12);
-            float iconWidth = item.isDirectory ? (float)win32_dpi_scale(16, dpi) : iconPx;
+            float iconWidth = item.isDirectory ? GetFolderIconWidth() : iconPx;
 
             float baseLeft = state_.leftEdge + insetX;
             float inputLeft = std::round(baseLeft + indent + iconWidth + 6.0f);
@@ -2246,6 +2421,8 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
             float inputHeight = item.height;
 
             inlineRect_ = D2D1::RectF(inputLeft, inputTop, inputLeft + inputWidth, inputTop + inputHeight);
+
+            DrawIndentGuides(item, baseLeft);
 
             // Background
             ID2D1SolidColorBrush *bg = nullptr;
@@ -2268,7 +2445,26 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
             }
 
             // Icon (keep file/folder icon next to rename input)
-            if (!item.isDirectory)
+            if (item.isDirectory)
+            {
+                float iconY = std::round(item.yPosition + item.height * 0.5f);
+                float arrowCenterX = std::round(baseLeft + indent + arrowOffset);
+                DrawChevron(item.expanded, arrowCenterX, iconY);
+
+                ID2D1Bitmap *icon = GetIconForItem(ctx, item, hwnd);
+                if (icon)
+                {
+                    float folderLeft = std::round(arrowCenterX + arrowSize * 0.5f + folderIconGap);
+                    float folderY = std::round(item.yPosition + (item.height - iconPx) * 0.5f);
+                    D2D1_RECT_F iconRect = D2D1::RectF(
+                        folderLeft,
+                        folderY,
+                        folderLeft + iconPx,
+                        folderY + iconPx);
+                    ctx->DrawBitmap(icon, iconRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+                }
+            }
+            else
             {
                 ID2D1Bitmap *icon = GetIconForItem(ctx, item, hwnd);
                 if (icon)
@@ -2379,8 +2575,8 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
             if (inlineVisible_)
             {
                 float indent = state_.leftPadding + (float)(item.depth * 12);
-                float iconWidth = item.isDirectory ? (float)win32_dpi_scale(16, dpi) : iconPx;
-                float iconLeft = std::round(state_.leftEdge + indent);
+                bool isFolderPreview = (inlineType_ == Input::Type::Folder);
+                float iconWidth = isFolderPreview ? GetFolderIconWidth() : iconPx;
 
                 float baseLeft = state_.leftEdge + insetX;
                 float inputLeft = std::round(baseLeft + indent + iconWidth + 6.0f);
@@ -2390,22 +2586,40 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
 
                 inlineRect_ = D2D1::RectF(inputLeft, inputTop, inputLeft + inputWidth, inputTop + inputHeight);
 
+                DrawIndentGuides(item, baseLeft);
+
                 ExplorerItem previewItem;
                 previewItem.name = inlineText_;
                 previewItem.fullPath = inlineText_;
-                previewItem.isDirectory = (inlineType_ == Input::Type::Folder);
+                previewItem.isDirectory = isFolderPreview;
                 if (!previewItem.isDirectory)
                     previewItem.extension = std::filesystem::path(inlineText_).extension().string();
                 ID2D1Bitmap *previewIcon = GetIconForItem(ctx, previewItem, hwnd);
                 if (previewIcon)
                 {
                     float iconY = std::round(item.yPosition + (item.height - iconPx) * 0.5f);
-                    D2D1_RECT_F iconRect = D2D1::RectF(
-                        iconLeft,
-                        iconY,
-                        iconLeft + iconPx,
-                        iconY + iconPx);
-                    ctx->DrawBitmap(previewIcon, iconRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+                    if (isFolderPreview)
+                    {
+                        float arrowCenterX = std::round(baseLeft + indent + arrowOffset);
+                        DrawChevron(false, arrowCenterX, std::round(item.yPosition + item.height * 0.5f));
+                        float folderLeft = std::round(arrowCenterX + arrowSize * 0.5f + folderIconGap);
+                        D2D1_RECT_F iconRect = D2D1::RectF(
+                            folderLeft,
+                            iconY,
+                            folderLeft + iconPx,
+                            iconY + iconPx);
+                        ctx->DrawBitmap(previewIcon, iconRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+                    }
+                    else
+                    {
+                        float iconLeft = std::round(baseLeft + indent);
+                        D2D1_RECT_F iconRect = D2D1::RectF(
+                            iconLeft,
+                            iconY,
+                            iconLeft + iconPx,
+                            iconY + iconPx);
+                        ctx->DrawBitmap(previewIcon, iconRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+                    }
                 }
 
                 // Background
@@ -2601,39 +2815,27 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
         float baseLeft = state_.leftEdge + insetX;
 
         float indent = state_.leftPadding + (float)(item.depth * 12);
-        float iconWidth = item.isDirectory ? (float)win32_dpi_scale(16, dpi) : iconPx;
+        float iconWidth = item.isDirectory ? GetFolderIconWidth() : iconPx;
+
+        DrawIndentGuides(item, baseLeft);
 
         if (item.isDirectory)
         {
-            float arrowSize = (float)win32_dpi_scale(12, dpi);
             float iconY = std::round(item.yPosition + item.height * 0.5f);
-            float iconLeft = std::round(baseLeft + indent + 2.0f);
+            float arrowCenterX = std::round(baseLeft + indent + arrowOffset);
+            DrawChevron(item.expanded, arrowCenterX, iconY);
 
-            std::string key = item.expanded ? "chevron_up" : "chevron_right";
-
-            ID2D1Bitmap *chevBmp = nullptr;
-            auto cit = iconCache_.find(key);
-            if (cit != iconCache_.end())
+            ID2D1Bitmap *icon = GetIconForItem(ctx, item, hwnd);
+            if (icon)
             {
-                chevBmp = cit->second;
-            }
-            else
-            {
-                std::string assetPath = item.expanded ? "assets\\ressource\\icons\\chevron-up.svg" : "assets\\ressource\\icons\\chevron-right.svg";
-                ID2D1Bitmap *bmp = LoadSvgIcon(ctx, assetPath, (int)arrowSize, dpi);
-                if (bmp)
-                {
-                    iconCache_[key] = bmp;
-                    chevBmp = bmp;
-                }
-            }
-
-            if (chevBmp)
-            {
-                float left = iconLeft - arrowSize * 0.5f;
-                float top = iconY - arrowSize * 0.5f;
-                D2D1_RECT_F dst = D2D1::RectF(left, top, left + arrowSize, top + arrowSize);
-                ctx->DrawBitmap(chevBmp, dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+                float folderLeft = std::round(arrowCenterX + arrowSize * 0.5f + folderIconGap);
+                float folderY = std::round(item.yPosition + (item.height - iconPx) * 0.5f);
+                D2D1_RECT_F iconRect = D2D1::RectF(
+                    folderLeft,
+                    folderY,
+                    folderLeft + iconPx,
+                    folderY + iconPx);
+                ctx->DrawBitmap(icon, iconRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
             }
         }
         else
@@ -2676,6 +2878,8 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
         textBrush->Release();
     if (hoverBrush)
         hoverBrush->Release();
+    if (guideBrush)
+        guideBrush->Release();
 }
 
 void ExplorerManager::DrawRightBorder(ID2D1RenderTarget *ctx)

@@ -272,16 +272,17 @@ namespace Orion
             Rendering::GuideStyle guideStyle;
             if (ext == L".html" || ext == L".htm")
             {
-                guideStyle.normalColor = D2D1::ColorF(0.35f, 0.6f, 0.95f, 0.6f);
-                guideStyle.activeColor = D2D1::ColorF(0.2f, 0.6f, 1.0f, 0.7f);
+                guideStyle.normalColor = D2D1::ColorF(0.4f, 0.7f, 1.0f, 0.7f);
+                guideStyle.activeColor = D2D1::ColorF(0.2f, 0.65f, 1.0f, 0.85f);
                 guideStyle.topMargin = 0.06f;
                 guideStyle.bottomMargin = 0.06f;
             }
             else
             {
-                guideStyle.normalColor = D2D1::ColorF(0.3f, 0.3f, 0.35f, 0.5f);
-                guideStyle.activeColor = D2D1::ColorF(0.4f, 0.4f, 0.5f, 0.7f);
+                guideStyle.normalColor = D2D1::ColorF(0.4f, 0.4f, 0.45f, 0.65f);
+                guideStyle.activeColor = D2D1::ColorF(0.5f, 0.5f, 0.6f, 0.8f);
             }
+            guideStyle.lineWidth = 0.75f;
 
             guideRenderer_ = std::make_unique<Rendering::GuideRenderer>(indentConfig, guideStyle);
 

@@ -2,6 +2,7 @@
 #include "helpers/window_helpers.h"
 #include "ui/panels/PanelManager.h"
 #include "core/window/Window.h"
+#include "ui/panels/terminal/TerminalPanel.h"
 #include <d2d1.h>
 #include <dwrite.h>
 #include <windows.h>
@@ -113,6 +114,25 @@ void SidebarRenderer::UpdateItemRects(HWND hwnd)
         itemStates_.push_back(state);
         bottomY = itemTop - spacing_;
     }
+
+    // Output button (always available, above bottom items)
+    {
+        float itemTop = bottomY - itemSize_;
+        float centerY = itemTop + (itemSize_ * 0.5f);
+        outputHitRect_ = D2D1::RectF(
+            sbLeft,
+            itemTop,
+            sbRight,
+            bottomY);
+
+        outputBgRect_ = D2D1::RectF(
+            sbLeft + sidePadding,
+            centerY - (bgSize_ * 0.5f),
+            sbLeft + sidePadding + bgSize_,
+            centerY + (bgSize_ * 0.5f));
+
+        outputVisible_ = (itemTop >= sbTop);
+    }
 }
 
 int SidebarRenderer::HitTest(HWND /*hwnd*/, POINT clientPoint) const
@@ -125,6 +145,14 @@ int SidebarRenderer::HitTest(HWND /*hwnd*/, POINT clientPoint) const
         }
     }
     return -1;
+}
+
+bool SidebarRenderer::HitTestOutput(POINT clientPoint) const
+{
+    if (!outputVisible_)
+        return false;
+    return (clientPoint.x >= outputHitRect_.left && clientPoint.x <= outputHitRect_.right &&
+            clientPoint.y >= outputHitRect_.top && clientPoint.y <= outputHitRect_.bottom);
 }
 
 void SidebarRenderer::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND hwnd)
@@ -244,6 +272,34 @@ void SidebarRenderer::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND 
                           iconFormat, state.hitRect, brush);
         }
     }
+
+    // Output item (terminal logs)
+    if (outputVisible_ && iconFormat) {
+        bool isActiveAndVisible = GetTerminalPanel().IsVisible();
+        ID2D1SolidColorBrush* brush = isActiveAndVisible ? iconActiveBrush :
+                                      (outputHovered_ ? iconHoverBrush : iconNormalBrush);
+
+        if (isActiveAndVisible) {
+            D2D1_ROUNDED_RECT roundedBg = D2D1::RoundedRect(outputBgRect_, 4.0f, 4.0f);
+            ctx->FillRoundedRectangle(roundedBg, activeBgBrush);
+
+            D2D1_ROUNDED_RECT indicator = D2D1::RoundedRect(
+                D2D1::RectF(
+                    outputBgRect_.left,
+                    outputBgRect_.top + 6.0f,
+                    outputBgRect_.left + 2.5f,
+                    outputBgRect_.bottom - 6.0f),
+                1.5f, 1.5f);
+            ctx->FillRoundedRectangle(indicator, indicatorBrush);
+        } else if (outputHovered_) {
+            D2D1_ROUNDED_RECT roundedBg = D2D1::RoundedRect(outputBgRect_, 4.0f, 4.0f);
+            ctx->FillRoundedRectangle(roundedBg, hoverBgBrush);
+        }
+
+        const std::wstring outputIcon = L"\uE756"; // Command Prompt
+        ctx->DrawTextW(outputIcon.c_str(), (UINT32)outputIcon.size(),
+                       iconFormat, outputHitRect_, brush);
+    }
     
     // Always draw the right border of sidebar (divider between sidebar and content area)
     {
@@ -280,6 +336,30 @@ bool SidebarRenderer::HandleLeftClick(HWND hwnd, POINT clientPoint)
         return false;
     
     UpdateItemRects(hwnd);
+    if (HitTestOutput(clientPoint))
+    {
+        TerminalPanel& terminal = GetTerminalPanel();
+        bool isVisible = terminal.IsVisible();
+        bool isOutputVisible = terminal.IsOutputVisible();
+
+        if (isVisible && isOutputVisible)
+        {
+            terminal.SetVisible(false);
+        }
+        else
+        {
+            terminal.SetVisible(true);
+            terminal.ShowOutput(true);
+            terminal.EnsureSessionExists(hwnd);
+            terminal.EnsureActiveInit(hwnd);
+            terminal.SetFocused(true);
+        }
+
+        SetFocus(hwnd);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return true;
+    }
+
     int hitIndex = HitTest(hwnd, clientPoint);
     
     if (hitIndex >= 0 && hitIndex < static_cast<int>(itemStates_.size())) {
@@ -338,13 +418,16 @@ void SidebarRenderer::UpdateHover(HWND hwnd, POINT clientPoint)
     
     int oldHovered = hoveredIndex_;
     hoveredIndex_ = -1;
+    bool prevOutput = outputHovered_;
+    outputHovered_ = false;
     
     if (clientPoint.x >= 0 && clientPoint.x <= sidebarWidth && clientPoint.y >= tbRect.bottom) {
         UpdateItemRects(hwnd);
         hoveredIndex_ = HitTest(hwnd, clientPoint);
+        outputHovered_ = HitTestOutput(clientPoint);
     }
     
-    if (oldHovered != hoveredIndex_) {
+    if (oldHovered != hoveredIndex_ || prevOutput != outputHovered_) {
         InvalidateRect(hwnd, nullptr, FALSE);
     }
 }

@@ -6,7 +6,12 @@
 #include <windows.h>
 #include <wincodec.h>
 #include <algorithm>
+#include <unordered_map>
 #include <cmath>
+
+// Disable min/max macros from Windows headers
+#undef min
+#undef max
 
 // Cache global pour l'icône
 static ID2D1Bitmap *g_iconBitmap = nullptr;
@@ -17,6 +22,61 @@ static MenuDropdown g_activeDropdown = {-1, std::vector<std::wstring>(), std::ve
     std::vector<bool>(), std::vector<bool>(), D2D1::RectF(), -1, false, 0, std::vector<bool>()};
 static MenuDropdown g_subDropdown = {-1, std::vector<std::wstring>(), std::vector<std::wstring>(), std::vector<wchar_t>(),
     std::vector<bool>(), std::vector<bool>(), D2D1::RectF(), -1, false, 0, std::vector<bool>()};
+static std::unordered_map<std::string, ID2D1Bitmap *> g_contextIconCache;
+static ID2D1RenderTarget *g_contextIconCtx = nullptr;
+
+static void ClearContextIconCache()
+{
+    for (auto &pair : g_contextIconCache)
+    {
+        if (pair.second)
+            pair.second->Release();
+    }
+    g_contextIconCache.clear();
+}
+
+static std::string ContextMenuIconPathForLabel(const std::wstring &label)
+{
+    if (label.find(L"Open Folder") != std::wstring::npos)
+        return "assets/ressource/icons/folder-open.svg";
+    if (label.find(L"Open File") != std::wstring::npos)
+        return "assets/ressource/icons/document.svg";
+    if (label.find(L"Copy Path") != std::wstring::npos)
+        return "assets/ressource/icons/folder-link-open.svg";
+    if (label.find(L"Duplicate") != std::wstring::npos)
+        return "assets/ressource/icons/folder-template-open.svg";
+    if (label.find(L"Rename") != std::wstring::npos)
+        return "assets/ressource/icons/folder-tools-open.svg";
+    if (label.find(L"Delete") != std::wstring::npos)
+        return "assets/ressource/icons/folder-trash.svg";
+    if (label.find(L"Renommer") != std::wstring::npos)
+        return "assets/ressource/icons/folder-tools-open.svg";
+    if (label.find(L"Supprimer") != std::wstring::npos)
+        return "assets/ressource/icons/folder-trash.svg";
+    return {};
+}
+
+static ID2D1Bitmap *GetContextMenuIconBitmap(ID2D1RenderTarget *ctx, const std::string &path, int pxSize, UINT dpi)
+{
+    if (!ctx || path.empty())
+        return nullptr;
+
+    if (g_contextIconCtx != ctx)
+    {
+        ClearContextIconCache();
+        g_contextIconCtx = ctx;
+    }
+
+    std::string key = path + "|" + std::to_string(pxSize) + "|" + std::to_string(dpi);
+    auto it = g_contextIconCache.find(key);
+    if (it != g_contextIconCache.end())
+        return it->second;
+
+    ID2D1Bitmap *bmp = GetExplorerManager().LoadSvgIconPublic(ctx, path, pxSize, dpi);
+    if (bmp)
+        g_contextIconCache[key] = bmp;
+    return bmp;
+}
 
 // Helper pour charger l'icône
 static ID2D1Bitmap *LoadIconBitmap(ID2D1RenderTarget *ctx, const wchar_t *filename)
@@ -818,6 +878,215 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
     if (!g_activeDropdown.visible || !ctx)
         return;
 
+    if (g_activeDropdown.menuIndex == -1)
+    {
+        D2D1_RECT_F r = g_activeDropdown.rect;
+        r = D2D1::RectF(std::round(r.left), std::round(r.top), std::round(r.right), std::round(r.bottom));
+        g_activeDropdown.rect = r;
+
+        ID2D1SolidColorBrush *shadowBrush = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.18f), &shadowBrush);
+        ID2D1SolidColorBrush *bgBrush = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0x2b2b2b), &bgBrush);
+        ID2D1SolidColorBrush *borderBrush = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0x3a3a3a), &borderBrush);
+        ID2D1SolidColorBrush *hoverBrush = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0x3f3f3f), &hoverBrush);
+        ID2D1SolidColorBrush *textBrush = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0xe8e8e8), &textBrush);
+        ID2D1SolidColorBrush *disabledBrush = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0x8a8a8a), &disabledBrush);
+
+        IDWriteTextFormat *textFormat = nullptr;
+        if (dwrite)
+        {
+            dwrite->CreateTextFormat(
+                L"Segoe UI Variable Text",
+                NULL,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                13.0f,
+                L"en-us",
+                &textFormat);
+            if (!textFormat)
+            {
+                dwrite->CreateTextFormat(
+                    L"Segoe UI",
+                    NULL,
+                    DWRITE_FONT_WEIGHT_NORMAL,
+                    DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    13.0f,
+                    L"en-us",
+                    &textFormat);
+            }
+
+            if (textFormat)
+            {
+                textFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                textFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            }
+        }
+
+        const float itemHeight = (r.bottom - r.top) / (g_activeDropdown.items.empty() ? 1.0f : (float)g_activeDropdown.items.size());
+        const float iconSize = 16.0f;
+        const float iconColumnWidth = 26.0f;
+        const float leftPad = 6.0f;
+        const float rightPad = 12.0f;
+        const float minWidth = 220.0f;
+        const float maxWidth = 380.0f;
+
+        if (textFormat && dwrite)
+        {
+            float maxTextWidth = 0.0f;
+            for (const auto &label : g_activeDropdown.items)
+            {
+                IDWriteTextLayout *layout = nullptr;
+                if (SUCCEEDED(dwrite->CreateTextLayout(label.c_str(), (UINT32)label.size(), textFormat, 1000.0f, itemHeight, &layout)) && layout)
+                {
+                    DWRITE_TEXT_METRICS metrics;
+                    layout->GetMetrics(&metrics);
+                    maxTextWidth = std::max(maxTextWidth, metrics.widthIncludingTrailingWhitespace);
+                    layout->Release();
+                }
+            }
+
+            float desiredWidth = maxTextWidth + iconColumnWidth + leftPad + rightPad;
+            if (desiredWidth < minWidth)
+                desiredWidth = minWidth;
+            if (desiredWidth > maxWidth)
+                desiredWidth = maxWidth;
+            float currentWidth = r.right - r.left;
+            if ((currentWidth - desiredWidth > 0.5f) || (desiredWidth - currentWidth > 0.5f))
+            {
+                r.right = r.left + desiredWidth;
+                g_activeDropdown.rect = r;
+            }
+        }
+
+        D2D1_ROUNDED_RECT shadowRounded = D2D1::RoundedRect(
+            D2D1::RectF(r.left + 1.0f, r.top + 1.0f, r.right + 1.0f, r.bottom + 1.0f),
+            4.0f, 4.0f);
+        if (shadowBrush)
+            ctx->FillRoundedRectangle(shadowRounded, shadowBrush);
+
+        D2D1_ROUNDED_RECT bgRounded = D2D1::RoundedRect(r, 4.0f, 4.0f);
+        if (bgBrush)
+            ctx->FillRoundedRectangle(bgRounded, bgBrush);
+        if (borderBrush)
+        {
+            D2D1_ROUNDED_RECT borderRounded = D2D1::RoundedRect(
+                D2D1::RectF(r.left + 0.5f, r.top + 0.5f, r.right - 0.5f, r.bottom - 0.5f),
+                3.5f, 3.5f);
+            ctx->DrawRoundedRectangle(borderRounded, borderBrush, 1.0f);
+        }
+
+        for (size_t i = 0; i < g_activeDropdown.items.size(); i++)
+        {
+            D2D1_RECT_F itemRect = D2D1::RectF(
+                r.left,
+                r.top + i * itemHeight,
+                r.right,
+                r.top + (i + 1) * itemHeight);
+
+            bool isEnabled = true;
+            if (!g_activeDropdown.enabled.empty() && i < g_activeDropdown.enabled.size())
+                isEnabled = g_activeDropdown.enabled[i];
+            bool isSeparator = (!g_activeDropdown.separators.empty() && i < g_activeDropdown.separators.size() && g_activeDropdown.separators[i]);
+
+            if (isSeparator)
+            {
+                float y = std::floor(itemRect.top + itemHeight * 0.5f) + 0.5f;
+                ID2D1SolidColorBrush *sepBrush = nullptr;
+                ctx->CreateSolidColorBrush(D2D1::ColorF(0x3a3a3a), &sepBrush);
+                if (sepBrush)
+                {
+                    ctx->DrawLine(D2D1::Point2F(itemRect.left + 10.0f, y),
+                                  D2D1::Point2F(itemRect.right - 10.0f, y), sepBrush, 1.0f);
+                    sepBrush->Release();
+                }
+                continue;
+            }
+
+            if (isEnabled && (int)i == g_activeDropdown.hoveredItem)
+            {
+                D2D1_RECT_F hoverRect = D2D1::RectF(
+                    itemRect.left + 4.0f, itemRect.top + 2.0f,
+                    itemRect.right - 4.0f, itemRect.bottom - 2.0f);
+                D2D1_ROUNDED_RECT hoverRounded = D2D1::RoundedRect(hoverRect, 3.0f, 3.0f);
+                if (hoverBrush)
+                    ctx->FillRoundedRectangle(hoverRounded, hoverBrush);
+            }
+
+            if (textFormat)
+            {
+                D2D1_RECT_F textRect = D2D1::RectF(itemRect.left + iconColumnWidth + leftPad, itemRect.top,
+                                                   itemRect.right - rightPad, itemRect.bottom);
+                ID2D1SolidColorBrush *brushToUse = isEnabled ? textBrush : disabledBrush;
+
+                std::string iconPath = ContextMenuIconPathForLabel(g_activeDropdown.items[i]);
+                if (!iconPath.empty())
+                {
+                    UINT dpi = 96;
+                    if (ctx)
+                    {
+                        FLOAT dpiX = 96.0f, dpiY = 96.0f;
+                        ctx->GetDpi(&dpiX, &dpiY);
+                        dpi = (UINT)dpiX;
+                    }
+
+                    ID2D1Bitmap *iconBmp = GetContextMenuIconBitmap(ctx, iconPath, (int)iconSize, dpi);
+                    if (iconBmp)
+                    {
+                        float iconLeft = itemRect.left + 6.0f;
+                        float iconTop = std::round(itemRect.top + (itemHeight - iconSize) * 0.5f);
+                        D2D1_RECT_F iconRect = D2D1::RectF(
+                            std::round(iconLeft),
+                            iconTop,
+                            std::round(iconLeft + iconSize),
+                            iconTop + iconSize);
+                        ctx->DrawBitmap(iconBmp, iconRect, isEnabled ? 1.0f : 0.55f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                    }
+                }
+
+                IDWriteTextLayout *labelLayout = nullptr;
+                dwrite->CreateTextLayout(g_activeDropdown.items[i].c_str(), (UINT32)g_activeDropdown.items[i].size(),
+                                         textFormat, textRect.right - textRect.left, itemHeight, &labelLayout);
+                if (labelLayout)
+                {
+                    labelLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                    DWRITE_TRIMMING trimming = {};
+                    trimming.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
+                    IDWriteInlineObject *ellipsis = nullptr;
+                    if (SUCCEEDED(dwrite->CreateEllipsisTrimmingSign(textFormat, &ellipsis)))
+                    {
+                        labelLayout->SetTrimming(&trimming, ellipsis);
+                        ellipsis->Release();
+                    }
+                    ctx->DrawTextLayout(D2D1::Point2F(textRect.left, textRect.top), labelLayout, brushToUse);
+                    labelLayout->Release();
+                }
+            }
+        }
+
+        if (textFormat)
+            textFormat->Release();
+        if (textBrush)
+            textBrush->Release();
+        if (disabledBrush)
+            disabledBrush->Release();
+        if (hoverBrush)
+            hoverBrush->Release();
+        if (borderBrush)
+            borderBrush->Release();
+        if (bgBrush)
+            bgBrush->Release();
+        if (shadowBrush)
+            shadowBrush->Release();
+        return;
+    }
+
     D2D1_RECT_F r = g_activeDropdown.rect;
 
     // VS Code style: flat dark panel, subtle border, minimal radius
@@ -1131,12 +1400,16 @@ void ShowContextMenuDropdown(HWND hwnd, const std::vector<std::wstring> &items, 
     g_activeDropdown.visible = true;
     g_activeDropdown.hoveredItem = -1;
     g_activeDropdown.items = items;
+    g_activeDropdown.shortcuts.clear();
+    g_activeDropdown.icons.clear();
+    g_activeDropdown.separators.clear();
+    g_activeDropdown.hasSubmenu.clear();
     g_activeDropdown.baseId = baseId;
     g_activeDropdown.enabled.clear();
     g_activeDropdown.enabled.resize(items.size(), true);
 
-    float itemHeight = 34.0f;
-    float width = 236.0f;
+    float itemHeight = 28.0f;
+    float width = 240.0f;
     float height = itemHeight * items.size();
 
     g_activeDropdown.rect = D2D1::RectF(

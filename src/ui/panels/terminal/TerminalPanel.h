@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <mutex>
 
 // Scrollbar (toujours dispo si besoin ailleurs)
 #include "ui/components/scrollbar/Scrollbar.h"
@@ -87,6 +88,15 @@ public:
     void Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite);
     void Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwnd);
     void SetProblems(const std::wstring& filePath, const std::vector<ProblemItem>& problems);
+    void ClearOutput();
+    void AppendOutputChunk(const std::wstring& text);
+    void FlushOutputBuffer();
+    void ShowOutput(bool v);
+    bool IsOutputVisible() const { return showOutput_; }
+    size_t GetOutputLineCount() const { return outputLines_.size(); }
+
+    // Run a command in the active terminal session (Nebula Dev Shell).
+    bool SendCommandToActive(HWND hwnd, const std::wstring& startDir, const std::wstring& command);
 
     // Font
     void SetFont(const std::wstring& family, float sizePx);
@@ -102,8 +112,10 @@ private:
     RECT  TabsBarRectClient() const;
     RECT  PlusButtonRectClient() const;
     RECT  ProblemsButtonRectClient() const;
+    RECT  OutputButtonRectClient() const;
     bool  HitTestPlus(POINT pt) const;
     bool  HitTestProblems(POINT pt) const;
+    bool  HitTestOutput(POINT pt) const;
     bool  IsPointInTabsBar(POINT pt) const;
     float TabsBarRightEdge() const;
 
@@ -153,11 +165,17 @@ private:
     // Tabs hover
     bool hoveredPlus_ = false;
     bool hoveredProblems_ = false;
+    bool hoveredOutput_ = false;
     bool showProblems_ = false;
+    bool showOutput_ = false;
 
     TabBar tabBar_;
     std::vector<ProblemItem> problems_;
     std::wstring problemsFilePath_;
+
+    std::vector<std::wstring> outputLines_;
+    std::wstring outputBuffer_;
+    std::mutex outputMutex_;
 };
 
 // Global accessor

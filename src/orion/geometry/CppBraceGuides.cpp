@@ -36,6 +36,8 @@ namespace Orion::Geometry
         bool inBlockComment = false;
         bool inString = false;
         bool inChar = false;
+        bool inRawString = false;
+        std::wstring rawDelim;
         bool escape = false;
 
         std::vector<OpenBrace> stack;
@@ -69,6 +71,30 @@ namespace Orion::Geometry
 
                     if (inLineComment)
                         break;
+
+                    if (inRawString)
+                    {
+                        if (c == L')')
+                        {
+                            bool match = true;
+                            for (size_t k = 0; k < rawDelim.size(); ++k)
+                            {
+                                if ((i + 1 + k) >= L.size() || L[i + 1 + k] != rawDelim[k])
+                                {
+                                    match = false;
+                                    break;
+                                }
+                            }
+                            size_t endIdx = i + 1 + rawDelim.size();
+                            if (match && endIdx < L.size() && L[endIdx] == L'"')
+                            {
+                                inRawString = false;
+                                rawDelim.clear();
+                                i = endIdx;
+                            }
+                        }
+                        continue;
+                    }
 
                     if (inBlockComment)
                     {
@@ -108,6 +134,19 @@ namespace Orion::Geometry
                         continue;
                     }
 
+                    if (c == L'R' && n == L'"')
+                    {
+                        size_t start = i + 2;
+                        size_t openPos = L.find(L'(', start);
+                        if (openPos != std::wstring::npos)
+                        {
+                            rawDelim = L.substr(start, openPos - start);
+                            inRawString = true;
+                            i = openPos;
+                            continue;
+                        }
+                    }
+
                     if (c == L'"')
                     {
                         inString = true;
@@ -121,7 +160,7 @@ namespace Orion::Geometry
                         continue;
                     }
 
-                    if (c == L'{' || c == L'(' || c == L'[')
+                    if (c == L'{')
                     {
                         int braceVc = 0;
                         for (size_t k = 0; k < i; ++k)
@@ -136,17 +175,6 @@ namespace Orion::Geometry
                             indentVc = AdvanceVisual(indentVc, L[k]);
                         }
 
-                        // If brace is inline after code, guide should align with inner block indent.
-                        bool inlineBrace = false;
-                        for (size_t k = 0; k < i; ++k)
-                        {
-                            if (!iswspace(L[k]))
-                            {
-                                inlineBrace = true;
-                                break;
-                            }
-                        }
-
                         // Place guide at the block's base indent (VS-like for multi-line pairs).
                         int guideVc = indentVc;
                         if (guideVc < 0)
@@ -154,12 +182,12 @@ namespace Orion::Geometry
 
                         stack.push_back(OpenBrace{li, guideVc, c});
                     }
-                    else if (c == L'}' || c == L')' || c == L']')
+                    else if (c == L'}')
                     {
                         if (!stack.empty())
                         {
                             // Pop until we find a matching kind
-                            wchar_t expected = (c == L'}') ? L'{' : (c == L')') ? L'(' : L'[';
+                            wchar_t expected = L'{';
                             OpenBrace ob = {};
                             bool found = false;
                             for (int s = (int)stack.size() - 1; s >= 0; --s)

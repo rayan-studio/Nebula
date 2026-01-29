@@ -30,6 +30,8 @@ public:
     // Input
     void OnChar(wchar_t ch);
     void OnKeyDown(WPARAM vk);
+    void SendUtf8(const char* bytes, DWORD len);
+    void SendText(const std::wstring& text);
 
     // PTY feed (appelé depuis Window via TerminalPanel::HandleConPTYOutput)
     void HandleConPTYOutput(const char* data, size_t len);
