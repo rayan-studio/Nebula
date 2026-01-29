@@ -986,13 +986,12 @@ static std::wstring BuildRunNewestExeCommand(const std::filesystem::path &root)
         pos += 2;
     }
 
-    std::wstring ps = L"powershell -NoProfile -ExecutionPolicy Bypass -Command \"";
+    std::wstring ps;
     ps += L"$dir='" + dir + L"'; ";
     ps += L"$exe=Get-ChildItem -Path $dir -Recurse -Filter *.exe -File | ";
     ps += L"Where-Object { $_.Name -notmatch 'cmake' } | ";
     ps += L"Sort-Object LastWriteTime -Desc | Select-Object -First 1; ";
     ps += L"if ($exe) { & $exe.FullName } else { Write-Host 'Aucun executable trouve apres compilation.' }";
-    ps += L"\"";
     return ps;
 }
 
@@ -1856,27 +1855,68 @@ void Window::RunActiveProject()
     const bool keepConsoleOpen = (projType == "cpp-console");
     const bool useNinja = hasToolchain;
 
-    std::thread([rootPath, hwnd = hwnd_, keepConsoleOpen, envBlock, useNinja]()
+    // Prefer a valid system CMake when the toolchain CMake is missing its share/ directory.
+    std::wstring systemCMake = L"C:\\Program Files\\CMake\\bin\\cmake.exe";
+    std::wstring systemCMakeX86 = L"C:\\Program Files (x86)\\CMake\\bin\\cmake.exe";
+    std::wstring cmakeExe;
+    if (hasToolchain)
+    {
+        std::error_code ec2;
+        if (!tc.cmakeBin.empty())
+        {
+            std::filesystem::path cmakeBin = tc.cmakeBin;
+            std::filesystem::path cmakePath = cmakeBin / "cmake.exe";
+            std::filesystem::path shareDir = cmakeBin.parent_path() / "share";
+            bool hasShare = false;
+            if (std::filesystem::exists(shareDir, ec2))
+            {
+                for (const auto &entry : std::filesystem::directory_iterator(shareDir, ec2))
+                {
+                    if (!entry.is_directory(ec2))
+                        continue;
+                    std::wstring name = entry.path().filename().wstring();
+                    if (name.rfind(L"cmake-", 0) == 0)
+                    {
+                        hasShare = true;
+                        break;
+                    }
+                }
+            }
+            if (std::filesystem::exists(cmakePath, ec2) && hasShare)
+                cmakeExe = cmakePath.wstring();
+        }
+    }
+    if (cmakeExe.empty())
+    {
+        std::error_code ec3;
+        if (std::filesystem::exists(systemCMake, ec3))
+            cmakeExe = systemCMake;
+        else if (std::filesystem::exists(systemCMakeX86, ec3))
+            cmakeExe = systemCMakeX86;
+    }
+
+    std::thread([rootPath, hwnd = hwnd_, keepConsoleOpen, envBlock, useNinja, cmakeExe]()
     {
         Logger::Instance().Log(L"Run: CMake configure/build started.");
 
         std::filesystem::path buildDir = rootPath / (useNinja ? "build-ninja" : "build");
         DWORD exitCode = 0;
-        std::wstring configureCmd = L"cmake -S " + QuotePath(rootPath) + L" -B " + QuotePath(buildDir);
+        std::wstring cmakeCmd = cmakeExe.empty() ? L"cmake" : QuotePath(cmakeExe);
+        std::wstring configureCmd = cmakeCmd + L" -S " + QuotePath(rootPath) + L" -B " + QuotePath(buildDir);
         if (useNinja)
             configureCmd += L" -G \"Ninja\" -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++";
 
-        std::wstring buildCmd = L"cmake --build " + QuotePath(buildDir);
+        std::wstring buildCmd = cmakeCmd + L" --build " + QuotePath(buildDir);
         if (!useNinja)
             buildCmd += L" --config Release";
         std::wstring runCmd = BuildRunNewestExeCommand(buildDir);
-        std::wstring fullCmd = L"cmd /C \""
-            + EscapeForCmdQuoted(configureCmd)
-            + L" && "
-            + EscapeForCmdQuoted(buildCmd)
-            + L" && "
-            + EscapeForCmdQuoted(runCmd)
-            + L"\"";
+        std::wstring fullCmd;
+        fullCmd += L"$env:CMAKE_ROOT=''; ";
+        fullCmd += configureCmd;
+        fullCmd += L"; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; ";
+        fullCmd += buildCmd;
+        fullCmd += L"; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; ";
+        fullCmd += runCmd;
 
         TerminalPanel &terminal = GetTerminalPanel();
         if (!terminal.SendCommandToActive(hwnd, rootPath.wstring(), fullCmd))
@@ -2547,6 +2587,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 HideSubmenuDropdown(hwnd_);
                 HideMenuDropdown(hwnd_);
                 InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
             }
             else
             {
@@ -3817,6 +3858,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                     SetCursor(LoadCursor(NULL, IDC_ARROW));
                     return TRUE;
                 }
+            }
+
+            // Terminal resize zone (vertical)
+            TerminalPanel &terminal = GetTerminalPanel();
+            if (terminal.IsVisible() && terminal.IsPointInResizeZone(pt))
+            {
+                SetCursor(LoadCursor(NULL, IDC_SIZENS));
+                return TRUE;
             }
 
             // Zone de l'Ã©diteur : curseur texte

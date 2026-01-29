@@ -757,6 +757,8 @@ bool TerminalSession::OnLeftButtonUp()
         return false;
 
     selecting_ = false;
+    if (selectionStartRow_ == selectionEndRow_ && selectionStartCol_ == selectionEndCol_)
+        hasSelection_ = false;
     return true;
 }
 

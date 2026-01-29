@@ -114,7 +114,7 @@ private:
     float charW_ = 8.0f;
     float lineH_ = 16.0f;
     float padX_ = 10.0f;
-    float padY_ = 8.0f;
+    float padY_ = 14.0f;
 
     // Scroll state
     bool userScrolling_ = false;
