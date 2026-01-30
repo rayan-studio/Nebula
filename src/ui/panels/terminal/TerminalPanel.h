@@ -73,6 +73,7 @@ public:
     bool IsPointInResizeZone(POINT pt) const;
     bool IsPointInTabsBarArea(POINT pt) const;
     bool IsPointInPlusButton(POINT pt) const;
+    bool IsShowingOutputOrProblems() const { return showOutput_ || showProblems_; }
 
     // Mouse
     void OnLeftButtonDown(HWND hwnd, POINT pt);

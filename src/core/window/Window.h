@@ -19,6 +19,7 @@ static constexpr UINT WM_EDITOR_FILE_RENAMED = WM_USER + 778;
 static constexpr UINT WM_OPEN_SETTINGS = WM_USER + 779;
 static constexpr UINT WM_LSP_DIAGNOSTICS = WM_USER + 780;
 static constexpr UINT WM_OPEN_NEW_PROJECT = WM_USER + 781;
+static constexpr UINT WM_SHOW_RUN_ERROR_POPUP = WM_USER + 782;
 
 struct RenamePathPayload
 {

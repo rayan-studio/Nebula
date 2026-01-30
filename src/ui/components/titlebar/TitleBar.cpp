@@ -56,6 +56,57 @@ static std::string ContextMenuIconPathForLabel(const std::wstring &label)
     return {};
 }
 
+static std::string TitleBarMenuIconPathForLabel(const std::wstring &label)
+{
+    if (label == L"File")
+        return "assets/ressource/icons/folder-open.svg";
+    if (label == L"Edit")
+        return "assets/ressource/icons/editorconfig.svg";
+    if (label == L"Selection")
+        return "assets/ressource/icons/search.svg";
+    if (label == L"View")
+        return "assets/ressource/icons/folder-view-open.svg";
+    if (label == L"Go")
+        return "assets/ressource/icons/folder-link-open.svg";
+    if (label == L"Run")
+        return "assets/ressource/icons/playwright.svg";
+    if (label == L"Help")
+        return "assets/ressource/icons/folder-helper-open.svg";
+    return {};
+}
+
+static std::string MenuDropdownIconPathForLabel(const std::wstring &label)
+{
+    if (label == L"New") return "assets/ressource/icons/document.svg";
+    if (label == L"New Window") return "assets/ressource/icons/folder-desktop-open.svg";
+    if (label == L"Open..." || label == L"Open Project") return "assets/ressource/icons/folder-open.svg";
+    if (label == L"Open Recent") return "assets/ressource/icons/folder-log-open.svg";
+    if (label == L"Close") return "assets/ressource/icons/folder-archive-open.svg";
+    if (label == L"Undo" || label == L"Redo") return "assets/ressource/icons/folder-backup-open.svg";
+    if (label == L"Cut" || label == L"Copy" || label == L"Paste" || label == L"Paste Without Formatting")
+        return "assets/ressource/icons/folder-content-open.svg";
+    if (label == L"Delete") return "assets/ressource/icons/folder-trash.svg";
+    if (label == L"Select All") return "assets/ressource/icons/folder-keys-open.svg";
+    if (label == L"Find" || label == L"Find in Files") return "assets/ressource/icons/search.svg";
+    if (label == L"Replace" || label == L"Replace in Files") return "assets/ressource/icons/folder-tools-open.svg";
+    if (label == L"Toggle Comment" || label == L"Format Document") return "assets/ressource/icons/folder-tools-open.svg";
+    if (label == L"New Terminal") return "assets/ressource/icons/folder-console-open.svg";
+    if (label == L"Command Palette") return "assets/ressource/icons/folder-command-open.svg";
+    if (label == L"Open View") return "assets/ressource/icons/folder-views-open.svg";
+    if (label == L"Toggle Sidebar") return "assets/ressource/icons/folder-layout-open.svg";
+    if (label == L"Show Extensions") return "assets/ressource/icons/folder-plugin-open.svg";
+    if (label == L"Keyboard Shortcuts") return "assets/ressource/icons/folder-keys-open.svg";
+    if (label == L"Go to File" || label == L"Go to Line" || label == L"Go to Symbol" || label == L"Go to Definition")
+        return "assets/ressource/icons/folder-link-open.svg";
+    if (label == L"Start Debugging" || label == L"Run" || label == L"Restart Debugging")
+        return "assets/ressource/icons/playwright.svg";
+    if (label == L"Stop") return "assets/ressource/icons/folder-stop-open.svg";
+    if (label == L"Step Over" || label == L"Step Into") return "assets/ressource/icons/folder-debug-open.svg";
+    if (label == L"Welcome" || label == L"Documentation" || label == L"About" || label == L"Release Notes" || label == L"Report Issue")
+        return "assets/ressource/icons/folder-helper-open.svg";
+    return {};
+}
+
 static ID2D1Bitmap *GetContextMenuIconBitmap(ID2D1RenderTarget *ctx, const std::string &path, int pxSize, UINT dpi)
 {
     if (!ctx || path.empty())
@@ -931,8 +982,9 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
 
         const float itemHeight = (r.bottom - r.top) / (g_activeDropdown.items.empty() ? 1.0f : (float)g_activeDropdown.items.size());
         const float iconSize = 16.0f;
-        const float iconColumnWidth = 26.0f;
-        const float leftPad = 6.0f;
+        const bool drawIcons = (g_activeDropdown.baseId >= 5000 && g_activeDropdown.baseId < 6000);
+        const float iconColumnWidth = drawIcons ? 26.0f : 0.0f;
+        const float leftPad = drawIcons ? 6.0f : 12.0f;
         const float rightPad = 12.0f;
         const float minWidth = 220.0f;
         const float maxWidth = 380.0f;
@@ -1026,7 +1078,7 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
                 ID2D1SolidColorBrush *brushToUse = isEnabled ? textBrush : disabledBrush;
 
                 std::string iconPath = ContextMenuIconPathForLabel(g_activeDropdown.items[i]);
-                if (!iconPath.empty())
+                if (drawIcons && !iconPath.empty())
                 {
                     UINT dpi = 96;
                     if (ctx)
@@ -1144,6 +1196,9 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
     }
 
     float itemHeight = (r.bottom - r.top) / (g_activeDropdown.items.empty() ? 1.0f : (float)g_activeDropdown.items.size());
+    const float iconSize = 14.0f;
+    const float iconPad = 10.0f;
+    const float textPadLeft = 8.0f;
 
     for (size_t i = 0; i < g_activeDropdown.items.size(); i++)
     {
@@ -1182,15 +1237,39 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
 
         if (textFormat)
         {
-            const float iconPad = 12.0f;
             const float rightPad = 12.0f;
             const float shortcutGap = 14.0f;
             D2D1_RECT_F shortcutRect = D2D1::RectF(itemRect.right - 78.0f, itemRect.top,
                                                    itemRect.right - rightPad, itemRect.bottom);
-            D2D1_RECT_F textRect = D2D1::RectF(itemRect.left + iconPad, itemRect.top,
+            D2D1_RECT_F textRect = D2D1::RectF(itemRect.left + iconPad + iconSize + textPadLeft, itemRect.top,
                                                shortcutRect.left - shortcutGap, itemRect.bottom);
 
             ID2D1SolidColorBrush *brushToUse = isEnabled ? textBrush : disabledBrush;
+
+            std::string iconPath = MenuDropdownIconPathForLabel(g_activeDropdown.items[i]);
+            if (!iconPath.empty())
+            {
+                UINT dpi = 96;
+                if (ctx)
+                {
+                    FLOAT dpiX = 96.0f, dpiY = 96.0f;
+                    ctx->GetDpi(&dpiX, &dpiY);
+                    dpi = (UINT)dpiX;
+                }
+
+                ID2D1Bitmap *iconBmp = GetContextMenuIconBitmap(ctx, iconPath, (int)iconSize, dpi);
+                if (iconBmp)
+                {
+                    float iconLeft = itemRect.left + iconPad;
+                    float iconTop = std::round(itemRect.top + (itemHeight - iconSize) * 0.5f);
+                    D2D1_RECT_F iconRect = D2D1::RectF(
+                        std::round(iconLeft),
+                        iconTop,
+                        std::round(iconLeft + iconSize),
+                        iconTop + iconSize);
+                    ctx->DrawBitmap(iconBmp, iconRect, isEnabled ? 1.0f : 0.55f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                }
+            }
 
             // Label with ellipsis
             IDWriteTextLayout *labelLayout = nullptr;

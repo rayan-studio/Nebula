@@ -1,6 +1,7 @@
 #include "ExplorerPanel.h"
 #include "core/explorer/Explorer.h"
 #include "utils/logger/Logger.h"
+#include "ui/panels/terminal/TerminalPanel.h"
 
 // ============================================================================
 // ExplorerPanel - Wrapper around existing ExplorerManager
@@ -63,6 +64,14 @@ void ExplorerPanel::UpdateLayout(HWND hwnd)
 
 void ExplorerPanel::OnMouseMove(HWND hwnd, POINT clientPoint)
 {
+    // If the terminal panel is visible and the point is inside it, ignore explorer hover.
+    TerminalPanel &terminal = GetTerminalPanel();
+    if (terminal.IsVisible() && terminal.IsPointInPanel(clientPoint))
+    {
+        GetExplorerManager().ClearHover(hwnd);
+        return;
+    }
+
     // Sync state from ExplorerManager (so resize zone check works)
     auto& expState = GetExplorerManager().GetState();
     visible_ = GetExplorerManager().IsVisible();
@@ -200,6 +209,9 @@ bool ExplorerPanel::IsVisible() const
 
 bool ExplorerPanel::IsPointInPanel(POINT clientPoint) const
 {
+    TerminalPanel &terminal = GetTerminalPanel();
+    if (terminal.IsVisible() && terminal.IsPointInPanel(clientPoint))
+        return false;
     return GetExplorerManager().IsPointInExplorer(clientPoint);
 }
 

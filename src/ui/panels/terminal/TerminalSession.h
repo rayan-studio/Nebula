@@ -123,6 +123,7 @@ private:
 
     bool selecting_ = false;
     bool hasSelection_ = false;
+    bool pendingSelection_ = false;
     int selectionStartRow_ = 0;
     int selectionStartCol_ = 0;
     int selectionEndRow_ = 0;

@@ -669,13 +669,25 @@ void TerminalSession::HandleConPTYOutput(const char* data, size_t len)
     if (!data || len == 0) return;
     if (!vt_ || !screen_) return;
 
+    float viewportH = std::max(0.0f, bottom_ - top_);
+    float oldContentHeight = padY_ * 2.0f + (float)((int)scrollback_.size() + rows_) * lineH_;
+    float oldMaxScroll = std::max(0.0f, oldContentHeight - viewportH);
+    bool wasAtBottom = (scrollbar_.GetScrollOffset() >= oldMaxScroll - 1.0f);
+
     vterm_input_write(vt_, data, (int)len);
     vterm_screen_flush_damage(screen_);
 
     hasDamage_.store(true);
 
-    if (!userScrolling_)
+    if (wasAtBottom)
+    {
+        userScrolling_ = false;
         pendingSnapToBottom_ = true;
+    }
+    else if (!userScrolling_)
+    {
+        pendingSnapToBottom_ = true;
+    }
 }
 
 // ---------------- Scrollbar passthrough ----------------
@@ -718,7 +730,8 @@ bool TerminalSession::OnLeftButtonDown(POINT pt)
     col = std::max(0, std::min(col, cols_ - 1));
 
     selecting_ = true;
-    hasSelection_ = true;
+    pendingSelection_ = true;
+    hasSelection_ = false;
     selectionStartRow_ = row;
     selectionStartCol_ = col;
     selectionEndRow_ = row;
@@ -746,6 +759,11 @@ bool TerminalSession::OnMouseMove(POINT pt, bool lmbDown)
     if (row == selectionEndRow_ && col == selectionEndCol_)
         return false;
 
+    if (pendingSelection_)
+    {
+        pendingSelection_ = false;
+        hasSelection_ = true;
+    }
     selectionEndRow_ = row;
     selectionEndCol_ = col;
     return true;
@@ -757,8 +775,11 @@ bool TerminalSession::OnLeftButtonUp()
         return false;
 
     selecting_ = false;
-    if (selectionStartRow_ == selectionEndRow_ && selectionStartCol_ == selectionEndCol_)
+    if (pendingSelection_)
+    {
+        pendingSelection_ = false;
         hasSelection_ = false;
+    }
     return true;
 }
 
@@ -882,6 +903,13 @@ void TerminalSession::DrawContent(ID2D1RenderTarget* rt, IDWriteFactory* dwrite,
     lineH_ = fontSizePx * 1.35f;
 
     float contentHeight = padY * 2.0f + (float)((int)scrollback_.size() + rows_) * lineH_;
+    if (scrollback_.empty())
+    {
+        // No scrollback -> keep scrollbar hidden and stick to top.
+        contentHeight = viewportH;
+        scrollbar_.SetScrollOffset(0.0f);
+        userScrolling_ = false;
+    }
     scrollbar_.UpdateLayout(left_, top_, viewportW, viewportH, contentHeight);
 
     if (pendingSnapToBottom_)
@@ -892,6 +920,8 @@ void TerminalSession::DrawContent(ID2D1RenderTarget* rt, IDWriteFactory* dwrite,
     }
 
     float maxScroll = std::max(0.0f, contentHeight - viewportH);
+    if (scrollbar_.GetScrollOffset() > maxScroll)
+        scrollbar_.SetScrollOffset(maxScroll);
     if (scrollbar_.GetScrollOffset() >= maxScroll - 1.0f)
         userScrolling_ = false;
 

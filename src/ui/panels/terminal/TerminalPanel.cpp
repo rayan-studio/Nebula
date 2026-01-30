@@ -407,8 +407,11 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
 
     if ((showOutput_ || showProblems_) && IsPointInPanel(pt))
     {
-        showOutput_ = false;
-        showProblems_ = false;
+        if (!IsPointInTabsBar(pt) && !IsPointInResizeZone(pt))
+        {
+            focused_ = false;
+            return;
+        }
     }
 
     if (IsPointInTabsBar(pt))
@@ -642,8 +645,9 @@ void TerminalPanel::UpdatePseudoConsoleSizeFromPixelsForActive()
 
     float tabsH = TabsBarHeightPx();
 
+    const float contentPad = 8.0f;
     float contentW = (right_ - left_) - 20.0f; // pads approximatifs
-    float contentH = (bottom_ - (top_ + resizeZoneH_ + tabsH)) - 16.0f;
+    float contentH = (bottom_ - tabsH - contentPad) - (top_ + resizeZoneH_ + contentPad);
 
     s->UpdatePseudoConsoleSizeFromPixels(contentW, contentH, fontFamily_, fontSize_, fontCollection_);
 }
@@ -691,11 +695,10 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
     // Resize bar (above tabs)
     D2D1_RECT_F resizeBar = D2D1::RectF(left_, top_, right_, top_ + resizeZoneH_);
     rt->FillRectangle(resizeBar, resizeBg);
-    if (resizeHover_ || resizing_)
     {
-        float gripY = top_ + resizeZoneH_ * 0.5f;
-        rt->DrawLine(D2D1::Point2F(left_ + 10.0f, gripY),
-                     D2D1::Point2F(right_ - 10.0f, gripY),
+        float gripY = top_ + resizeZoneH_ - 0.5f;
+        rt->DrawLine(D2D1::Point2F(left_ + 0.5f, gripY),
+                     D2D1::Point2F(right_ - 0.5f, gripY),
                      resizeLine, 1.0f);
     }
 
@@ -708,8 +711,9 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
     tabBar_.Draw(rt, dwrite, hwnd);
 
     float tabsH = TabsBarHeightPx();
-    float contentTop = top_ + resizeZoneH_ + 6.0f;   // add padding
-    float contentBottom = bottom_ - tabsH - 6.0f;    // add padding
+    const float contentPad = 8.0f;
+    float contentTop = top_ + resizeZoneH_ + contentPad;
+    float contentBottom = bottom_ - tabsH - contentPad;
 
 
     // Output button
@@ -1084,7 +1088,7 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
         rt->CreateSolidColorBrush(borderColor, &panelBorder);
         if (panelBorder)
         {
-            D2D1_RECT_F panelRect = D2D1::RectF(left_ + 2.0f, contentTop, right_ - 2.0f, contentBottom);
+            D2D1_RECT_F panelRect = D2D1::RectF(left_ + 0.5f, contentTop + 0.5f, right_ - 0.5f, contentBottom - 0.5f);
             D2D1_ANTIALIAS_MODE oldAA = rt->GetAntialiasMode();
             rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
             rt->DrawRectangle(panelRect, panelBorder, 1.0f);
