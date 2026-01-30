@@ -405,6 +405,17 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
         return;
     }
 
+    if (showOutput_ && IsPointInPanel(pt))
+    {
+        if (outputScrollbar_.OnLeftButtonDown(pt))
+        {
+            outputAutoFollow_ = false;
+            outputPendingScrollToBottom_ = false;
+            SetCapture(hwnd);
+            return;
+        }
+    }
+
     if ((showOutput_ || showProblems_) && IsPointInPanel(pt))
     {
         if (!IsPointInTabsBar(pt) && !IsPointInResizeZone(pt))
@@ -470,6 +481,15 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
 void TerminalPanel::OnLeftButtonUp(HWND hwnd)
 {
     (void)hwnd;
+
+    if (showOutput_)
+    {
+        if (outputScrollbar_.OnLeftButtonUp())
+        {
+            ReleaseCapture();
+            return;
+        }
+    }
 
     if (TerminalSession* s = ActiveSession())
     {
@@ -586,6 +606,14 @@ bool TerminalPanel::OnMouseMove(HWND hwnd, POINT pt)
             changed = true;
     }
 
+    if (showOutput_)
+    {
+        if (outputScrollbar_.OnMouseMove(pt))
+            changed = true;
+        if (outputScrollbar_.IsDragging())
+            outputAutoFollow_ = false;
+    }
+
     if (TerminalSession* s = ActiveSession())
     {
         if (s->OnMouseMove(pt, lmbDown))
@@ -604,6 +632,16 @@ void TerminalPanel::OnMouseWheel(HWND hwnd, int wheelDelta)
 {
     (void)hwnd;
     if (!visible_) return;
+
+    if (showOutput_)
+    {
+        if (outputScrollbar_.OnMouseWheel(wheelDelta))
+        {
+            outputAutoFollow_ = false;
+            outputPendingScrollToBottom_ = false;
+        }
+        return;
+    }
 
     if (TerminalSession* s = ActiveSession())
         s->OnMouseWheel(wheelDelta);
@@ -1009,12 +1047,12 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
 
         IDWriteTextFormat* listFormat = nullptr;
         dwrite->CreateTextFormat(
-            L"Segoe UI",
-            NULL,
+            fontFamily_.c_str(),
+            fontCollection_,
             DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
-            12.0f,
+            fontSize_,
             L"en-us",
             &listFormat);
         if (listFormat)
@@ -1023,14 +1061,29 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
             listFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
             listFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
 
-            float y = contentRect.top + 12.0f;
+            ID2D1SolidColorBrush* accent = nullptr;
+            ID2D1SolidColorBrush* dim = nullptr;
+            ID2D1SolidColorBrush* warn = nullptr;
+            ID2D1SolidColorBrush* err = nullptr;
+            ID2D1SolidColorBrush* cmd = nullptr;
+            ID2D1SolidColorBrush* ok = nullptr;
+            rt->CreateSolidColorBrush(D2D1::ColorF(0.28f, 0.63f, 0.95f, 1.0f), &accent);
+            rt->CreateSolidColorBrush(D2D1::ColorF(0.70f, 0.70f, 0.70f, 1.0f), &dim);
+            rt->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.80f, 0.35f, 1.0f), &warn);
+            rt->CreateSolidColorBrush(D2D1::ColorF(0.98f, 0.36f, 0.36f, 1.0f), &err);
+            rt->CreateSolidColorBrush(D2D1::ColorF(0.58f, 0.80f, 1.0f, 1.0f), &cmd);
+            rt->CreateSolidColorBrush(D2D1::ColorF(0.46f, 0.85f, 0.60f, 1.0f), &ok);
+
             float x = contentRect.left + 16.0f;
-            float lineH = 18.0f;
+            float lineH = (fontSize_ + 6.0f);
+            float headerY = contentRect.top + 12.0f;
 
             std::wstring header = L"Output";
             rt->DrawTextW(header.c_str(), (UINT32)header.size(), listFormat,
-                          D2D1::RectF(x, y, contentRect.right - 8.0f, y + lineH), fg);
-            y += lineH + 4.0f;
+                          D2D1::RectF(x, headerY, contentRect.right - 8.0f, headerY + lineH),
+                          accent ? accent : fg);
+            float headerBlock = lineH + 4.0f;
+            float bodyStartY = headerY + headerBlock;
 
             std::vector<std::wstring> lines;
             {
@@ -1038,26 +1091,60 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
                 lines = outputLines_;
             }
 
+            float contentHeight = 12.0f + headerBlock;
+            contentHeight += (lines.empty() ? 1.0f : (float)lines.size()) * lineH;
+            contentHeight += 12.0f;
+
+            float contentW = contentRect.right - contentRect.left;
+            float contentH = contentRect.bottom - contentRect.top;
+            outputScrollbar_.UpdateLayout(contentRect.left, contentRect.top, contentW, contentH, contentHeight);
+            if (outputPendingScrollToBottom_)
+            {
+                float maxScroll = (std::max)(0.0f, contentHeight - contentH);
+                outputScrollbar_.SetScrollOffset(maxScroll);
+                outputPendingScrollToBottom_ = false;
+            }
+
+            float scrollOffset = outputScrollbar_.GetScrollOffset();
+            float maxScroll = (std::max)(0.0f, contentHeight - contentH);
+            if (!outputScrollbar_.IsDragging() && scrollOffset >= maxScroll - 2.0f)
+                outputAutoFollow_ = true;
+
+            float y = bodyStartY - scrollOffset;
+
             if (lines.empty())
             {
                 std::wstring empty = L"Aucun output pour l'instant";
                 rt->DrawTextW(empty.c_str(), (UINT32)empty.size(), listFormat,
-                              D2D1::RectF(x, y, contentRect.right - 8.0f, y + lineH), fg);
+                              D2D1::RectF(x, y, contentRect.right - 8.0f, y + lineH),
+                              dim ? dim : fg);
             }
             else
             {
                 rt->PushAxisAlignedClip(contentRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-                int maxLines = (int)((contentRect.bottom - y) / lineH);
-                int start = 0;
-                if ((int)lines.size() > maxLines)
-                    start = (int)lines.size() - maxLines;
+                int startLine = 0;
+                if (scrollOffset > headerBlock)
+                    startLine = (int)((scrollOffset - headerBlock) / lineH);
+                if (startLine < 0) startLine = 0;
 
-                for (size_t i = (size_t)start; i < lines.size(); ++i)
+                y = bodyStartY - scrollOffset + startLine * lineH;
+                for (size_t i = (size_t)startLine; i < lines.size(); ++i)
                 {
                     const std::wstring& line = lines[i];
+                    ID2D1SolidColorBrush* brush = fg;
+                    if (line.rfind(L"$ ", 0) == 0)
+                        brush = cmd ? cmd : fg;
+                    else if (line.rfind(L"[run]", 0) == 0 || line.rfind(L"CMake Warning", 0) == 0 || line.find(L"warning") != std::wstring::npos)
+                        brush = warn ? warn : fg;
+                    else if (line.rfind(L"Reason:", 0) == 0 || line.rfind(L"CMake Error", 0) == 0 || line.find(L"error") != std::wstring::npos || line.find(L"FAILED") != std::wstring::npos)
+                        brush = err ? err : fg;
+                    else if (line.rfind(L"Hint:", 0) == 0)
+                        brush = dim ? dim : fg;
+                    else if (line.find(L"Building") != std::wstring::npos || line.find(L"Linking") != std::wstring::npos || line.find(L"done") != std::wstring::npos)
+                        brush = ok ? ok : fg;
                     rt->DrawTextW(line.c_str(), (UINT32)line.size(), listFormat,
-                                  D2D1::RectF(x, y, contentRect.right - 8.0f, y + lineH), fg);
+                                  D2D1::RectF(x, y, contentRect.right - 8.0f, y + lineH), brush);
                     y += lineH;
                     if (y > contentRect.bottom - lineH)
                         break;
@@ -1066,8 +1153,22 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
                 rt->PopAxisAlignedClip();
             }
 
+            if (accent)
+                accent->Release();
+            if (dim)
+                dim->Release();
+            if (warn)
+                warn->Release();
+            if (err)
+                err->Release();
+            if (cmd)
+                cmd->Release();
+            if (ok)
+                ok->Release();
             listFormat->Release();
         }
+
+        outputScrollbar_.Draw(rt);
     }
     else
     {
@@ -1138,6 +1239,9 @@ void TerminalPanel::ClearOutput()
     std::lock_guard<std::mutex> lock(outputMutex_);
     outputLines_.clear();
     outputBuffer_.clear();
+    outputScrollbar_.SetScrollOffset(0.0f);
+    outputAutoFollow_ = true;
+    outputPendingScrollToBottom_ = true;
 }
 
 void TerminalPanel::AppendOutputChunk(const std::wstring& text)
@@ -1186,6 +1290,9 @@ void TerminalPanel::AppendOutputChunk(const std::wstring& text)
     const size_t kMaxLines = 2000;
     if (outputLines_.size() > kMaxLines)
         outputLines_.erase(outputLines_.begin(), outputLines_.begin() + (outputLines_.size() - kMaxLines));
+
+    if (showOutput_ && outputAutoFollow_)
+        outputPendingScrollToBottom_ = true;
 }
 
 void TerminalPanel::FlushOutputBuffer()
@@ -1210,6 +1317,11 @@ void TerminalPanel::ShowOutput(bool v)
     showOutput_ = v;
     if (showOutput_)
         showProblems_ = false;
+    if (showOutput_)
+    {
+        outputAutoFollow_ = true;
+        outputPendingScrollToBottom_ = true;
+    }
 }
 
 bool TerminalPanel::SendCommandToActive(HWND hwnd, const std::wstring& startDir, const std::wstring& command)

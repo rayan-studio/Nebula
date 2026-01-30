@@ -177,6 +177,10 @@ private:
     std::vector<std::wstring> outputLines_;
     std::wstring outputBuffer_;
     std::mutex outputMutex_;
+
+    Scrollbar outputScrollbar_;
+    bool outputAutoFollow_ = true;
+    bool outputPendingScrollToBottom_ = false;
 };
 
 // Global accessor

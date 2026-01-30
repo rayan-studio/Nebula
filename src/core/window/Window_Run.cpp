@@ -192,21 +192,46 @@ static bool RunCommandAndCapture(const std::wstring &command,
 
     PROCESS_INFORMATION pi{};
 
-    std::wstring cmdLine = L"cmd.exe /C " + command;
+    // If the command is already quoted, run via cmd /C to keep behavior; otherwise call directly.
+    std::wstring cmdLine = command;
     std::wstring workdirStr = workingDir.wstring();
     wchar_t *mutableCmd = _wcsdup(cmdLine.c_str());
+    DWORD flags = CREATE_NO_WINDOW;
+    if (envBlock && !envBlock->empty())
+        flags |= CREATE_UNICODE_ENVIRONMENT;
     BOOL ok = CreateProcessW(
         nullptr,
         mutableCmd,
         nullptr,
         nullptr,
         TRUE,
-        CREATE_NO_WINDOW,
+        flags,
         envBlock && !envBlock->empty() ? (LPVOID)envBlock->data() : nullptr,
         workdirStr.empty() ? nullptr : workdirStr.c_str(),
         &si,
         &pi);
     free(mutableCmd);
+
+    if (!ok)
+    {
+        DWORD firstErr = GetLastError();
+        std::wstring cmdLine2 = L"cmd.exe /C \"" + command + L"\"";
+        mutableCmd = _wcsdup(cmdLine2.c_str());
+        ok = CreateProcessW(
+            nullptr,
+            mutableCmd,
+            nullptr,
+            nullptr,
+            TRUE,
+            flags,
+            envBlock && !envBlock->empty() ? (LPVOID)envBlock->data() : nullptr,
+            workdirStr.empty() ? nullptr : workdirStr.c_str(),
+            &si,
+            &pi);
+        free(mutableCmd);
+        if (!ok)
+            SetLastError(firstErr);
+    }
 
     CloseHandle(outWrite);
     if (inRead)
@@ -751,6 +776,78 @@ static bool HasSolutionFile(const std::filesystem::path &root)
     return false;
 }
 
+static bool HasCc1Plus(const ToolchainConfig &tc)
+{
+    if (tc.toolchainBin.empty())
+        return false;
+    std::filesystem::path bin = tc.toolchainBin;
+    std::filesystem::path root = bin.parent_path(); // .../mingw64
+    std::filesystem::path libexec = root / "libexec" / "gcc";
+    std::error_code ec;
+    if (!std::filesystem::exists(libexec, ec))
+        return false;
+    for (const auto &entry : std::filesystem::recursive_directory_iterator(libexec, ec))
+    {
+        if (ec)
+            break;
+        if (!entry.is_regular_file(ec))
+            continue;
+        if (_wcsicmp(entry.path().filename().wstring().c_str(), L"cc1plus.exe") == 0)
+            return true;
+    }
+    return false;
+}
+
+static bool FindExeInBin(const ToolchainConfig &tc, const wchar_t *exeName)
+{
+    if (tc.toolchainBin.empty())
+        return false;
+    std::filesystem::path p = std::filesystem::path(tc.toolchainBin) / exeName;
+    std::error_code ec;
+    return std::filesystem::exists(p, ec);
+}
+
+static bool HasLibexecExe(const ToolchainConfig &tc, const wchar_t *exeName)
+{
+    if (tc.toolchainBin.empty())
+        return false;
+    std::filesystem::path root = std::filesystem::path(tc.toolchainBin).parent_path();
+    std::filesystem::path libexec = root / "libexec" / "gcc";
+    std::error_code ec;
+    if (!std::filesystem::exists(libexec, ec))
+        return false;
+    for (const auto &entry : std::filesystem::recursive_directory_iterator(libexec, ec))
+    {
+        if (ec)
+            break;
+        if (!entry.is_regular_file(ec))
+            continue;
+        if (_wcsicmp(entry.path().filename().wstring().c_str(), exeName) == 0)
+            return true;
+    }
+    return false;
+}
+
+static std::wstring ValidateToolchain(const ToolchainConfig &tc)
+{
+    std::vector<std::wstring> missing;
+    if (!FindExeInBin(tc, L"gcc.exe")) missing.push_back(L"gcc.exe (bin)");
+    if (!FindExeInBin(tc, L"g++.exe")) missing.push_back(L"g++.exe (bin)");
+    if (!FindExeInBin(tc, L"ld.exe")) missing.push_back(L"ld.exe (bin)");
+    if (!FindExeInBin(tc, L"as.exe")) missing.push_back(L"as.exe (bin)");
+    if (!HasLibexecExe(tc, L"cc1.exe")) missing.push_back(L"cc1.exe (libexec/gcc)");
+    if (!HasLibexecExe(tc, L"cc1plus.exe")) missing.push_back(L"cc1plus.exe (libexec/gcc)");
+
+    if (missing.empty())
+        return {};
+
+    std::wstring msg = L"Le toolchain est incomplet. Manque:\n";
+    for (const auto &m : missing)
+        msg += L"- " + m + L"\n";
+    msg += L"Reinstalle un MinGW complet (WinLibs / MSYS2) ou corrige le chemin.";
+    return msg;
+}
+
 static std::filesystem::path FindNewestExecutable(const std::filesystem::path &root)
 {
     std::error_code ec;
@@ -951,6 +1048,16 @@ void Window::RunActiveProject()
     const std::string projType = GetProjectTypeFromRoot(rootPath);
     const bool keepConsoleOpen = (projType == "cpp-console");
     const bool useNinja = hasToolchain;
+
+    if (useNinja)
+    {
+        std::wstring tcError = ValidateToolchain(tc);
+        if (!tcError.empty())
+        {
+            ShowRunErrorPopup(hwnd_, L"Toolchain MinGW incomplet", tcError);
+            return;
+        }
+    }
 
     // Prefer a valid system CMake when the toolchain CMake is missing its share/ directory.
     std::wstring systemCMake = L"C:\\Program Files\\CMake\\bin\\cmake.exe";

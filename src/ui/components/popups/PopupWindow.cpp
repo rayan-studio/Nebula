@@ -6,6 +6,9 @@
 #include <sstream>
 
 static const wchar_t *POPUP_WINDOW_CLASS = L"NebulaPopupWindow";
+static HWND g_activePopup = nullptr;
+static bool g_popupDragging = false;
+static POINT g_popupDragOffset = {0, 0};
 
 struct PopupWindowState
 {
@@ -74,7 +77,19 @@ static LRESULT CALLBACK PopupWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     switch (msg)
     {
     case WM_NCCALCSIZE:
-        return 0;
+        if (wParam)
+            return 0;
+        {
+            UINT dpi = GetDpiForWindow(hwnd);
+            int frame_x = GetSystemMetricsForDpi(SM_CXFRAME, dpi);
+            int frame_y = GetSystemMetricsForDpi(SM_CYFRAME, dpi);
+            int padding = GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+            RECT *rc = (RECT *)lParam;
+            rc->left += frame_x + padding;
+            rc->right -= frame_x + padding;
+            rc->bottom -= frame_y + padding;
+            return 0;
+        }
     case WM_CREATE:
     {
         CREATESTRUCTW *cs = reinterpret_cast<CREATESTRUCTW *>(lParam);
@@ -100,6 +115,8 @@ static LRESULT CALLBACK PopupWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     }
     case WM_DESTROY:
     {
+        if (g_activePopup == hwnd)
+            g_activePopup = nullptr;
         if (s)
             delete s;
         return 0;
@@ -114,83 +131,10 @@ static LRESULT CALLBACK PopupWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     case WM_CLOSE:
         DestroyWindow(hwnd);
         return 0;
-    case WM_MOUSELEAVE:
-    {
-        if (!s)
-            break;
-        if (s->hoverClose)
-        {
-            s->hoverClose = false;
-            InvalidateRect(hwnd, &s->closeRect, FALSE);
-        }
-
-        TRACKMOUSEEVENT tme = {};
-        tme.cbSize = sizeof(tme);
-        tme.dwFlags = TME_LEAVE;
-        tme.hwndTrack = hwnd;
-        TrackMouseEvent(&tme);
-        return 0;
-    }
-    case WM_MOUSEMOVE:
-    {
-        if (!s)
-            break;
-        POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-        RECT rc;
-        GetClientRect(hwnd, &rc);
-        RECT closeR = GetCloseRect(rc);
-        bool hovered = PointInRectClient(pt, closeR);
-        if (hovered != s->hoverClose)
-        {
-            s->hoverClose = hovered;
-            s->closeRect = closeR;
-            InvalidateRect(hwnd, &closeR, FALSE);
-        }
-        TRACKMOUSEEVENT tme = {};
-        tme.cbSize = sizeof(tme);
-        tme.dwFlags = TME_LEAVE;
-        tme.hwndTrack = hwnd;
-        TrackMouseEvent(&tme);
-        return 0;
-    }
-    case WM_LBUTTONDOWN:
-    {
-        if (!s)
-            break;
-        POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-        RECT rc;
-        GetClientRect(hwnd, &rc);
-        RECT closeR = GetCloseRect(rc);
-        const int headerH = 34;
-        if (PointInRectClient(pt, closeR))
-            return 0;
-        if (pt.y >= rc.top && pt.y < rc.top + headerH)
-        {
-            POINT screenPt = pt;
-            ClientToScreen(hwnd, &screenPt);
-            ReleaseCapture();
-            SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, MAKELPARAM(screenPt.x, screenPt.y));
-            return 0;
-        }
-        return 0;
-    }
-    case WM_LBUTTONUP:
-    {
-        if (!s)
-            break;
-        POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-        RECT rc;
-        GetClientRect(hwnd, &rc);
-        RECT closeR = GetCloseRect(rc);
-        if (PointInRectClient(pt, closeR))
-        {
-            DestroyWindow(hwnd);
-            return 0;
-        }
-        return 0;
-    }
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
     case WM_NCHITTEST:
-        return HTCLIENT;
+        return HTTRANSPARENT;
     case WM_PAINT:
     {
         if (!s)
@@ -258,6 +202,11 @@ static LRESULT CALLBACK PopupWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 HWND ShowPopupWindow(HWND owner, int x, int y, int width, int height,
                      const std::wstring &title, const std::wstring &message)
 {
+    if (g_activePopup)
+    {
+        DestroyWindow(g_activePopup);
+        g_activePopup = nullptr;
+    }
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
     if (!GetClassInfoExW(GetModuleHandleW(NULL), POPUP_WINDOW_CLASS, &wc))
@@ -276,7 +225,7 @@ HWND ShowPopupWindow(HWND owner, int x, int y, int width, int height,
     s->message = message;
 
     DWORD style = WS_OVERLAPPED | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
-    DWORD exStyle = WS_EX_TOOLWINDOW;
+    DWORD exStyle = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT;
 
     HWND hwnd = CreateWindowExW(
         exStyle,
@@ -287,7 +236,7 @@ HWND ShowPopupWindow(HWND owner, int x, int y, int width, int height,
         y,
         width,
         height,
-        owner,
+        NULL,
         NULL,
         GetModuleHandleW(NULL),
         s);
@@ -298,13 +247,102 @@ HWND ShowPopupWindow(HWND owner, int x, int y, int width, int height,
         return NULL;
     }
 
-    ShowWindow(hwnd, SW_SHOWNORMAL);
+    g_activePopup = hwnd;
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     UpdateWindow(hwnd);
-    SetForegroundWindow(hwnd);
 
     std::wostringstream ss;
     ss << L"PopupWindow: CreateWindowEx hwnd=" << (void *)hwnd << L" pos=(" << x << L"," << y << L") size=(" << width << L"," << height << L")";
     Logger::Instance().Log(ss.str());
 
     return hwnd;
+}
+
+static bool GetPopupRect(RECT &out)
+{
+    if (!g_activePopup)
+        return false;
+    return GetWindowRect(g_activePopup, &out) != 0;
+}
+
+bool PopupHitTestClose(POINT screenPt)
+{
+    RECT rc;
+    if (!GetPopupRect(rc))
+        return false;
+    RECT closeR = GetCloseRect(rc);
+    return PtInRect(&closeR, screenPt);
+}
+
+bool PopupHitTestHeader(POINT screenPt)
+{
+    RECT rc;
+    if (!GetPopupRect(rc))
+        return false;
+    RECT header = rc;
+    header.bottom = header.top + 34;
+    return PtInRect(&header, screenPt);
+}
+
+void PopupSetHoverClose(bool hovered)
+{
+    if (!g_activePopup)
+        return;
+    PopupWindowState *s = reinterpret_cast<PopupWindowState *>(GetWindowLongPtrW(g_activePopup, GWLP_USERDATA));
+    if (!s)
+        return;
+    if (s->hoverClose == hovered)
+        return;
+    s->hoverClose = hovered;
+    RECT rc;
+    GetClientRect(g_activePopup, &rc);
+    s->closeRect = GetCloseRect(rc);
+    InvalidateRect(g_activePopup, &s->closeRect, FALSE);
+}
+
+void PopupStartDrag(POINT screenPt)
+{
+    RECT rc;
+    if (!GetPopupRect(rc))
+        return;
+    g_popupDragging = true;
+    g_popupDragOffset.x = screenPt.x - rc.left;
+    g_popupDragOffset.y = screenPt.y - rc.top;
+}
+
+void PopupDragTo(POINT screenPt)
+{
+    if (!g_popupDragging || !g_activePopup)
+        return;
+    RECT rc;
+    if (!GetPopupRect(rc))
+        return;
+    int width = rc.right - rc.left;
+    int height = rc.bottom - rc.top;
+    int x = screenPt.x - g_popupDragOffset.x;
+    int y = screenPt.y - g_popupDragOffset.y;
+    SetWindowPos(g_activePopup, NULL, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+void PopupEndDrag()
+{
+    g_popupDragging = false;
+}
+
+bool PopupIsDragging()
+{
+    return g_popupDragging;
+}
+
+HWND GetActivePopupWindow()
+{
+    return g_activePopup;
+}
+
+bool CloseActivePopupWindow()
+{
+    if (!g_activePopup)
+        return false;
+    DestroyWindow(g_activePopup);
+    return true;
 }

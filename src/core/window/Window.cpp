@@ -791,6 +791,24 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             }
         }
 
+        // Popup interaction (click-through popup)
+        if (GetActivePopupWindow())
+        {
+            POINT screenPt = pt;
+            ClientToScreen(hwnd_, &screenPt);
+            if (PopupHitTestClose(screenPt))
+            {
+                CloseActivePopupWindow();
+                return 0;
+            }
+            if (PopupHitTestHeader(screenPt))
+            {
+                PopupStartDrag(screenPt);
+                SetCapture(hwnd_);
+                return 0;
+            }
+        }
+
         // If a titlebar menu dropdown is visible, let it handle clicks first
         if (IsMenuDropdownVisible())
         {
@@ -1179,6 +1197,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     }
     case WM_KEYDOWN:
     {
+        if (wParam == VK_ESCAPE && CloseActivePopupWindow())
+            return 0;
         if (newProjectVisible_)
         {
             HandleNewProjectKeyDown(wParam);
@@ -1224,7 +1244,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         {
             // Don't forward wheel to editor when Output/Problems is shown.
             if (terminalWheel.IsShowingOutputOrProblems())
+            {
+                int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+                terminalWheel.OnMouseWheel(hwnd_, delta);
+                InvalidateRect(hwnd_, nullptr, FALSE);
                 return 0;
+            }
 
             int delta = GET_WHEEL_DELTA_WPARAM(wParam);
             terminalWheel.OnMouseWheel(hwnd_, delta);
@@ -1285,6 +1310,18 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             HandleNewProjectMouseMove(hwnd_, pt);
             ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
+        }
+
+        if (GetActivePopupWindow())
+        {
+            POINT screenPt = pt;
+            ClientToScreen(hwnd_, &screenPt);
+            PopupSetHoverClose(PopupHitTestClose(screenPt));
+            if (PopupIsDragging() && GetCapture() == hwnd_)
+            {
+                PopupDragTo(screenPt);
+                return 0;
+            }
         }
 
         // If Explorer scrollbar is dragging, keep routing moves even outside its bounds.
@@ -1565,6 +1602,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
+        if (PopupIsDragging() && GetCapture() == hwnd_)
+        {
+            PopupEndDrag();
+            ReleaseCapture();
+            return 0;
+        }
+
         // Check if any panel is resizing
         Panel *activePanelUp = GetPanelManager().GetActivePanel();
         bool panelWasResizing = activePanelUp && activePanelUp->IsResizing();
@@ -1668,6 +1712,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     {
         // Clear all hover states when mouse leaves the window entirely
         ClearAllHoverStates();
+        if (GetActivePopupWindow())
+            PopupSetHoverClose(false);
 
         if (newProjectVisible_)
         {
@@ -2186,6 +2232,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         return DefWindowProc(hwnd_, uMsg, wParam, lParam);
     }
     case WM_DESTROY:
+        CloseActivePopupWindow();
         KillTimer(hwnd_, CARET_TIMER_ID);
         // Shutdown ggwave wrapper
         ggwave::Shutdown();
