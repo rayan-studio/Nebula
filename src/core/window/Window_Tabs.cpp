@@ -38,7 +38,7 @@ void Window::CloseEditorForTabIndex(int index)
     }
 
     editors_.clear();
-    pendingGoToLine_.erase(index);
+    pendingGoToLocation_.erase(index);
 
     int count = tabBar_.GetTabCount();
     for (int i = 0; i < count; ++i)
@@ -108,7 +108,7 @@ bool Window::IsSettingsTabActive() const
     return IsSettingsTabIndex(tabBar_.GetActiveTabIndex());
 }
 
-void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber)
+void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber, int column)
 {
     std::wstring display;
     size_t lastSlash = filePath.find_last_of(L"\\/");
@@ -135,7 +135,7 @@ void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber)
             {
                 editor->LoadFileAsync(hwnd_, filePath, tabIndex);
                 if (lineNumber >= 0)
-                    pendingGoToLine_[tabIndex] = lineNumber;
+                    pendingGoToLocation_[tabIndex] = {lineNumber, column};
             }
         }
         else
@@ -163,7 +163,9 @@ void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber)
         Orion::Editor *editor = editors_[tabIndex];
         if (editor)
         {
-            Orion::Caret::SetCaret(*editor, lineNumber, 0);
+            int targetLine = lineNumber < 0 ? 0 : lineNumber;
+            int targetCol = column < 0 ? 0 : column;
+            Orion::Caret::SetCaret(*editor, targetLine, targetCol);
             InvalidateRect(hwnd_, nullptr, FALSE);
         }
     }

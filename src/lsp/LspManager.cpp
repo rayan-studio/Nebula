@@ -410,12 +410,15 @@ namespace Lsp
                 continue;
             }
 
-            auto addSymbol = [&](const std::wstring &name, int col)
+            auto addSymbol = [&](const std::wstring &name, int col, bool isDefinition)
             {
                 if (name.empty())
                     return;
                 Location loc{NormalizePath(filePath), lineIndex, col};
-                symbolIndex_[name] = loc;
+                if (isDefinition)
+                    symbolIndexDef_[name] = loc;
+                else
+                    symbolIndexDecl_[name] = loc;
                 newSymbols.push_back(name);
             };
 
@@ -424,7 +427,7 @@ namespace Lsp
                 return iswalnum(c) || c == L'_';
             };
 
-            // class/struct/enum
+            // class/struct/enum (treat as definition for navigation)
             {
                 std::wstring lowered = ToLower(t);
                 const std::wstring keys[] = {L"class ", L"struct ", L"enum "};
@@ -441,7 +444,7 @@ namespace Lsp
                             end++;
                         if (end > start)
                         {
-                            addSymbol(t.substr(start, end - start), (int)start);
+                            addSymbol(t.substr(start, end - start), (int)start, true);
                         }
                     }
                 }
@@ -473,7 +476,51 @@ namespace Lsp
                             }
                         }
                         if (!isKeyword)
-                            addSymbol(name, (int)start);
+                        {
+                            auto trimLine = [&](const std::wstring &s)
+                            {
+                                size_t a = s.find_first_not_of(L" \t");
+                                size_t b = s.find_last_not_of(L" \t");
+                                if (a == std::wstring::npos || b == std::wstring::npos)
+                                    return std::wstring();
+                                return s.substr(a, b - a + 1);
+                            };
+
+                            auto isDefinition = [&]() -> bool
+                            {
+                                size_t rparen = t.find(L')', lparen);
+                                if (rparen == std::wstring::npos)
+                                    return false;
+                                size_t brace = t.find(L'{', rparen);
+                                if (brace != std::wstring::npos)
+                                    return true;
+                                size_t semi = t.find(L';', rparen);
+                                if (semi != std::wstring::npos)
+                                    return false;
+
+                                for (int i = lineIndex + 1; i < (int)lines.size(); ++i)
+                                {
+                                    std::wstring next = lines[i];
+                                    size_t cpos = next.find(L"//");
+                                    if (cpos != std::wstring::npos)
+                                        next = next.substr(0, cpos);
+                                    next = trimLine(next);
+                                    if (next.empty())
+                                        continue;
+                                    if (next[0] == L'{')
+                                        return true;
+                                    if (next.find(L';') != std::wstring::npos)
+                                        return false;
+                                    // Skip ctor init-list lines or attributes; keep scanning.
+                                    if (next[0] == L':' || next.find(L"[[") != std::wstring::npos)
+                                        continue;
+                                    break;
+                                }
+                                return false;
+                            }();
+
+                            addSymbol(name, (int)start, isDefinition);
+                        }
                     }
                 }
             }
@@ -487,9 +534,12 @@ namespace Lsp
         {
             for (const auto &sym : it->second)
             {
-                auto sit = symbolIndex_.find(sym);
-                if (sit != symbolIndex_.end() && sit->second.filePath == NormalizePath(filePath))
-                    symbolIndex_.erase(sit);
+                auto sit = symbolIndexDef_.find(sym);
+                if (sit != symbolIndexDef_.end() && sit->second.filePath == NormalizePath(filePath))
+                    symbolIndexDef_.erase(sit);
+                auto dit = symbolIndexDecl_.find(sym);
+                if (dit != symbolIndexDecl_.end() && dit->second.filePath == NormalizePath(filePath))
+                    symbolIndexDecl_.erase(dit);
             }
             it->second = newSymbols;
         }
@@ -985,9 +1035,12 @@ namespace Lsp
         }
 
         std::lock_guard<std::mutex> lk(mutex_);
-        auto it = symbolIndex_.find(word);
-        if (it != symbolIndex_.end())
+        auto it = symbolIndexDef_.find(word);
+        if (it != symbolIndexDef_.end())
             return it->second;
+        auto dit = symbolIndexDecl_.find(word);
+        if (dit != symbolIndexDecl_.end())
+            return dit->second;
         return std::nullopt;
     }
 

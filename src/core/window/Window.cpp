@@ -44,6 +44,7 @@
 #include "orion/caret/Caret.h"
 #include "ui/layout/ExplorerLayoutState.h"
 #include "lsp/LspManager.h"
+#include "core/window/OpenFileRequest.h"
 
 static void EnableMicaIfAvailable(HWND hwnd)
 {
@@ -670,14 +671,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 {
                     ed->ApplyLoadedFile(std::move(res->filePath), std::move(res->encoding), std::move(res->lines));
 
-                    auto it = pendingGoToLine_.find(res->tabIndex);
-                    if (it != pendingGoToLine_.end())
+                    auto it = pendingGoToLocation_.find(res->tabIndex);
+                    if (it != pendingGoToLocation_.end())
                     {
-                        int targetLine = it->second;
-                        pendingGoToLine_.erase(it);
+                        int targetLine = it->second.first;
+                        int targetCol = it->second.second;
+                        pendingGoToLocation_.erase(it);
                         if (targetLine < 0)
                             targetLine = 0;
-                        Orion::Caret::SetCaret(*ed, targetLine, 0);
+                        if (targetCol < 0)
+                            targetCol = 0;
+                        Orion::Caret::SetCaret(*ed, targetLine, targetCol);
                     }
 
                     Lsp::LspManager::Instance().UpdateFile(ed->GetFilePath(), ed->GetLinesSnapshot());
@@ -702,8 +706,18 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 
         if (pPath)
         {
-            OpenFileInNewTab(*pPath, lineNumber >= 0 ? lineNumber : -1);
+            OpenFileInNewTab(*pPath, lineNumber >= 0 ? lineNumber : -1, -1);
             delete pPath;
+        }
+        return 0;
+    }
+    case WM_OPEN_FILE_AT:
+    {
+        auto *req = reinterpret_cast<OpenFileRequest *>(lParam);
+        if (req)
+        {
+            OpenFileInNewTab(req->filePath, req->line, req->column);
+            delete req;
         }
         return 0;
     }
@@ -2238,8 +2252,19 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
         return DefWindowProc(hwnd_, uMsg, wParam, lParam);
     }
+    case WM_CLOSE:
+    {
+        // Ensure background threads/PTY sessions are stopped before exit.
+        CloseActivePopupWindow();
+        GetTerminalPanel().CloseAll();
+        GetGGWavePanel().Shutdown();
+        DestroyWindow(hwnd_);
+        return 0;
+    }
     case WM_DESTROY:
         CloseActivePopupWindow();
+        GetTerminalPanel().CloseAll();
+        GetGGWavePanel().Shutdown();
         KillTimer(hwnd_, CARET_TIMER_ID);
         // Shutdown ggwave wrapper
         ggwave::Shutdown();

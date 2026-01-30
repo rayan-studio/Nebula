@@ -11,6 +11,7 @@
 // Scrollbar (toujours dispo si besoin ailleurs)
 #include "ui/components/scrollbar/Scrollbar.h"
 #include "ui/components/tabs/TabBar.h"
+#include "core/window/OpenFileRequest.h"
 
 class TerminalSession;
 
@@ -186,6 +187,10 @@ private:
     D2D1_RECT_F outputCopyRect_ = D2D1::RectF(0, 0, 0, 0);
     bool outputCopyFeedback_ = false;
     DWORD outputCopyFeedbackUntil_ = 0;
+
+    D2D1_RECT_F problemsListRect_ = D2D1::RectF(0, 0, 0, 0);
+    float problemsRowHeight_ = 0.0f;
+    int hoveredProblemIndex_ = -1;
 };
 
 // Global accessor

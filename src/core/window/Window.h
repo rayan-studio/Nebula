@@ -49,7 +49,7 @@ private:
     int untitledCounter_ = 1;
     KeyboardManager keyboard_;
     std::unique_ptr<SettingsTabView> settingsTab_;
-    std::map<int, int> pendingGoToLine_;
+    std::map<int, std::pair<int, int>> pendingGoToLocation_;
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleMessage(UINT, WPARAM, LPARAM);
@@ -95,7 +95,7 @@ public:
 
     // Gestion multi-éditeurs
     Orion::Editor *GetEditorForTab(int tabIndex);
-    void OpenFileInNewTab(const std::wstring &filePath, int lineNumber = -1);
+    void OpenFileInNewTab(const std::wstring &filePath, int lineNumber = -1, int column = -1);
     void OpenSettingsTab();
     bool IsSettingsTabIndex(int tabIndex) const;
     bool IsSettingsTabActive() const;
