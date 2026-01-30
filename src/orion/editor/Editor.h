@@ -369,6 +369,8 @@ namespace Orion
         std::shared_ptr<DiagnosticsState> diagnosticsState_;
 
         Geometry::IndentConfig GetIndentConfig() const;
+        bool GetWordAtColumn(const std::wstring &line, int column, std::wstring &outWord, int &startCol, int &endCol) const;
+        bool FindLocalDefinition(const std::wstring &word, int fromLine, int &outLine, int &outCol) const;
         // Brush cache for syntax highlighting (color -> brush)
         ID2D1SolidColorBrush *GetOrCreateBrush(ID2D1RenderTarget *ctx, const D2D1_COLOR_F &color);
         std::vector<std::pair<D2D1_COLOR_F, ID2D1SolidColorBrush *>> brushCache_;
@@ -392,6 +394,16 @@ namespace Orion
         std::wstring diagHoverText_;
         bool diagHoverVisible_ = false;
         POINT diagHoverPos_ = {0, 0};
+
+        bool defHoverActive_ = false;
+        int defHoverLine_ = -1;
+        int defHoverStart_ = -1;
+        int defHoverEnd_ = -1;
+        std::wstring defHoverWord_;
+        std::optional<Lsp::Location> defHoverLocation_;
+
+    public:
+        bool IsDefinitionHoverActive() const { return defHoverActive_; }
     };
 
     class CustomTextRenderer : public IDWriteTextRenderer

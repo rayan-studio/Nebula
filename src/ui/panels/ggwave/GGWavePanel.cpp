@@ -1,5 +1,7 @@
 #include "GGWavePanel.h"
+#include "helpers/window_helpers.h"
 #include <algorithm>
+#include <cmath>
 
 #ifdef min
 #undef min
@@ -44,7 +46,7 @@ void GGWavePanel::Shutdown() {
 // ============================================================================
 
 void GGWavePanel::UpdateLayout(HWND hwnd, float footerTop, float windowWidth) {
-    UINT dpi = GetDpiForWindow(hwnd);
+    UINT dpi = win32_get_dpi_for_window(hwnd);
     float scale = dpi / 96.0f;
 
     buttonSize_ = 32.0f * scale;
@@ -157,7 +159,7 @@ void GGWavePanel::DrawButton(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite) {
         animPhase_ += elapsed * 2.0f; // 2 Hz pulse
         lastAnimTime_ = now;
         
-        float alpha = 0.5f + 0.5f * sinf(animPhase_);
+        float alpha = 0.5f + 0.5f * std::sinf(animPhase_);
         
         ID2D1SolidColorBrush* borderBrush = nullptr;
         ctx->CreateSolidColorBrush(D2D1::ColorF(0x4CAF50, alpha), &borderBrush);
@@ -204,7 +206,7 @@ void GGWavePanel::DrawMessagePopup(ID2D1RenderTarget* ctx, IDWriteFactory* dwrit
     const GGWaveMessage& msg = messages_.back();
 
     // DPI-aware sizing
-    UINT dpi = hwnd ? GetDpiForWindow(hwnd) : 96;
+    UINT dpi = hwnd ? win32_get_dpi_for_window(hwnd) : 96;
     float scale = dpi / 96.0f;
 
     // Popup base geometry (DPI-aware)

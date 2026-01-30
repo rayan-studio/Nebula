@@ -21,7 +21,7 @@ void SettingsPanel::Initialize()
 
 void SettingsPanel::UpdateLayout(HWND hwnd)
 {
-    UINT dpi = GetDpiForWindow(hwnd);
+    UINT dpi = win32_get_dpi_for_window(hwnd);
     int sidebarWidth = win32_dpi_scale(52, dpi);
     UpdateBaseLayout(hwnd, static_cast<float>(sidebarWidth));
 

@@ -37,22 +37,24 @@ static void ClearContextIconCache()
 
 static std::string ContextMenuIconPathForLabel(const std::wstring &label)
 {
-    if (label.find(L"Open Folder") != std::wstring::npos)
-        return "assets/ressource/icons/folder-open.svg";
-    if (label.find(L"Open File") != std::wstring::npos)
-        return "assets/ressource/icons/document.svg";
-    if (label.find(L"Copy Path") != std::wstring::npos)
-        return "assets/ressource/icons/folder-link-open.svg";
+    if (label.find(L"Ouvrir le dossier") != std::wstring::npos || label.find(L"Open Folder") != std::wstring::npos)
+        return "assets\\ressource\\icons\\folder-open.svg";
+    if (label.find(L"Ouvrir le fichier") != std::wstring::npos || label.find(L"Open File") != std::wstring::npos)
+        return "assets\\ressource\\icons\\document.svg";
+    if (label.find(L"Ouvrir dans l'explorateur") != std::wstring::npos || label.find(L"Open in Explorer") != std::wstring::npos)
+        return "assets\\ressource\\icons\\folder-open.svg";
+    if (label.find(L"Copier le chemin") != std::wstring::npos || label.find(L"Copy Path") != std::wstring::npos)
+        return "assets\\ressource\\icons\\folder-link-open.svg";
     if (label.find(L"Duplicate") != std::wstring::npos)
-        return "assets/ressource/icons/folder-template-open.svg";
+        return "assets\\ressource\\icons\\folder-template-open.svg";
     if (label.find(L"Rename") != std::wstring::npos)
-        return "assets/ressource/icons/folder-tools-open.svg";
+        return "assets\\ressource\\icons\\folder-tools-open.svg";
     if (label.find(L"Delete") != std::wstring::npos)
-        return "assets/ressource/icons/folder-trash.svg";
+        return "assets\\ressource\\icons\\folder-trash.svg";
     if (label.find(L"Renommer") != std::wstring::npos)
-        return "assets/ressource/icons/folder-tools-open.svg";
+        return "assets\\ressource\\icons\\folder-tools-open.svg";
     if (label.find(L"Supprimer") != std::wstring::npos)
-        return "assets/ressource/icons/folder-trash.svg";
+        return "assets\\ressource\\icons\\folder-trash.svg";
     return {};
 }
 
@@ -350,7 +352,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
 
         // App icon + title
         ID2D1Bitmap *iconBitmap = LoadIconBitmap(ctx, L"assets/favicon.ico");
-        UINT dpi = GetDpiForWindow(hwnd);
+        UINT dpi = win32_get_dpi_for_window(hwnd);
         float padding = (float)win32_dpi_scale(12, dpi);
         float currentX = tb.left + padding;
         if (iconBitmap)
@@ -438,7 +440,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     if (hoveredButton == Window::Hovered_Close)
         ctx->FillRectangle(rClose, closeHoverBrush);
 
-    UINT dpi = GetDpiForWindow(hwnd);
+    UINT dpi = win32_get_dpi_for_window(hwnd);
     bool isMaximized = win32_window_is_maximized(hwnd);
 
     // Brush pour les icônes
@@ -982,7 +984,7 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
 
         const float itemHeight = (r.bottom - r.top) / (g_activeDropdown.items.empty() ? 1.0f : (float)g_activeDropdown.items.size());
         const float iconSize = 16.0f;
-        const bool drawIcons = (g_activeDropdown.baseId >= 5000 && g_activeDropdown.baseId < 6000);
+        const bool drawIcons = true;
         const float iconColumnWidth = drawIcons ? 26.0f : 0.0f;
         const float leftPad = drawIcons ? 6.0f : 12.0f;
         const float rightPad = 12.0f;

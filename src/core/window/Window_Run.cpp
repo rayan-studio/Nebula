@@ -487,7 +487,7 @@ static std::wstring FindToolchainConfig()
 
 static std::string ReadFileUtf8(const std::wstring &path)
 {
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(std::filesystem::path(path), std::ios::binary);
     if (!file)
         return {};
     std::ostringstream oss;
@@ -1003,6 +1003,13 @@ void Window::RunActiveProject()
         std::wstring cmd;
         std::wstring workDir = buildDir.wstring();
 
+        {
+            TerminalPanel &terminal = GetTerminalPanel();
+            terminal.SetVisible(true);
+            terminal.ShowOutput(true);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+
         if (compiler == SimpleCompiler::MSVC)
         {
             auto vcvars = FindVcVars64();
@@ -1102,6 +1109,7 @@ void Window::RunActiveProject()
     // Route CMake output to Output panel (no extra terminal tabs).
     {
         TerminalPanel &terminal = GetTerminalPanel();
+        terminal.SetVisible(true);
         terminal.ClearOutput();
         terminal.ShowOutput(true);
         InvalidateRect(hwnd_, nullptr, FALSE);
@@ -1271,4 +1279,3 @@ bool Window::HandleCommandLineArgs()
     }
     return openedFromArgs;
 }
-

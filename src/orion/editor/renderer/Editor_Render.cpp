@@ -395,13 +395,20 @@ namespace Orion
 
         D2D1_POINT_2F caretPos = TextToScreenPosition(state_.caret);
 
-        D2D1_RECT_F rect = D2D1::RectF(
-            caretPos.x,
-            caretPos.y,
-            caretPos.x + metrics_.caretWidth,
-            caretPos.y + metrics_.lineHeight);
+        const float caretHeight = metrics_.lineHeight * 0.9f;
+        const float caretTop = caretPos.y + (metrics_.lineHeight - caretHeight) * 0.5f;
 
+        // Pixel-align for crisp 2px caret
+        float x = std::round(caretPos.x);
+        float y = std::round(caretTop);
+        float h = std::round(caretHeight);
+        const float w = 2.0f;
+
+        D2D1_RECT_F rect = D2D1::RectF(x, y, x + w, y + h);
+        D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
+        ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
         ctx->FillRectangle(rect, brush);
+        ctx->SetAntialiasMode(oldAA);
 
         if (brush)
             brush->Release();

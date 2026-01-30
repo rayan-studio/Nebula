@@ -1,4 +1,4 @@
-﻿#include "core/window/Window.h"
+#include "core/window/Window.h"
 #include "ui/graphics/Skia.h"
 #include "../../helpers/path_helpers.h"
 #include "utils/logger/Logger.h"
@@ -342,10 +342,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         if (!wParam)
             return DefWindowProc(hwnd_, uMsg, wParam, lParam);
 
-        UINT dpi = GetDpiForWindow(hwnd_);
-        int frame_x = GetSystemMetricsForDpi(SM_CXFRAME, dpi);
-        int frame_y = GetSystemMetricsForDpi(SM_CYFRAME, dpi);
-        int padding = GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+        UINT dpi = win32_get_dpi_for_window(hwnd_);
+        int frame_x = win32_get_system_metrics_for_dpi(SM_CXFRAME, dpi);
+        int frame_y = win32_get_system_metrics_for_dpi(SM_CYFRAME, dpi);
+        int padding = win32_get_system_metrics_for_dpi(SM_CXPADDEDBORDER, dpi);
 
         NCCALCSIZE_PARAMS *params = (NCCALCSIZE_PARAMS *)lParam;
         RECT *requested_client_rect = params->rgrc;
@@ -426,7 +426,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 }
             }
         }
-        SetText(L"Bonjour â€” texte rendu via GPU (Direct2D)");
+        SetText(L"Bonjour — texte rendu via GPU (Direct2D)");
 
         SetTimer(hwnd_, CARET_TIMER_ID, CARET_TIMER_INTERVAL_MS, nullptr);
 
@@ -446,7 +446,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 
         RECT clientRect;
         GetClientRect(hwnd_, &clientRect);
-        UINT dpiInit = GetDpiForWindow(hwnd_);
+        UINT dpiInit = win32_get_dpi_for_window(hwnd_);
         UINT initW = MulDiv(clientRect.right - clientRect.left, dpiInit, 96);
         UINT initH = MulDiv(clientRect.bottom - clientRect.top, dpiInit, 96);
         skia_->Resize(initW, initH);
@@ -570,7 +570,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         {
             RECT clientRect;
             GetClientRect(hwnd_, &clientRect);
-            UINT dpi = GetDpiForWindow(hwnd_);
+            UINT dpi = win32_get_dpi_for_window(hwnd_);
             UINT w = MulDiv(clientRect.right - clientRect.left, dpi, 96);
             UINT h = MulDiv(clientRect.bottom - clientRect.top, dpi, 96);
             skia_->Resize(w, h);
@@ -865,7 +865,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                         if (items.empty())
                             items.push_back(L"(Aucun recent)");
 
-                        ShowSubmenuDropdown(hwnd_, items, D2D1::Point2F(itemRect.right + 6.0f, itemRect.top), 8000);
+                        // Keep submenu flush with main menu to avoid mouse gap.
+                        ShowSubmenuDropdown(hwnd_, items, D2D1::Point2F(itemRect.right - 1.0f, itemRect.top), 8000);
                         if (items.size() == 1 && recentProjects_.empty())
                         {
                             MenuDropdown &sd = GetSubmenuDropdown();
@@ -926,7 +927,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         {
             int r = tabBar_.OnLeftButtonDown(pt);
 
-            if (r != -1) // âœ… tab activated OR close requested => event consumed
+            if (r != -1) // ✅ tab activated OR close requested => event consumed
             {
                 // Ensure any editor mouse interactions are cancelled and release capture
                 ReleaseCapture();
@@ -944,8 +945,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                         {
                             int choice = MessageBoxW(
                                 hwnd_,
-                                L"Le fichier n'est pas sauvegardÃ©.\n\nOui = Enregistrer et fermer\nNon = Fermer sans enregistrer\nAnnuler = Annuler",
-                                L"Fichier modifiÃ©",
+                                L"Le fichier n'est pas sauvegardé.\n\nOui = Enregistrer et fermer\nNon = Fermer sans enregistrer\nAnnuler = Annuler",
+                                L"Fichier modifié",
                                 MB_YESNOCANCEL | MB_ICONWARNING);
 
                             if (choice == IDYES)
@@ -1118,7 +1119,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     {
         POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
 
-        // PRIORITÃ‰ : Explorer double-click
+        // PRIORITÉ : Explorer double-click
         if (GetExplorerManager().IsVisible() && GetExplorerManager().IsPointInExplorer(pt))
         {
             GetExplorerManager().OnLeftButtonDoubleClick(hwnd_, pt);
@@ -1130,7 +1131,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         GetClientRect(hwnd_, &clientRect);
         // If double-click occurred inside the editor area (not in panel/sidebar)
         // and there is no active tab, create a new empty untitled tab.
-        UINT dpi = GetDpiForWindow(hwnd_);
+        UINT dpi = win32_get_dpi_for_window(hwnd_);
         int sidebarWidth = win32_dpi_scale(50, dpi);
 
         // Get panel width from active panel
@@ -1205,7 +1206,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
         }
-        // âœ… Toute la logique est dans KeyboardManager
+        // ✅ Toute la logique est dans KeyboardManager
         if (keyboard_.OnKeyDown(wParam))
             return 0;
 
@@ -1265,7 +1266,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         // Route wheel to editor when not over panel (pass Ctrl state for zoom)
         {
             int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-            // âœ¨ DÃ©tecter si Ctrl est pressÃ©
+            // ✨ Détecter si Ctrl est pressé
             bool ctrlPressed = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
 
             Orion::Editor *editor = GetEditor();
@@ -1339,7 +1340,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         TrackMouseEvent(&tme);
 
         // ============================================================
-        // âœ… TABBAR HOVER: always update first (anti hover "stuck")
+        // ✅ TABBAR HOVER: always update first (anti hover "stuck")
         // ============================================================
         bool tabChanged = UpdateTabBarHover(pt);
         if (tabChanged)
@@ -1491,7 +1492,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 D2D1_RECT_F r = GetActiveDropdown().rect;
                 float itemHeight = (r.bottom - r.top) / (GetActiveDropdown().items.empty() ? 1.0f : (float)GetActiveDropdown().items.size());
                 D2D1_RECT_F itemRect = D2D1::RectF(r.left, r.top + hoveredItem * itemHeight, r.right, r.top + (hoveredItem + 1) * itemHeight);
-                ShowSubmenuDropdown(hwnd_, items, D2D1::Point2F(itemRect.right + 6.0f, itemRect.top), 8000);
+                // Keep submenu flush with main menu to avoid mouse gap.
+                ShowSubmenuDropdown(hwnd_, items, D2D1::Point2F(itemRect.right - 1.0f, itemRect.top), 8000);
                 if (items.size() == 1 && recentProjects_.empty())
                 {
                     MenuDropdown &dd = GetSubmenuDropdown();
@@ -1546,7 +1548,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             {
                 RECT client;
                 GetClientRect(hwnd_, &client);
-                UINT dpi = GetDpiForWindow(hwnd_);
+                UINT dpi = win32_get_dpi_for_window(hwnd_);
                 int footerLogicalH = 28;
                 int footerH = win32_dpi_scale(footerLogicalH, dpi);
 
@@ -1726,7 +1728,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
-        // âœ… guarantees tabbar hover is clean
+        // ✅ guarantees tabbar hover is clean
         tabBar_.ClearHover();
         RECT tabRect = GetTabBarRectClient();
         InvalidateRect(hwnd_, &tabRect, FALSE);
@@ -2209,7 +2211,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 return TRUE;
             }
 
-            // Zone de l'Ã©diteur : curseur texte
+            // Zone de l'éditeur : curseur texte
             Orion::Editor *editor = GetEditor();
             if (editor)
             {
@@ -2217,15 +2219,20 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 RECT clientRect;
                 GetClientRect(hwnd_, &clientRect);
 
-                // Si on est en dessous de la barre de titre + tabs, probablement dans l'Ã©diteur
+                // Si on est en dessous de la barre de titre + tabs, probablement dans l'éditeur
                 if (pt.y >= tbRect.bottom + tabBar_.GetHeight())
                 {
+                    if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0 && editor->IsDefinitionHoverActive())
+                    {
+                        SetCursor(LoadCursor(NULL, IDC_HAND));
+                        return TRUE;
+                    }
                     SetCursor(LoadCursor(NULL, IDC_IBEAM));
                     return TRUE;
                 }
             }
 
-            // DÃ©faut : flÃ¨che
+            // Défaut : flèche
             SetCursor(LoadCursor(NULL, IDC_ARROW));
             return TRUE;
         }
@@ -2294,7 +2301,7 @@ RECT Window::GetTabBarRectClient() const
     RECT client;
     GetClientRect(hwnd_, &client);
 
-    UINT dpi = GetDpiForWindow(hwnd_);
+    UINT dpi = win32_get_dpi_for_window(hwnd_);
     int sidebarWidth = win32_dpi_scale(52, dpi);
     int panelLeftWidth = 0;
     int panelRightWidth = 0;

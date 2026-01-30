@@ -8,6 +8,36 @@ int win32_dpi_scale(int value, UINT dpi) {
     return (int)((float)value * dpi / 96);
 }
 
+UINT win32_get_dpi_for_window(HWND handle) {
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (user32) {
+        using GetDpiForWindow_t = UINT(WINAPI *)(HWND);
+        auto pGetDpiForWindow = reinterpret_cast<GetDpiForWindow_t>(
+            GetProcAddress(user32, "GetDpiForWindow"));
+        if (pGetDpiForWindow)
+            return pGetDpiForWindow(handle);
+    }
+    HDC hdc = GetDC(handle);
+    UINT dpi = 96;
+    if (hdc) {
+        dpi = (UINT)GetDeviceCaps(hdc, LOGPIXELSX);
+        ReleaseDC(handle, hdc);
+    }
+    return dpi ? dpi : 96;
+}
+
+int win32_get_system_metrics_for_dpi(int metric, UINT dpi) {
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (user32) {
+        using GetSystemMetricsForDpi_t = int(WINAPI *)(int, UINT);
+        auto pGetSystemMetricsForDpi = reinterpret_cast<GetSystemMetricsForDpi_t>(
+            GetProcAddress(user32, "GetSystemMetricsForDpi"));
+        if (pGetSystemMetricsForDpi)
+            return pGetSystemMetricsForDpi(metric, dpi);
+    }
+    return GetSystemMetrics(metric);
+}
+
 bool win32_window_is_maximized(HWND handle) {
     WINDOWPLACEMENT placement = {0};
     placement.length = sizeof(WINDOWPLACEMENT);
@@ -20,7 +50,7 @@ bool win32_window_is_maximized(HWND handle) {
 RECT win32_titlebar_rect(HWND handle) {
     // Use a fixed title bar height of 35 logical pixels (DPI-scaled)
     const int fixed_height = 35; // logical pixels
-    UINT dpi = GetDpiForWindow(handle);
+    UINT dpi = win32_get_dpi_for_window(handle);
     int height = win32_dpi_scale(fixed_height, dpi);
 
     RECT rect;
@@ -28,7 +58,7 @@ RECT win32_titlebar_rect(HWND handle) {
     rect.bottom = rect.top + height;
 
     if (win32_window_is_maximized(handle)) {
-        int frame_y = GetSystemMetricsForDpi(SM_CYFRAME, dpi);
+        int frame_y = win32_get_system_metrics_for_dpi(SM_CYFRAME, dpi);
         rect.top -= frame_y;
         rect.bottom -= frame_y;
     }
@@ -44,7 +74,7 @@ RECT win32_fake_shadow_rect(HWND handle) {
 }
 
 CustomTitleBarButtonRects win32_get_title_bar_button_rects(HWND handle, const RECT *title_bar_rect) {
-    UINT dpi = GetDpiForWindow(handle);
+    UINT dpi = win32_get_dpi_for_window(handle);
     CustomTitleBarButtonRects button_rects;
     int button_width = win32_dpi_scale(47, dpi);
     button_rects.close = *title_bar_rect;

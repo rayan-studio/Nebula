@@ -131,7 +131,7 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
         RECT client;
         GetClientRect(hwnd, &client);
         RECT tbRect = win32_titlebar_rect(hwnd);
-        UINT dpi = GetDpiForWindow(hwnd);
+        UINT dpi = win32_get_dpi_for_window(hwnd);
         // Use the same sidebar width as Sidebar.cpp (scaled 52 logical px) to avoid overlap/gaps
         float sidebarWidth = static_cast<float>(win32_dpi_scale(52, dpi));
         
@@ -162,7 +162,7 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
 
         if (activeTabIndex >= 0)
         {
-            UINT dpiInner = GetDpiForWindow(hwnd);
+            UINT dpiInner = win32_get_dpi_for_window(hwnd);
             int footerLogicalH = 28;
             int footerH = win32_dpi_scale(footerLogicalH, dpiInner);
 
@@ -255,7 +255,7 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
             float editorRight = tabBarRight;
             float editorBottom = (float)client.bottom;
             
-            UINT dpiInner = GetDpiForWindow(hwnd);
+            UINT dpiInner = win32_get_dpi_for_window(hwnd);
             int footerLogicalH = 28;
             int footerH = win32_dpi_scale(footerLogicalH, dpiInner);
             float footerTop = (float)(client.bottom - footerH);

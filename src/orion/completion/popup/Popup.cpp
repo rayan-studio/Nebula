@@ -1,6 +1,7 @@
 #include "Popup.h"
 #include <algorithm>
 #include <dwrite_1.h>
+#include <cmath>
 
 namespace Orion
 {
@@ -267,7 +268,7 @@ namespace Orion
             float deltaY = (float)(pt.y - dragStartY_);
             float frac = deltaY / available;
             int maxIndex = total - visibleCount;
-            int newIndex = dragStartIndex_ + (int)roundf(frac * maxIndex);
+            int newIndex = dragStartIndex_ + (int)std::roundf(frac * maxIndex);
             if (newIndex < 0) newIndex = 0;
             if (newIndex > maxIndex) newIndex = maxIndex;
             scrollIndex_ = newIndex;

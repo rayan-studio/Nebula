@@ -45,7 +45,7 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
 
     RECT client;
     GetClientRect(hwnd, &client);
-    UINT dpi = GetDpiForWindow(hwnd);
+    UINT dpi = win32_get_dpi_for_window(hwnd);
 
     int footerLogicalH = 28; // logical px
     int footerH = win32_dpi_scale(footerLogicalH, dpi);

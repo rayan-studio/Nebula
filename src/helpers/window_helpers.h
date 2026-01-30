@@ -19,6 +19,8 @@ typedef struct {
 } CustomTitleBarButtonRects;
 
 int win32_dpi_scale(int value, UINT dpi);
+UINT win32_get_dpi_for_window(HWND handle);
+int win32_get_system_metrics_for_dpi(int metric, UINT dpi);
 bool win32_window_is_maximized(HWND handle);
 RECT win32_titlebar_rect(HWND handle);
 RECT win32_fake_shadow_rect(HWND handle);

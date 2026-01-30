@@ -2,6 +2,7 @@
 #include "utils/logger/Logger.h"
 #include <windowsx.h>
 #include <sstream>
+#include <algorithm>
 
 static const wchar_t* POPUP_CLASS = L"NebulaCustomPopup";
 
@@ -50,8 +51,8 @@ static LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM
         RECT rc; 
         GetClientRect(hwnd, &rc);
         
-        int itemH = (rc.bottom - rc.top) / max(1, (int)s->items.size());
-        int idx = pt.y / max(1, itemH);
+        int itemH = (rc.bottom - rc.top) / (std::max)(1, (int)s->items.size());
+        int idx = pt.y / (std::max)(1, itemH);
         
         if (idx < 0 || idx >= (int)s->items.size()) {
             idx = -1;
@@ -86,8 +87,8 @@ static LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM
         RECT rc; 
         GetClientRect(hwnd, &rc);
         
-        int itemH = (rc.bottom - rc.top) / max(1, (int)s->items.size());
-        int idx = pt.y / max(1, itemH);
+        int itemH = (rc.bottom - rc.top) / (std::max)(1, (int)s->items.size());
+        int idx = pt.y / (std::max)(1, itemH);
         
         if (idx >= 0 && idx < (int)s->items.size()) {
             s->hoverIndex = idx;
@@ -103,8 +104,8 @@ static LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM
         RECT rc; 
         GetClientRect(hwnd, &rc);
         
-        int itemH = (rc.bottom - rc.top) / max(1, (int)s->items.size());
-        int idx = pt.y / max(1, itemH);
+        int itemH = (rc.bottom - rc.top) / (std::max)(1, (int)s->items.size());
+        int idx = pt.y / (std::max)(1, itemH);
         
         if (idx >= 0 && idx < (int)s->items.size()) {
             // Envoyer le message au parent
@@ -141,7 +142,8 @@ static LRESULT CALLBACK PopupWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM
         
         // Draw items
         int count = (int)s->items.size();
-        int itemH = max(1, (rc.bottom - rc.top) / max(1, count));
+        int availableH = (int)(rc.bottom - rc.top);
+        int itemH = (std::max)(1, availableH / (std::max)(1, count));
         
         HFONT f = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
         HFONT old = (HFONT)SelectObject(hdc, f);

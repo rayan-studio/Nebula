@@ -20,13 +20,13 @@ SidebarRenderer& SidebarRenderer::Instance()
 
 int SidebarRenderer::GetPhysicalWidth(HWND hwnd) const
 {
-    UINT dpi = GetDpiForWindow(hwnd);
+    UINT dpi = win32_get_dpi_for_window(hwnd);
     return win32_dpi_scale(logicalWidth_, dpi);
 }
 
 void SidebarRenderer::UpdateItemRects(HWND hwnd)
 {
-    UINT dpi = GetDpiForWindow(hwnd);
+    UINT dpi = win32_get_dpi_for_window(hwnd);
     RECT tbRect = win32_titlebar_rect(hwnd);
     RECT clientRect;
     GetClientRect(hwnd, &clientRect);
@@ -161,7 +161,7 @@ void SidebarRenderer::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND 
     
     UpdateItemRects(hwnd);
     
-    UINT dpi = GetDpiForWindow(hwnd);
+    UINT dpi = win32_get_dpi_for_window(hwnd);
     RECT tbRect = win32_titlebar_rect(hwnd);
     RECT clientRect;
     GetClientRect(hwnd, &clientRect);

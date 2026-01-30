@@ -117,7 +117,7 @@ void DrawWelcomeD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, c
 
     ID2D1Bitmap *icon = LoadBitmapFromFile(ctx, L"assets/favicon.ico");
 
-    UINT dpi = GetDpiForWindow(hwnd);
+    UINT dpi = win32_get_dpi_for_window(hwnd);
     float iconSize = static_cast<float>(win32_dpi_scale(64, dpi));
     float centerX = editorLeft + width * 0.5f;
     float centerY = editorTop + height * 0.34f;

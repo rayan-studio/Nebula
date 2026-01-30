@@ -6,7 +6,7 @@ void SettingsTabView::UpdateLayout(HWND hwnd, float left, float top, float right
 {
     bounds_ = D2D1::RectF(left, top, right, bottom);
 
-    UINT dpi = GetDpiForWindow(hwnd);
+    UINT dpi = win32_get_dpi_for_window(hwnd);
     float padding = (float)win32_dpi_scale(24, dpi);
     float titleH = (float)win32_dpi_scale(42, dpi);
 

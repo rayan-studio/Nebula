@@ -4,6 +4,7 @@
 #include <dwmapi.h>
 #include <algorithm>
 #include <sstream>
+#include "helpers/window_helpers.h"
 
 static const wchar_t *POPUP_WINDOW_CLASS = L"NebulaPopupWindow";
 static HWND g_activePopup = nullptr;
@@ -80,10 +81,10 @@ static LRESULT CALLBACK PopupWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         if (wParam)
             return 0;
         {
-            UINT dpi = GetDpiForWindow(hwnd);
-            int frame_x = GetSystemMetricsForDpi(SM_CXFRAME, dpi);
-            int frame_y = GetSystemMetricsForDpi(SM_CYFRAME, dpi);
-            int padding = GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+            UINT dpi = win32_get_dpi_for_window(hwnd);
+            int frame_x = win32_get_system_metrics_for_dpi(SM_CXFRAME, dpi);
+            int frame_y = win32_get_system_metrics_for_dpi(SM_CYFRAME, dpi);
+            int padding = win32_get_system_metrics_for_dpi(SM_CXPADDEDBORDER, dpi);
             RECT *rc = (RECT *)lParam;
             rc->left += frame_x + padding;
             rc->right -= frame_x + padding;

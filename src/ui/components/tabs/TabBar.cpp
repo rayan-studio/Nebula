@@ -302,7 +302,7 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
 
             // Determine if we have an icon for this tab (re-use Explorer's icon loader)
             float textLeft = x + 10;
-            UINT dpi = GetDpiForWindow(hwnd);
+            UINT dpi = win32_get_dpi_for_window(hwnd);
             int iconPx = win32_dpi_scale(16, dpi);
             ID2D1Bitmap *iconBitmap = nullptr;
             if (!tab.filePath.empty())

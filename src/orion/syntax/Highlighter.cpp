@@ -22,12 +22,29 @@ static const std::unordered_set<std::wstring> cppKeywords = {
     L"break", L"continue", L"goto", L"constexpr", L"const", L"static",
     L"inline", L"virtual", L"override", L"public", L"private", L"protected",
     L"namespace", L"using", L"class", L"struct", L"enum", L"template",
-    L"typename", L"this", L"new", L"delete", L"try", L"catch", L"throw"
+    L"typename", L"this", L"new", L"delete", L"try", L"catch", L"throw",
+    L"nullptr", L"true", L"false"
 };
 
 static const std::unordered_set<std::wstring> cppTypes = {
     L"int", L"float", L"double", L"char", L"bool", L"void", L"long", L"short",
-    L"size_t", L"std", L"auto"
+    L"size_t", L"std", L"auto",
+    L"string", L"wstring", L"string_view", L"vector", L"array", L"deque", L"list", L"forward_list",
+    L"map", L"set", L"unordered_map", L"unordered_set", L"pair", L"tuple", L"optional", L"variant",
+    L"regex", L"smatch", L"wregex", L"basic_regex",
+    L"unique_ptr", L"shared_ptr", L"weak_ptr", L"function",
+    L"filesystem", L"path"
+};
+
+static const std::unordered_set<std::wstring> cppKnownTypes = {
+    L"D2D1_RECT_F", L"D2D1_POINT_2F", L"D2D1_ELLIPSE", L"D2D1_ROUNDED_RECT",
+    L"D2D1_MATRIX_3X2_F", L"D2D1_COLOR_F", L"D2D1_SIZE_F", L"D2D1_SIZE_U",
+    L"ID2D1RenderTarget", L"ID2D1SolidColorBrush", L"ID2D1Bitmap", L"ID2D1Brush",
+    L"IDWriteFactory", L"IDWriteTextFormat", L"IDWriteTextLayout", L"IDWriteTypography",
+    L"HWND", L"RECT", L"POINT", L"SIZE", L"HBITMAP", L"HICON", L"HBRUSH",
+    L"UINT", L"DWORD", L"LPARAM", L"WPARAM", L"LRESULT", L"HANDLE", L"HRESULT",
+    L"std", L"std::string", L"std::wstring", L"std::vector", L"std::map", L"std::unordered_map",
+    L"NSVGimage", L"NSVGrasterizer"
 };
 
 static const std::unordered_set<std::wstring> jsKeywords = {
@@ -473,6 +490,9 @@ std::vector<Token> Highlighter::TokenizeLine(const std::wstring &line, const std
 
     int i = 0;
     int n = (int)line.size();
+    bool isCpp = (ext == L".c" || ext == L".cpp" || ext == L".cc" || ext == L".cxx" ||
+                  ext == L".h" || ext == L".hpp" || ext == L".hh" || ext == L".hxx" || ext == L".inl");
+    bool prevWasType = false;
     while (i < n)
     {
         wchar_t c = line[i];
@@ -542,6 +562,14 @@ std::vector<Token> Highlighter::TokenizeLine(const std::wstring &line, const std
             }
         }
 
+        if (c == L';' || c == L'{' || c == L'}')
+        {
+            out.push_back({i, 1, TokenType::Normal});
+            i++;
+            prevWasType = false;
+            continue;
+        }
+
         // number
         if (iswdigit(c))
         {
@@ -549,6 +577,7 @@ std::vector<Token> Highlighter::TokenizeLine(const std::wstring &line, const std
             while (i < n && (iswdigit(line[i]) || line[i] == L'.' || line[i] == L'x' || line[i] == L'X' || iswxdigit(line[i])))
                 i++;
             out.push_back({start, i - start, TokenType::Number});
+            prevWasType = false;
             continue;
         }
 
@@ -563,12 +592,56 @@ std::vector<Token> Highlighter::TokenizeLine(const std::wstring &line, const std
             std::wstring low = word;
             for (auto &ch : low) ch = towlower(ch);
 
-            if (kwSet->find(low) != kwSet->end())
+            auto isMacro = [&](const std::wstring &w) -> bool
+            {
+                if (w.size() < 2)
+                    return false;
+                bool hasUpper = false;
+                for (wchar_t ch : w)
+                {
+                    if (iswalpha(ch))
+                    {
+                        if (!iswupper(ch))
+                            return false;
+                        hasUpper = true;
+                    }
+                    else if (!(iswdigit(ch) || ch == L'_'))
+                    {
+                        return false;
+                    }
+                }
+                return hasUpper;
+            };
+
+            if (isMacro(word))
+                out.push_back({start, (int)(i - start), TokenType::Macro});
+            else if (kwSet->find(low) != kwSet->end())
                 out.push_back({start, (int)(i - start), TokenType::Keyword});
-            else if (typeSet->find(low) != typeSet->end())
+            else if (typeSet->find(low) != typeSet->end() || cppKnownTypes.find(word) != cppKnownTypes.end() ||
+                     (ext == L".c" || ext == L".cpp" || ext == L".h" || ext == L".hpp") && iswupper(word[0]))
+            {
                 out.push_back({start, (int)(i - start), TokenType::Type});
+                if (isCpp)
+                    prevWasType = true;
+            }
             else
-                out.push_back({start, (int)(i - start), TokenType::Normal});
+            {
+                int j = i;
+                while (j < n && iswspace(line[j])) j++;
+                if (j < n && line[j] == L'(')
+                {
+                    out.push_back({start, (int)(i - start), TokenType::Function});
+                    prevWasType = false;
+                }
+                else
+                {
+                    if (isCpp)
+                        out.push_back({start, (int)(i - start), TokenType::Variable});
+                    else
+                        out.push_back({start, (int)(i - start), TokenType::Normal});
+                    prevWasType = false;
+                }
+            }
 
             continue;
         }
@@ -576,6 +649,8 @@ std::vector<Token> Highlighter::TokenizeLine(const std::wstring &line, const std
         // punctuation/other
         out.push_back({i, 1, TokenType::Normal});
         i++;
+        if (!(c == L':' || c == L'*' || c == L'&' || c == L'<' || c == L'>' || c == L','))
+            prevWasType = false;
     }
 
     return out;

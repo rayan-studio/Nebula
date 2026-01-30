@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cwctype>
 #include <filesystem>
+#include <thread>
 #include <shobjidl.h>
 #include <wincodec.h>
 

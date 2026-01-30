@@ -117,6 +117,7 @@ private:
     bool  HitTestPlus(POINT pt) const;
     bool  HitTestProblems(POINT pt) const;
     bool  HitTestOutput(POINT pt) const;
+    bool  HitTestOutputCopy(POINT pt) const;
     bool  IsPointInTabsBar(POINT pt) const;
     float TabsBarRightEdge() const;
 
@@ -181,6 +182,10 @@ private:
     Scrollbar outputScrollbar_;
     bool outputAutoFollow_ = true;
     bool outputPendingScrollToBottom_ = false;
+    bool hoveredOutputCopy_ = false;
+    D2D1_RECT_F outputCopyRect_ = D2D1::RectF(0, 0, 0, 0);
+    bool outputCopyFeedback_ = false;
+    DWORD outputCopyFeedbackUntil_ = 0;
 };
 
 // Global accessor

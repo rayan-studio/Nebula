@@ -208,8 +208,8 @@ namespace Orion::Geometry
                                 if (li == ob.line)
                                     continue; // same-line pairs don't get guides
                                 IndentGuide g;
-                                g.startLine = ob.line;
-                                g.endLine = li;
+                                g.startLine = ob.line + 1; // start after opening brace line
+                                g.endLine = li - 1; // stop before closing brace line
                                 g.visualCol = ob.visualCol;
                                 g.active = (activeLine >= g.startLine && activeLine <= g.endLine);
                                 out.push_back(g);
@@ -227,7 +227,7 @@ namespace Orion::Geometry
         for (const auto &ob : stack)
         {
             IndentGuide g;
-            g.startLine = ob.line;
+            g.startLine = ob.line + 1; // start after opening brace line
             g.endLine = lastLine - 1;
             g.visualCol = ob.visualCol;
             g.active = (activeLine >= g.startLine && activeLine <= g.endLine);

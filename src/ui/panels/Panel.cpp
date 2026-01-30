@@ -25,7 +25,7 @@ void Panel::UpdateBaseLayout(HWND hwnd, float leftEdge)
     RECT clientRect;
     GetClientRect(hwnd, &clientRect);
 
-    UINT dpi = GetDpiForWindow(hwnd);
+    UINT dpi = win32_get_dpi_for_window(hwnd);
     float scale = dpi / 96.0f;
 
     RECT tbRect = win32_titlebar_rect(hwnd);
@@ -140,7 +140,7 @@ bool Panel::HandleResizeMouseMove(HWND hwnd, POINT clientPoint)
     if (state_.isResizing)
     {
         // Resize actif: utiliser clientPoint.x (stable)
-        UINT dpi = GetDpiForWindow(hwnd);
+        UINT dpi = win32_get_dpi_for_window(hwnd);
 
         int deltaPhysical = clientPoint.x - state_.resizeStartClientX;
         int deltaLogical = MulDiv(deltaPhysical, 96, (int)dpi);

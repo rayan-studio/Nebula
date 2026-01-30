@@ -1,5 +1,7 @@
 #include "TerminalPanel.h"
 #include "TerminalSession.h"
+#include "core/explorer/Explorer.h"
+#include "helpers/window_helpers.h"
 
 #include <algorithm>
 #include <cmath>
@@ -342,6 +344,12 @@ bool TerminalPanel::HitTestOutput(POINT pt) const
     return (pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom);
 }
 
+bool TerminalPanel::HitTestOutputCopy(POINT pt) const
+{
+    return pt.x >= outputCopyRect_.left && pt.x <= outputCopyRect_.right &&
+           pt.y >= outputCopyRect_.top && pt.y <= outputCopyRect_.bottom;
+}
+
 bool TerminalPanel::IsPointInTabsBar(POINT pt) const
 {
     RECT t = TabsBarRectClient();
@@ -407,6 +415,48 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
 
     if (showOutput_ && IsPointInPanel(pt))
     {
+        if (HitTestOutputCopy(pt))
+        {
+            std::wstring all;
+            {
+                std::lock_guard<std::mutex> lock(outputMutex_);
+                for (const auto& l : outputLines_)
+                {
+                    all.append(l);
+                    all.push_back(L'\n');
+                }
+                if (!outputBuffer_.empty())
+                    all.append(outputBuffer_);
+            }
+
+            if (!all.empty())
+            {
+                bool copied = false;
+                if (OpenClipboard(hwnd))
+                {
+                    EmptyClipboard();
+                    size_t bytes = (all.size() + 1) * sizeof(wchar_t);
+                    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+                    if (mem)
+                    {
+                        void* dst = GlobalLock(mem);
+                        memcpy(dst, all.c_str(), bytes);
+                        GlobalUnlock(mem);
+                        if (SetClipboardData(CF_UNICODETEXT, mem))
+                            copied = true;
+                    }
+                    CloseClipboard();
+                }
+                if (copied)
+                {
+                    outputCopyFeedback_ = true;
+                    outputCopyFeedbackUntil_ = GetTickCount() + 1200;
+                }
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return;
+        }
+
         if (outputScrollbar_.OnLeftButtonDown(pt))
         {
             outputAutoFollow_ = false;
@@ -586,6 +636,14 @@ bool TerminalPanel::OnMouseMove(HWND hwnd, POINT pt)
     hoveredOutput_ = HitTestOutput(pt);
     if (prevOutput != hoveredOutput_)
         changed = true;
+
+    if (showOutput_)
+    {
+        bool prevCopy = hoveredOutputCopy_;
+        hoveredOutputCopy_ = HitTestOutputCopy(pt);
+        if (prevCopy != hoveredOutputCopy_)
+            changed = true;
+    }
 
     if (IsPointInTabsBar(pt) && !hoveredPlus_ && !hoveredProblems_ && !hoveredOutput_)
     {
@@ -1084,6 +1142,46 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
                           accent ? accent : fg);
             float headerBlock = lineH + 4.0f;
             float bodyStartY = headerY + headerBlock;
+            D2D1_RECT_F bodyRect = D2D1::RectF(contentRect.left, bodyStartY, contentRect.right, contentRect.bottom);
+
+            // Copy button (icon)
+            {
+                UINT dpi = hwnd ? win32_get_dpi_for_window(hwnd) : 96;
+                int iconPx = 14;
+                float btnSize = 18.0f;
+                float btnX = contentRect.right - 12.0f - btnSize;
+                float btnY = headerY - 2.0f;
+                outputCopyRect_ = D2D1::RectF(btnX, btnY, btnX + btnSize, btnY + btnSize);
+
+                if (hoveredOutputCopy_)
+                {
+                    ID2D1SolidColorBrush* hover = nullptr;
+                    rt->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.22f, 0.26f, 1.0f), &hover);
+                    if (hover)
+                    {
+                        rt->FillRoundedRectangle(
+                            D2D1::RoundedRect(outputCopyRect_, 3.0f, 3.0f),
+                            hover);
+                        hover->Release();
+                    }
+                }
+
+                DWORD now = GetTickCount();
+                if (outputCopyFeedback_ && now > outputCopyFeedbackUntil_)
+                    outputCopyFeedback_ = false;
+                std::string iconPath = outputCopyFeedback_
+                    ? "assets/ressource/icons/verified.svg"
+                    : "assets/ressource/icons/document.svg";
+                ID2D1Bitmap* bmp = GetExplorerManager().LoadSvgIconPublic(rt, iconPath, iconPx, dpi);
+                if (bmp)
+                {
+                    float pad = (btnSize - (float)iconPx) * 0.5f;
+                    D2D1_RECT_F dst = D2D1::RectF(btnX + pad, btnY + pad,
+                                                  btnX + pad + iconPx, btnY + pad + iconPx);
+                    rt->DrawBitmap(bmp, dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                    bmp->Release();
+                }
+            }
 
             std::vector<std::wstring> lines;
             {
@@ -1115,13 +1213,15 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
             if (lines.empty())
             {
                 std::wstring empty = L"Aucun output pour l'instant";
+                rt->PushAxisAlignedClip(bodyRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
                 rt->DrawTextW(empty.c_str(), (UINT32)empty.size(), listFormat,
                               D2D1::RectF(x, y, contentRect.right - 8.0f, y + lineH),
                               dim ? dim : fg);
+                rt->PopAxisAlignedClip();
             }
             else
             {
-                rt->PushAxisAlignedClip(contentRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                rt->PushAxisAlignedClip(bodyRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
                 int startLine = 0;
                 if (scrollOffset > headerBlock)

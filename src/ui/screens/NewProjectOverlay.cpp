@@ -55,7 +55,7 @@ void NewProjectOverlay::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFact
     ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     ctx->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
 
-    UINT dpi = GetDpiForWindow(window.hwnd_);
+    UINT dpi = win32_get_dpi_for_window(window.hwnd_);
     float scale = (float)dpi / 96.0f;
 
     RECT tbRect = win32_titlebar_rect(window.hwnd_);

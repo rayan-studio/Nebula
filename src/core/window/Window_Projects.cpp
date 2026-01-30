@@ -5,6 +5,7 @@
 #include <shobjidl.h>
 #include <filesystem>
 #include <fstream>
+#include <algorithm>
 #include <unordered_map>
 #include <ctime>
 #include <cctype>

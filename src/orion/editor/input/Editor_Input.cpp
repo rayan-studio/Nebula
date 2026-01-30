@@ -17,6 +17,275 @@
 
 namespace Orion
 {
+    bool Editor::GetWordAtColumn(const std::wstring &line, int column, std::wstring &outWord, int &startCol, int &endCol) const
+    {
+        outWord.clear();
+        startCol = -1;
+        endCol = -1;
+        if (line.empty())
+            return false;
+
+        auto isWordChar = [](wchar_t c)
+        {
+            return (iswalnum(c) != 0) || (c == L'_');
+        };
+
+        int col = column;
+        if (col < 0)
+            col = 0;
+        if (col >= (int)line.size())
+            col = (int)line.size() - 1;
+
+        if (col < 0 || col >= (int)line.size())
+            return false;
+
+        if (!isWordChar(line[col]))
+            return false;
+
+        int left = col;
+        while (left > 0 && isWordChar(line[left - 1]))
+            --left;
+        int right = col;
+        while (right + 1 < (int)line.size() && isWordChar(line[right + 1]))
+            ++right;
+
+        if (right < left)
+            return false;
+
+        outWord = line.substr(left, right - left + 1);
+        startCol = left;
+        endCol = right + 1;
+        return !outWord.empty();
+    }
+
+    static std::wstring StripLineCommentsAndStrings(const std::wstring &line)
+    {
+        std::wstring out = line;
+        bool inString = false;
+        bool inChar = false;
+        bool escape = false;
+        for (size_t i = 0; i < out.size(); ++i)
+        {
+            wchar_t c = out[i];
+            if (escape)
+            {
+                escape = false;
+                out[i] = L' ';
+                continue;
+            }
+            if (c == L'\\')
+            {
+                if (inString || inChar)
+                {
+                    escape = true;
+                    out[i] = L' ';
+                }
+                continue;
+            }
+            if (!inChar && c == L'"')
+            {
+                inString = !inString;
+                out[i] = L' ';
+                continue;
+            }
+            if (!inString && c == L'\'')
+            {
+                inChar = !inChar;
+                out[i] = L' ';
+                continue;
+            }
+            if (!inString && !inChar && c == L'/' && i + 1 < out.size() && out[i + 1] == L'/')
+            {
+                for (size_t k = i; k < out.size(); ++k)
+                    out[k] = L' ';
+                break;
+            }
+            if (inString || inChar)
+                out[i] = L' ';
+        }
+        return out;
+    }
+
+    static bool IsIdentifierChar(wchar_t c)
+    {
+        return (iswalnum(c) != 0) || (c == L'_');
+    }
+
+    bool Editor::FindLocalDefinition(const std::wstring &word, int fromLine, int &outLine, int &outCol) const
+    {
+        outLine = -1;
+        outCol = -1;
+        if (word.empty())
+            return false;
+
+        const std::wstring modifiers[] = {
+            L"const", L"static", L"constexpr", L"volatile", L"extern", L"register",
+            L"mutable", L"inline", L"typedef", L"using"};
+        const std::wstring keywords[] = {
+            L"if", L"for", L"while", L"switch", L"return", L"case", L"catch",
+            L"sizeof", L"new", L"delete"};
+
+        auto isModifier = [&](const std::wstring &tok) -> bool
+        {
+            for (const auto &m : modifiers)
+                if (tok == m)
+                    return true;
+            return false;
+        };
+        auto isKeyword = [&](const std::wstring &tok) -> bool
+        {
+            for (const auto &k : keywords)
+                if (tok == k)
+                    return true;
+            return false;
+        };
+        auto isTypeToken = [&](const std::wstring &tok) -> bool
+        {
+            if (tok.empty())
+                return false;
+            if (tok == L"auto" || tok == L"int" || tok == L"float" || tok == L"double" ||
+                tok == L"char" || tok == L"bool" || tok == L"short" || tok == L"long" ||
+                tok == L"unsigned" || tok == L"signed" || tok == L"size_t")
+                return true;
+            if (tok.find(L"::") != std::wstring::npos)
+                return true;
+            if (iswupper(tok[0]))
+                return true;
+            return false;
+        };
+
+        for (int li = fromLine; li >= 0; --li)
+        {
+            if (li < 0 || li >= (int)state_.lines.size())
+                continue;
+            std::wstring raw = state_.lines[li];
+            if (raw.find(L"#include") != std::wstring::npos)
+                continue;
+            std::wstring line = StripLineCommentsAndStrings(raw);
+
+            size_t pos = 0;
+            while (true)
+            {
+                pos = line.find(word, pos);
+                if (pos == std::wstring::npos)
+                    break;
+                size_t end = pos + word.size();
+                bool leftOk = (pos == 0) || !IsIdentifierChar(line[pos - 1]);
+                bool rightOk = (end >= line.size()) || !IsIdentifierChar(line[end]);
+                if (!leftOk || !rightOk)
+                {
+                    pos = end;
+                    continue;
+                }
+
+                // avoid member access or scope resolution
+                size_t p = pos;
+                while (p > 0 && iswspace(line[p - 1]))
+                    --p;
+                if (p > 0)
+                {
+                    wchar_t prev = line[p - 1];
+                    if (prev == L'.' || prev == L':' || prev == L'>')
+                    {
+                        pos = end;
+                        continue;
+                    }
+                }
+
+                // must look like a declaration: needs '=' or ';' after the word
+                size_t semi = line.find(L';', end);
+                size_t eq = line.find(L'=', end);
+                if (semi == std::wstring::npos && eq == std::wstring::npos)
+                {
+                    pos = end;
+                    continue;
+                }
+
+                // find token before word (skip pointers/refs/spaces)
+                size_t j = pos;
+                while (j > 0 && (iswspace(line[j - 1]) || line[j - 1] == L'*' || line[j - 1] == L'&'))
+                    --j;
+                if (j == 0)
+                {
+                    pos = end;
+                    continue;
+                }
+
+                size_t tokEnd = j;
+                size_t tokStart = tokEnd;
+                while (tokStart > 0 && (IsIdentifierChar(line[tokStart - 1]) || line[tokStart - 1] == L':'))
+                    --tokStart;
+                std::wstring tok = line.substr(tokStart, tokEnd - tokStart);
+                if (tok.size() >= 2 && tok.back() == L':' && tok[tok.size() - 2] == L':')
+                    tok.pop_back();
+
+                // handle modifiers like "const", "static"
+                while (isModifier(tok) && tokStart > 0)
+                {
+                    size_t k = tokStart;
+                    while (k > 0 && (iswspace(line[k - 1]) || line[k - 1] == L'*' || line[k - 1] == L'&'))
+                        --k;
+                    if (k == 0)
+                        break;
+                    size_t tEnd = k;
+                    size_t tStart = tEnd;
+                    while (tStart > 0 && (IsIdentifierChar(line[tStart - 1]) || line[tStart - 1] == L':'))
+                        --tStart;
+                    tok = line.substr(tStart, tEnd - tStart);
+                    tokStart = tStart;
+                }
+
+                if (!tok.empty() && !isKeyword(tok) && isTypeToken(tok))
+                {
+                    outLine = li;
+                    outCol = (int)pos;
+                    return true;
+                }
+
+                pos = end;
+            }
+        }
+        return false;
+    }
+
+    static bool GetIncludePathRange(const std::wstring &line, int column, int &startCol, int &endCol)
+    {
+        startCol = -1;
+        endCol = -1;
+
+        size_t incPos = line.find(L"#include");
+        if (incPos == std::wstring::npos)
+            return false;
+
+        size_t q1 = line.find(L'"', incPos);
+        size_t q2 = (q1 != std::wstring::npos) ? line.find(L'"', q1 + 1) : std::wstring::npos;
+        size_t a1 = line.find(L'<', incPos);
+        size_t a2 = (a1 != std::wstring::npos) ? line.find(L'>', a1 + 1) : std::wstring::npos;
+
+        size_t start = std::wstring::npos;
+        size_t end = std::wstring::npos;
+        if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1 + 1)
+        {
+            start = q1 + 1;
+            end = q2;
+        }
+        else if (a1 != std::wstring::npos && a2 != std::wstring::npos && a2 > a1 + 1)
+        {
+            start = a1 + 1;
+            end = a2;
+        }
+
+        if (start == std::wstring::npos || end == std::wstring::npos)
+            return false;
+
+        if (column < (int)start || column > (int)end)
+            return false;
+
+        startCol = (int)start;
+        endCol = (int)end;
+        return true;
+    }
+
     void Editor::OnLeftButtonDown(HWND hwnd, POINT pt)
     {
         (void)hwnd;
@@ -161,33 +430,25 @@ namespace Orion
         if (ctrlPressed && clickedPos.line >= 0 && clickedPos.line < (int)state_.lines.size())
         {
             const std::wstring &ln = state_.lines[clickedPos.line];
-            auto isWordChar = [](wchar_t c)
-            {
-                return (iswalnum(c) != 0) || (c == L'_');
-            };
-
             std::wstring word;
-            int col = clickedPos.column;
-            if (!ln.empty())
-            {
-                int idx = col;
-                if (idx == (int)ln.size())
-                    idx = (int)ln.size() - 1;
-
-                if (idx >= 0 && idx < (int)ln.size() && isWordChar(ln[idx]))
-                {
-                    int left = idx;
-                    while (left > 0 && isWordChar(ln[left - 1]))
-                        --left;
-                    int right = idx;
-                    while (right + 1 < (int)ln.size() && isWordChar(ln[right + 1]))
-                        ++right;
-                    if (right >= left)
-                        word = ln.substr(left, right - left + 1);
-                }
-            }
+            int startCol = -1;
+            int endCol = -1;
+            GetWordAtColumn(ln, clickedPos.column, word, startCol, endCol);
 
             auto loc = Lsp::LspManager::Instance().GoToDefinition(state_.filePath, ln, clickedPos.line, clickedPos.column, word);
+            if (!loc.has_value())
+            {
+                int defLine = -1;
+                int defCol = -1;
+                if (FindLocalDefinition(word, clickedPos.line, defLine, defCol))
+                {
+                    Lsp::Location local;
+                    local.filePath = state_.filePath;
+                    local.line = defLine;
+                    local.column = defCol;
+                    loc = local;
+                }
+            }
             if (loc.has_value())
             {
                 auto *heapPath = new std::wstring(loc->filePath);
@@ -478,6 +739,115 @@ namespace Orion
                 InvalidateRect(hwnd, nullptr, FALSE);
         }
 
+        // Ctrl+hover definition underline
+        {
+            bool ctrlPressed = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+            bool updateHover = false;
+
+            if (!ctrlPressed || !isInEditorArea || (GetAsyncKeyState(VK_LBUTTON) & 0x8000))
+            {
+                if (defHoverActive_)
+                {
+                    defHoverActive_ = false;
+                    defHoverLine_ = -1;
+                    defHoverStart_ = -1;
+                    defHoverEnd_ = -1;
+                    defHoverWord_.clear();
+                    defHoverLocation_.reset();
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+            }
+            else
+            {
+                CaretPosition hoverPos = ScreenToTextPosition(pt);
+                if (hoverPos.line >= 0 && hoverPos.line < (int)state_.lines.size())
+                {
+                    const std::wstring &ln = state_.lines[hoverPos.line];
+                    std::wstring word;
+                    int startCol = -1;
+                    int endCol = -1;
+                    int incStart = -1;
+                    int incEnd = -1;
+                    if (GetIncludePathRange(ln, hoverPos.column, incStart, incEnd))
+                    {
+                        auto loc = Lsp::LspManager::Instance().GoToDefinition(state_.filePath, ln, hoverPos.line, hoverPos.column, L"");
+                        if (loc.has_value())
+                        {
+                            defHoverActive_ = true;
+                            defHoverLine_ = hoverPos.line;
+                            defHoverStart_ = incStart;
+                            defHoverEnd_ = incEnd;
+                            defHoverWord_.clear();
+                            defHoverLocation_ = loc;
+                        }
+                        else
+                        {
+                            defHoverActive_ = false;
+                            defHoverLine_ = -1;
+                            defHoverStart_ = -1;
+                            defHoverEnd_ = -1;
+                            defHoverWord_.clear();
+                            defHoverLocation_.reset();
+                        }
+                        updateHover = true;
+                    }
+                    else if (GetWordAtColumn(ln, hoverPos.column, word, startCol, endCol))
+                    {
+                        bool foundLocal = false;
+                        int defLine = -1;
+                        int defCol = -1;
+                        if (FindLocalDefinition(word, hoverPos.line, defLine, defCol))
+                        {
+                            defHoverActive_ = true;
+                            defHoverLine_ = hoverPos.line;
+                            defHoverStart_ = startCol;
+                            defHoverEnd_ = endCol;
+                            defHoverWord_ = word;
+                            defHoverLocation_ = Lsp::Location{state_.filePath, defLine, defCol};
+                            updateHover = true;
+                            foundLocal = true;
+                        }
+
+                        if (!foundLocal && (hoverPos.line != defHoverLine_ || startCol != defHoverStart_ || endCol != defHoverEnd_ || word != defHoverWord_))
+                        {
+                            auto loc = Lsp::LspManager::Instance().GoToDefinition(state_.filePath, ln, hoverPos.line, hoverPos.column, word);
+                            if (loc.has_value())
+                            {
+                                defHoverActive_ = true;
+                                defHoverLine_ = hoverPos.line;
+                                defHoverStart_ = startCol;
+                                defHoverEnd_ = endCol;
+                                defHoverWord_ = word;
+                                defHoverLocation_ = loc;
+                            }
+                            else
+                            {
+                                defHoverActive_ = false;
+                                defHoverLine_ = -1;
+                                defHoverStart_ = -1;
+                                defHoverEnd_ = -1;
+                                defHoverWord_.clear();
+                                defHoverLocation_.reset();
+                            }
+                            updateHover = true;
+                        }
+                    }
+                    else if (defHoverActive_)
+                    {
+                        defHoverActive_ = false;
+                        defHoverLine_ = -1;
+                        defHoverStart_ = -1;
+                        defHoverEnd_ = -1;
+                        defHoverWord_.clear();
+                        defHoverLocation_.reset();
+                        updateHover = true;
+                    }
+                }
+            }
+
+            if (updateHover && hwnd)
+                InvalidateRect(hwnd, nullptr, FALSE);
+        }
 
         if (completionPopup_ && completionPopup_->IsVisible())
         {

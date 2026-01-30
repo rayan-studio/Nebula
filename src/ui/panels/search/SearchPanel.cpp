@@ -451,7 +451,7 @@ void SearchPanel::UpdateLayout(HWND hwnd)
     RECT client;
     GetClientRect(hwnd, &client);
 
-    UINT dpi = GetDpiForWindow(hwnd);
+    UINT dpi = win32_get_dpi_for_window(hwnd);
     RECT tbRect = win32_titlebar_rect(hwnd);
     int sidebarWidth = win32_dpi_scale(52, dpi);
     int footerHeight = win32_dpi_scale(28, dpi);

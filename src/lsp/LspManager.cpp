@@ -5,9 +5,12 @@
 #include <algorithm>
 #include <thread>
 #include <cwctype>
+#include <unordered_set>
 
 namespace Lsp
 {
+    static std::vector<std::wstring> ReadFileLinesUtf8(const std::filesystem::path &path);
+
     static std::wstring ToLower(std::wstring v)
     {
         for (auto &c : v)
@@ -29,6 +32,243 @@ namespace Lsp
         {
         }
         return path;
+    }
+
+    static std::wstring GetExeDir()
+    {
+        wchar_t buf[MAX_PATH] = {0};
+        DWORD len = GetModuleFileNameW(NULL, buf, MAX_PATH);
+        if (len == 0)
+            return L"";
+        std::wstring path(buf, buf + len);
+        size_t pos = path.find_last_of(L"\\/");
+        if (pos == std::wstring::npos)
+            return L"";
+        return path.substr(0, pos);
+    }
+
+    static void AddPathIfExists(std::vector<std::filesystem::path> &out, const std::filesystem::path &p)
+    {
+        std::error_code ec;
+        if (std::filesystem::exists(p, ec))
+            out.push_back(p);
+    }
+
+    static std::optional<std::filesystem::path> FindStdHeaderFile(const std::wstring &header, const std::wstring &projectRoot)
+    {
+        std::vector<std::filesystem::path> roots;
+
+        if (!projectRoot.empty())
+        {
+            AddPathIfExists(roots, std::filesystem::path(projectRoot) / "external" / "Nebula Studio 2026" / "toolchains" / "mingw64" / "include" / "c++");
+            AddPathIfExists(roots, std::filesystem::path(projectRoot) / "external" / "Nebula Studio 2026" / "toolchains" / "mingw64" / "include");
+            AddPathIfExists(roots, std::filesystem::path(projectRoot) / "external" / "toolchains" / "mingw64" / "include" / "c++");
+            AddPathIfExists(roots, std::filesystem::path(projectRoot) / "external" / "toolchains" / "mingw64" / "include");
+        }
+
+        std::wstring exeDir = GetExeDir();
+        for (int i = 0; i < 5 && !exeDir.empty(); ++i)
+        {
+            std::filesystem::path base(exeDir);
+            AddPathIfExists(roots, base / "external" / "Nebula Studio 2026" / "toolchains" / "mingw64" / "include" / "c++");
+            AddPathIfExists(roots, base / "external" / "Nebula Studio 2026" / "toolchains" / "mingw64" / "include");
+            AddPathIfExists(roots, base / "toolchains" / "mingw64" / "include" / "c++");
+            AddPathIfExists(roots, base / "toolchains" / "mingw64" / "include");
+            size_t pos = exeDir.find_last_of(L"\\/");
+            if (pos == std::wstring::npos)
+                break;
+            exeDir = exeDir.substr(0, pos);
+        }
+
+        const std::wstring vsBases[] = {
+            L"C:\\Program Files\\Microsoft Visual Studio\\2026\\Community\\VC\\Tools\\MSVC",
+            L"C:\\Program Files\\Microsoft Visual Studio\\2026\\BuildTools\\VC\\Tools\\MSVC",
+            L"C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC",
+            L"C:\\Program Files\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC",
+            L"C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\VC\\Tools\\MSVC",
+            L"C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Tools\\MSVC"};
+        for (const auto &base : vsBases)
+        {
+            std::error_code ec;
+            std::filesystem::path root(base);
+            if (!std::filesystem::exists(root, ec))
+                continue;
+            for (const auto &entry : std::filesystem::directory_iterator(root, ec))
+            {
+                if (ec)
+                    break;
+                if (!entry.is_directory(ec))
+                    continue;
+                AddPathIfExists(roots, entry.path() / "include");
+            }
+        }
+
+        std::error_code ec;
+        for (const auto &root : roots)
+        {
+            if (root.filename() == L"c++")
+            {
+                for (const auto &entry : std::filesystem::directory_iterator(root, ec))
+                {
+                    if (ec)
+                        break;
+                    if (!entry.is_directory(ec))
+                        continue;
+                    std::filesystem::path cand = entry.path() / header;
+                    if (std::filesystem::exists(cand, ec))
+                        return cand;
+                }
+                continue;
+            }
+
+            std::filesystem::path cand = root / header;
+            if (std::filesystem::exists(cand, ec))
+                return cand;
+        }
+
+        return std::nullopt;
+    }
+
+    static std::wstring MapStdSymbolToHeader(const std::wstring &sym)
+    {
+        static const std::unordered_map<std::wstring, std::wstring> map = {
+            {L"string", L"string"},
+            {L"wstring", L"string"},
+            {L"string_view", L"string_view"},
+            {L"vector", L"vector"},
+            {L"array", L"array"},
+            {L"deque", L"deque"},
+            {L"list", L"list"},
+            {L"forward_list", L"forward_list"},
+            {L"map", L"map"},
+            {L"multimap", L"map"},
+            {L"set", L"set"},
+            {L"multiset", L"set"},
+            {L"unordered_map", L"unordered_map"},
+            {L"unordered_set", L"unordered_set"},
+            {L"unordered_multimap", L"unordered_map"},
+            {L"unordered_multiset", L"unordered_set"},
+            {L"pair", L"utility"},
+            {L"tuple", L"tuple"},
+            {L"optional", L"optional"},
+            {L"variant", L"variant"},
+            {L"any", L"any"},
+            {L"regex", L"regex"},
+            {L"smatch", L"regex"},
+            {L"wregex", L"regex"},
+            {L"basic_regex", L"regex"},
+            {L"stringstream", L"sstream"},
+            {L"istringstream", L"sstream"},
+            {L"ostringstream", L"sstream"},
+            {L"ifstream", L"fstream"},
+            {L"ofstream", L"fstream"},
+            {L"fstream", L"fstream"},
+            {L"cin", L"iostream"},
+            {L"cout", L"iostream"},
+            {L"cerr", L"iostream"},
+            {L"clog", L"iostream"},
+            {L"chrono", L"chrono"},
+            {L"time_point", L"chrono"},
+            {L"duration", L"chrono"},
+            {L"filesystem", L"filesystem"},
+            {L"path", L"filesystem"},
+            {L"unique_ptr", L"memory"},
+            {L"shared_ptr", L"memory"},
+            {L"weak_ptr", L"memory"},
+            {L"make_unique", L"memory"},
+            {L"make_shared", L"memory"},
+            {L"function", L"functional"},
+            {L"bind", L"functional"},
+            {L"move", L"utility"},
+            {L"forward", L"utility"},
+            {L"thread", L"thread"},
+            {L"mutex", L"mutex"},
+            {L"lock_guard", L"mutex"},
+            {L"unique_lock", L"mutex"}};
+
+        auto it = map.find(sym);
+        if (it != map.end())
+            return it->second;
+        return sym;
+    }
+
+    static bool GetWordRangeAtColumn(const std::wstring &line, int column, int &start, int &end)
+    {
+        start = -1;
+        end = -1;
+        auto isWordChar = [](wchar_t c)
+        {
+            return (iswalnum(c) != 0) || (c == L'_');
+        };
+        if (line.empty())
+            return false;
+        int col = column;
+        if (col < 0)
+            col = 0;
+        if (col >= (int)line.size())
+            col = (int)line.size() - 1;
+        if (col < 0 || col >= (int)line.size())
+            return false;
+        if (!isWordChar(line[col]))
+            return false;
+        int left = col;
+        while (left > 0 && isWordChar(line[left - 1]))
+            --left;
+        int right = col;
+        while (right + 1 < (int)line.size() && isWordChar(line[right + 1]))
+            ++right;
+        if (right < left)
+            return false;
+        start = left;
+        end = right + 1;
+        return true;
+    }
+
+    static std::optional<Location> ResolveStdSymbolAtCursor(const std::wstring &projectRoot,
+                                                            const std::wstring &lineText,
+                                                            int column,
+                                                            const std::wstring &word)
+    {
+        if (word.empty())
+            return std::nullopt;
+
+        int start = -1;
+        int end = -1;
+        if (!GetWordRangeAtColumn(lineText, column, start, end))
+            return std::nullopt;
+        if (start < 5)
+            return std::nullopt;
+        if (lineText.substr(start - 5, 5) != L"std::")
+            return std::nullopt;
+
+        std::wstring header = MapStdSymbolToHeader(word);
+        auto headerPath = FindStdHeaderFile(header, projectRoot);
+        if (!headerPath.has_value())
+            return std::nullopt;
+
+        Location loc;
+        loc.filePath = NormalizePath(headerPath->wstring());
+        loc.line = 0;
+        loc.column = 0;
+
+        auto lines = ReadFileLinesUtf8(*headerPath);
+        if (!lines.empty())
+        {
+            for (size_t i = 0; i < lines.size(); ++i)
+            {
+                const std::wstring &ln = lines[i];
+                if (ln.find(L"class " + word) != std::wstring::npos ||
+                    ln.find(L"struct " + word) != std::wstring::npos ||
+                    ln.find(L"using " + word) != std::wstring::npos ||
+                    (ln.find(L"typedef") != std::wstring::npos && ln.find(word) != std::wstring::npos))
+                {
+                    loc.line = (int)i;
+                    break;
+                }
+            }
+        }
+
+        return loc;
     }
 
     static bool IsCppFile(const std::filesystem::path &p)
@@ -574,11 +814,12 @@ namespace Lsp
                         bool looksLikeStmt = (t.find(L"=") != std::wstring::npos) ||
                                              (t.find(L"(") != std::wstring::npos) ||
                                              (t.find(L")") != std::wstring::npos);
+                        bool looksLikeCall = (t.find(L"(") != std::wstring::npos);
                         bool looksLikeDecl = (t.find(L"(") != std::wstring::npos && last == L')');
                         bool looksLikeScope = (t.find(L"{") != std::wstring::npos || t.find(L"}") != std::wstring::npos);
                         if (looksLikeStmt)
                         {
-                            if (!looksLikeDecl && !looksLikeScope)
+                            if (!looksLikeDecl && !looksLikeScope && !looksLikeCall)
                             {
                                 Diagnostic d;
                                 d.line = line;
@@ -731,6 +972,17 @@ namespace Lsp
         auto inc = ResolveIncludeAtCursor(filePath, lineText, column);
         if (inc.has_value())
             return inc;
+
+        {
+            std::wstring rootCopy;
+            {
+                std::lock_guard<std::mutex> lk(mutex_);
+                rootCopy = projectRoot_;
+            }
+            auto stdLoc = ResolveStdSymbolAtCursor(rootCopy, lineText, column, word);
+            if (stdLoc.has_value())
+                return stdLoc;
+        }
 
         std::lock_guard<std::mutex> lk(mutex_);
         auto it = symbolIndex_.find(word);

@@ -651,8 +651,8 @@ void ExplorerManager::StopWatching()
 
     if (watcherThreadHandle_)
     {
-        // wait briefly for thread to exit
-        WaitForSingleObject(watcherThreadHandle_, 2000);
+        // Don't block UI too long when switching projects.
+        WaitForSingleObject(watcherThreadHandle_, 100);
         CloseHandle(watcherThreadHandle_);
         watcherThreadHandle_ = nullptr;
     }
@@ -928,7 +928,7 @@ void ExplorerManager::UpdateLayout(HWND hwnd)
     RECT client;
     GetClientRect(hwnd, &client);
 
-    UINT dpi = GetDpiForWindow(hwnd);
+    UINT dpi = win32_get_dpi_for_window(hwnd);
     RECT tbRect = win32_titlebar_rect(hwnd);
 
     int sidebarWidth = win32_dpi_scale(52, dpi);
@@ -1393,8 +1393,9 @@ void ExplorerManager::OnRightButtonUp(HWND hwnd, POINT clientPoint)
     const ExplorerItem &item = state_.items[idx];
 
     std::vector<std::wstring> menuItems;
-    menuItems.push_back(item.isDirectory ? L"Open Folder" : L"Open File");
-    menuItems.push_back(L"Copy Path");
+    menuItems.push_back(item.isDirectory ? L"Ouvrir le dossier" : L"Ouvrir le fichier");
+    menuItems.push_back(L"Ouvrir dans l'explorateur");
+    menuItems.push_back(L"Copier le chemin");
     menuItems.push_back(L"Duplicate");
     menuItems.push_back(L"Rename");
     menuItems.push_back(L"Delete");
@@ -1407,7 +1408,7 @@ void ExplorerManager::OnRightButtonUp(HWND hwnd, POINT clientPoint)
 
 void ExplorerManager::HandleContextCommand(int commandId)
 {
-    if (commandId < 5000 || commandId >= 6000)
+    if (commandId < 5000 || commandId >= 20000)
         return;
     int rel = commandId - 5000;
     int itemIndex = rel / 10;
@@ -1425,6 +1426,19 @@ void ExplorerManager::HandleContextCommand(int commandId)
     }
     else if (cmdIndex == 1)
     {
+        // Open in Windows Explorer (select file if possible)
+        if (item.isDirectory)
+        {
+            ShellExecuteW(NULL, L"open", path.c_str(), NULL, NULL, SW_SHOWNORMAL);
+        }
+        else
+        {
+            std::wstring args = L"/select,\"" + path + L"\"";
+            ShellExecuteW(NULL, L"open", L"explorer.exe", args.c_str(), NULL, SW_SHOWNORMAL);
+        }
+    }
+    else if (cmdIndex == 2)
+    {
         // Copy path to clipboard
         if (OpenClipboard(NULL))
         {
@@ -1441,7 +1455,7 @@ void ExplorerManager::HandleContextCommand(int commandId)
             CloseClipboard();
         }
     }
-    else if (cmdIndex == 2)
+    else if (cmdIndex == 3)
     {
         // Duplicate: create a copy of the file or folder next to the original with a unique name
         namespace fs = std::filesystem;
@@ -1491,13 +1505,13 @@ void ExplorerManager::HandleContextCommand(int commandId)
             Logger::Instance().Log(L"Explorer: duplicate failed for " + path);
         }
     }
-    else if (cmdIndex == 3)
+    else if (cmdIndex == 4)
     {
         // Rename: show inline input for this item
         ShowRenameInline(itemIndex);
         InvalidateMainWindow();
     }
-    else if (cmdIndex == 4)
+    else if (cmdIndex == 5)
     {
         // Delete (modern TaskDialog if available)
         std::wstring mainInstr = item.isDirectory ? (L"Delete folder: \n" + path) : (L"Delete file: \n" + path);
@@ -2273,7 +2287,7 @@ ID2D1Bitmap *ExplorerManager::GetIconForItem(ID2D1RenderTarget *ctx, const Explo
     if (iconPath.empty())
         return nullptr;
 
-    UINT dpi = GetDpiForWindow(hwnd);
+    UINT dpi = win32_get_dpi_for_window(hwnd);
     int iconPxSize = win32_dpi_scale((int)state_.iconSize, dpi);
 
     ID2D1Bitmap *bitmap = LoadSvgIcon(ctx, iconPath, iconPxSize, dpi);
@@ -2327,7 +2341,7 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
     D2D1_COLOR_F guideColor = D2D1::ColorF(42.0f / 255.0f, 42.0f / 255.0f, 42.0f / 255.0f, 0.9f);
     ctx->CreateSolidColorBrush(guideColor, &guideBrush);
 
-    UINT dpi = GetDpiForWindow(hwnd);
+    UINT dpi = win32_get_dpi_for_window(hwnd);
     float iconPx = (float)win32_dpi_scale((int)state_.iconSize, dpi);
     float arrowSize = (float)win32_dpi_scale(12, dpi);
     float arrowOffset = 2.0f;

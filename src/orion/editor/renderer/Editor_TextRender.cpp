@@ -441,6 +441,35 @@ namespace Orion
                     layout->Draw(nullptr, &renderer, drawX, drawY);
                     drawBrush->Release();
 
+                    // Ctrl+hover definition underline
+                    if (defHoverActive_ && defHoverLine_ == i && defHoverStart_ >= 0 && defHoverEnd_ > defHoverStart_)
+                    {
+                        UINT32 count = 0;
+                        UINT32 length = (UINT32)(defHoverEnd_ - defHoverStart_);
+                        layout->HitTestTextRange((UINT32)defHoverStart_, length, drawX, drawY, nullptr, 0, &count);
+                        if (count > 0)
+                        {
+                            std::vector<DWRITE_HIT_TEST_METRICS> metrics(count);
+                            layout->HitTestTextRange((UINT32)defHoverStart_, length, drawX, drawY, metrics.data(), count, &count);
+
+                            D2D1_COLOR_F linkColor = D2D1::ColorF(0.29f, 0.62f, 0.92f, 1.0f);
+                            ID2D1SolidColorBrush *linkBrush = nullptr;
+                            ctx->CreateSolidColorBrush(linkColor, &linkBrush);
+                            if (linkBrush)
+                            {
+                                for (UINT32 mi = 0; mi < count; ++mi)
+                                {
+                                    const auto &m = metrics[mi];
+                                    float x1 = m.left;
+                                    float x2 = m.left + m.width;
+                                    float y = m.top + m.height - 1.0f;
+                                    ctx->DrawLine(D2D1::Point2F(x1, y), D2D1::Point2F(x2, y), linkBrush, 1.0f);
+                                }
+                                linkBrush->Release();
+                            }
+                        }
+                    }
+
                     // Diagnostics: underline ranges with a subtle wavy line
                     if (!diagnostics.empty())
                     {
@@ -610,6 +639,12 @@ namespace Orion
                 return D2D1::ColorF(0.86f, 0.58f, 0.22f);
             case ::Orion::Syntax::TokenType::Type:
                 return D2D1::ColorF(0.4f, 0.8f, 1.0f);
+            case ::Orion::Syntax::TokenType::Function:
+                return theme_.function;
+            case ::Orion::Syntax::TokenType::Macro:
+                return D2D1::ColorF(0.90f, 0.70f, 0.40f);
+            case ::Orion::Syntax::TokenType::Variable:
+                return theme_.variable;
             case ::Orion::Syntax::TokenType::String:
                 return D2D1::ColorF(0.56f, 0.87f, 0.56f);
             case ::Orion::Syntax::TokenType::Comment:
@@ -627,6 +662,12 @@ namespace Orion
             return D2D1::ColorF(0.86f, 0.58f, 0.22f);
         case ::Orion::Syntax::TokenType::Type:
             return D2D1::ColorF(0.4f, 0.8f, 1.0f);
+        case ::Orion::Syntax::TokenType::Function:
+            return theme_.function;
+        case ::Orion::Syntax::TokenType::Macro:
+            return D2D1::ColorF(0.90f, 0.70f, 0.40f);
+        case ::Orion::Syntax::TokenType::Variable:
+            return theme_.variable;
         case ::Orion::Syntax::TokenType::String:
             return D2D1::ColorF(0.56f, 0.87f, 0.56f);
         case ::Orion::Syntax::TokenType::Comment:
