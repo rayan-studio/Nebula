@@ -286,6 +286,51 @@ namespace Orion
         return true;
     }
 
+    std::optional<Lsp::Location> Editor::TryGoToDefinitionAtPoint(POINT pt)
+    {
+        if (isPreview_)
+            return std::nullopt;
+
+        float contentLeft = state_.leftEdge + metrics_.gutterWidth + metrics_.leftPadding;
+        if (pt.x < (int)contentLeft || pt.x > (int)state_.rightEdge || pt.y < (int)state_.topEdge || pt.y > (int)state_.bottomEdge)
+            return std::nullopt;
+
+        if (state_.lines.empty())
+            return std::nullopt;
+
+        CaretPosition clickedPos = ScreenToTextPosition(pt);
+        if (clickedPos.line < 0 || clickedPos.line >= (int)state_.lines.size())
+            return std::nullopt;
+        if (clickedPos.column < 0)
+            clickedPos.column = 0;
+        if (clickedPos.column > (int)state_.lines[clickedPos.line].size())
+            clickedPos.column = (int)state_.lines[clickedPos.line].size();
+
+        const std::wstring &ln = state_.lines[clickedPos.line];
+
+        int incStart = -1;
+        int incEnd = -1;
+        if (GetIncludePathRange(ln, clickedPos.column, incStart, incEnd))
+        {
+            return Lsp::LspManager::Instance().GoToDefinition(state_.filePath, ln, clickedPos.line, clickedPos.column, L"");
+        }
+
+        std::wstring word;
+        int startCol = -1;
+        int endCol = -1;
+        if (!GetWordAtColumn(ln, clickedPos.column, word, startCol, endCol))
+            return std::nullopt;
+
+        int defLine = -1;
+        int defCol = -1;
+        if (FindLocalDefinition(word, clickedPos.line, defLine, defCol))
+        {
+            return Lsp::Location{state_.filePath, defLine, defCol};
+        }
+
+        return Lsp::LspManager::Instance().GoToDefinition(state_.filePath, ln, clickedPos.line, clickedPos.column, word);
+    }
+
     void Editor::OnLeftButtonDown(HWND hwnd, POINT pt)
     {
         (void)hwnd;
@@ -436,19 +481,6 @@ namespace Orion
             GetWordAtColumn(ln, clickedPos.column, word, startCol, endCol);
 
             auto loc = Lsp::LspManager::Instance().GoToDefinition(state_.filePath, ln, clickedPos.line, clickedPos.column, word);
-            if (!loc.has_value())
-            {
-                int defLine = -1;
-                int defCol = -1;
-                if (FindLocalDefinition(word, clickedPos.line, defLine, defCol))
-                {
-                    Lsp::Location local;
-                    local.filePath = state_.filePath;
-                    local.line = defLine;
-                    local.column = defCol;
-                    loc = local;
-                }
-            }
             if (loc.has_value())
             {
                 auto *heapPath = new std::wstring(loc->filePath);

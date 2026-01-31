@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <fstream>
 #include <sstream>
+#include <cwctype>
 #include <regex>
 #include "ui/components/popups/CustomPopup.h"
 #include <shellapi.h>
@@ -23,6 +24,57 @@
 #undef min
 #undef max
 
+static std::wstring NormalizePathForCompare(const std::wstring &path)
+{
+    std::wstring out = path;
+    for (auto &ch : out)
+    {
+        if (ch == L'/')
+            ch = L'\\';
+        ch = (wchar_t)std::towlower(ch);
+    }
+    return out;
+}
+
+static std::wstring ToClassName(const std::wstring &name)
+{
+    std::wstring out;
+    bool upperNext = true;
+    for (wchar_t c : name)
+    {
+        if (std::iswalnum(c))
+        {
+            if (upperNext)
+            {
+                out.push_back((wchar_t)std::towupper(c));
+                upperNext = false;
+            }
+            else
+            {
+                out.push_back((wchar_t)c);
+            }
+        }
+        else
+        {
+            upperNext = true;
+        }
+    }
+    if (out.empty())
+        out = L"ClassName";
+    return out;
+}
+
+static std::string WideToUtf8(const std::wstring &w)
+{
+    if (w.empty())
+        return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 1)
+        return {};
+    std::string out(static_cast<size_t>(len - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, out.data(), len, nullptr, nullptr);
+    return out;
+}
 // NanoSVG integration
 #ifdef _MSC_VER
 #pragma warning(push)
@@ -444,13 +496,13 @@ DWORD WINAPI ExplorerManager::WatcherThreadStatic(LPVOID param)
 
         if (ok && bytesReturned > 0)
         {
-            // Vérifier qu'il s'agit bien d'un changement de structure (ajout/suppression)
+            // V�rifier qu'il s'agit bien d'un changement de structure (ajout/suppression)
             FILE_NOTIFY_INFORMATION *info = (FILE_NOTIFY_INFORMATION *)buffer.data();
             bool shouldReload = false;
 
             while (info)
             {
-                // Ne recharger que si fichier/dossier créé ou supprimé
+                // Ne recharger que si fichier/dossier cr�� ou supprim�
                 if (info->Action == FILE_ACTION_ADDED ||
                     info->Action == FILE_ACTION_REMOVED ||
                     info->Action == FILE_ACTION_RENAMED_NEW_NAME ||
@@ -460,7 +512,7 @@ DWORD WINAPI ExplorerManager::WatcherThreadStatic(LPVOID param)
                     break;
                 }
 
-                // Passer à l'événement suivant
+                // Passer � l'�v�nement suivant
                 if (info->NextEntryOffset == 0)
                     break;
                 info = (FILE_NOTIFY_INFORMATION *)((BYTE *)info + info->NextEntryOffset);
@@ -468,13 +520,13 @@ DWORD WINAPI ExplorerManager::WatcherThreadStatic(LPVOID param)
 
             if (shouldReload)
             {
-                // Si le flag d'ignore est activé, ignorer ce prochain changement lié
+                // Si le flag d'ignore est activ�, ignorer ce prochain changement li�
                 if (mgr->ignoreNextChange_.load())
                 {
                     mgr->ignoreNextChange_.store(false);
                     continue;
                 }
-                // Debounce: attendre qu'il n'y ait plus d'événements pendant 200ms
+                // Debounce: attendre qu'il n'y ait plus d'�v�nements pendant 200ms
                 DWORD quietStart = GetTickCount();
                 const DWORD quietPeriod = 200;
                 bool stillChanging = true;
@@ -489,7 +541,7 @@ DWORD WINAPI ExplorerManager::WatcherThreadStatic(LPVOID param)
 
                     if (!hasMore || br == 0)
                     {
-                        // Plus d'événements pendant 50ms
+                        // Plus d'�v�nements pendant 50ms
                         if (GetTickCount() - quietStart >= quietPeriod)
                         {
                             stillChanging = false;
@@ -497,12 +549,12 @@ DWORD WINAPI ExplorerManager::WatcherThreadStatic(LPVOID param)
                     }
                     else
                     {
-                        // Nouveaux événements, recommencer le timer
+                        // Nouveaux �v�nements, recommencer le timer
                         quietStart = GetTickCount();
                     }
                 }
 
-                // Vérifier l'intervalle minimum entre deux rechargements
+                // V�rifier l'intervalle minimum entre deux rechargements
                 DWORD now = GetTickCount();
                 if (now - lastReloadTime >= minReloadInterval)
                 {
@@ -522,35 +574,68 @@ DWORD WINAPI ExplorerManager::WatcherThreadStatic(LPVOID param)
 
 void ExplorerManager::CreateNewFile(const std::wstring &name)
 {
-    std::wstring targetPath = GetActiveDirectory() + L"\\" + name;
+    CreateNewFileAt(GetActiveDirectory(), name);
+}
+
+void ExplorerManager::CreateNewFileAt(const std::wstring &parentDir, const std::wstring &name)
+{
+    std::filesystem::path namePath(name);
+    std::wstring fileName = namePath.filename().wstring();
+    std::wstring extension = namePath.extension().wstring();
+
+    std::wstring targetPath = parentDir;
+    if (!targetPath.empty() && targetPath.back() != L'\\' && targetPath.back() != L'/')
+        targetPath.push_back(L'\\');
+    targetPath += fileName;
+
+    std::wstring stem = namePath.stem().wstring();
+    std::wstring className = ToClassName(stem);
+    std::wstring headerName = stem.empty() ? L"ClassName.h" : (stem + L".h");
+    std::string headerNameUtf8 = WideToUtf8(headerName);
 
     try
     {
-        // Indiquer au watcher d'ignorer le prochain changement (optionnel)
         ignoreNextChange_.store(true);
 
-        // Créer un fichier vide
+        std::string path = WideToUtf8(targetPath);
+        std::string content;
+        if (extension == L".h" || extension == L".hpp")
+        {
+            std::string classNameUtf8 = WideToUtf8(className);
+            if (classNameUtf8.empty())
+                classNameUtf8 = "ClassName";
+
+            std::ostringstream ss;
+            ss << "#pragma once\n\n";
+            ss << "class " << classNameUtf8 << "\n{\npublic:\n";
+            ss << "    " << classNameUtf8 << "();\n";
+            ss << "    ~" << classNameUtf8 << "();\n";
+            ss << "};\n";
+            content = ss.str();
+        }
+        else if (extension == L".cpp" || extension == L".cc" || extension == L".cxx")
+        {
+            std::string classNameUtf8 = WideToUtf8(className);
+            if (classNameUtf8.empty())
+                classNameUtf8 = "ClassName";
+
+            std::ostringstream ss;
+            ss << "#include \"" << (headerNameUtf8.empty() ? "ClassName.h" : headerNameUtf8) << "\"\n\n";
+            ss << classNameUtf8 << "::" << classNameUtf8 << "()\n{\n}\n\n";
+            ss << classNameUtf8 << "::~" << classNameUtf8 << "()\n{\n}\n";
+            content = ss.str();
+        }
+
         std::ofstream file;
-        int size = WideCharToMultiByte(CP_UTF8, 0, targetPath.c_str(), -1, NULL, 0, NULL, NULL);
-        std::string path(size, '\0');
-        WideCharToMultiByte(CP_UTF8, 0, targetPath.c_str(), -1, path.data(), size, NULL, NULL);
-
-#ifdef _DEBUG
-        // Debug temporaires pour vérifier l'appel
-        MessageBoxW(nullptr, (L"Création fichier: " + name).c_str(), L"Debug", MB_OK);
-        MessageBoxW(nullptr, (L"Chemin complet: " + targetPath).c_str(), L"Debug", MB_OK);
-#endif
-
         file.open(path);
         if (file.is_open())
         {
+            if (!content.empty())
+                file << content;
             file.close();
-            // Recharger manuellement le contenu pour garantir que le nouvel item soit visible
             Logger::Instance().Log(L"Explorer: created file: " + targetPath);
             LoadDirectoryContents();
-            // Sélectionner le nouvel élément afin qu'il soit visible et highlighté
             SetActivePath(targetPath);
-            // Ouvrir le fichier dans l'éditeur
             HWND wnd = FindWindowW(L"NebulaTextWindowClass", NULL);
             if (wnd)
             {
@@ -561,50 +646,54 @@ void ExplorerManager::CreateNewFile(const std::wstring &name)
         }
         else
         {
-            MessageBoxW(nullptr, L"Impossible de créer le fichier.", L"Erreur", MB_OK | MB_ICONERROR);
+            MessageBoxW(nullptr, L"Impossible de creer le fichier.", L"Erreur", MB_OK | MB_ICONERROR);
         }
     }
     catch (...)
     {
-        MessageBoxW(nullptr, L"Erreur lors de la création du fichier.", L"Erreur", MB_OK | MB_ICONERROR);
+        MessageBoxW(nullptr, L"Erreur lors de la creation du fichier.", L"Erreur", MB_OK | MB_ICONERROR);
     }
 }
 
 void ExplorerManager::CreateNewFolder(const std::wstring &name)
 {
-    std::wstring targetPath = GetActiveDirectory() + L"\\" + name;
+    CreateNewFolderAt(GetActiveDirectory(), name);
+}
+
+void ExplorerManager::CreateNewFolderAt(const std::wstring &parentDir, const std::wstring &name)
+{
+    std::wstring targetPath = parentDir;
+    if (!targetPath.empty() && targetPath.back() != L'\\' && targetPath.back() != L'/')
+        targetPath.push_back(L'\\');
+    targetPath += name;
 
     try
     {
-        // Indiquer au watcher d'ignorer le prochain changement (optionnel)
         ignoreNextChange_.store(true);
 
         if (std::filesystem::create_directory(targetPath))
         {
-#ifdef _DEBUG
-            MessageBoxW(nullptr, (L"Création dossier: " + name).c_str(), L"Debug", MB_OK);
-            MessageBoxW(nullptr, (L"Chemin complet: " + targetPath).c_str(), L"Debug", MB_OK);
-#endif
             Logger::Instance().Log(L"Explorer: created folder: " + targetPath);
-            // Recharger manuellement pour garantir visibilité
             LoadDirectoryContents();
             SetActivePath(targetPath);
             InvalidateMainWindow();
         }
         else
         {
-            MessageBoxW(nullptr, L"Impossible de créer le dossier.", L"Erreur", MB_OK | MB_ICONERROR);
+            MessageBoxW(nullptr, L"Impossible de creer le dossier.", L"Erreur", MB_OK | MB_ICONERROR);
         }
     }
     catch (...)
     {
-        MessageBoxW(nullptr, L"Erreur lors de la création du dossier.", L"Erreur", MB_OK | MB_ICONERROR);
+        MessageBoxW(nullptr, L"Erreur lors de la creation du dossier.", L"Erreur", MB_OK | MB_ICONERROR);
     }
 }
 
+
+
 std::wstring ExplorerManager::GetActiveDirectory() const
 {
-    // Si un dossier est hover/sélectionné, retourner ce chemin
+    // Si un dossier est hover/s�lectionn�, retourner ce chemin
     if (state_.hoveredItemIndex >= 0 && state_.hoveredItemIndex < (int)state_.items.size())
     {
         const auto &item = state_.items[state_.hoveredItemIndex];
@@ -707,7 +796,7 @@ void ExplorerManager::LoadDirectoryContents()
             item.isDirectory = entry.is_directory();
             item.depth = 0;
 
-            // CORRECTION 1: Restaurer l'état expanded IMMÉDIATEMENT
+            // CORRECTION 1: Restaurer l'�tat expanded IMM�DIATEMENT
             auto f = prevExpanded.find(full);
             item.expanded = (f != prevExpanded.end()) ? f->second : false;
 
@@ -743,7 +832,7 @@ void ExplorerManager::LoadDirectoryContents()
 
                     std::wstring full = entry.path().wstring();
 
-                    // CORRECTION 2: Vérifier les doublons avec seen
+                    // CORRECTION 2: V�rifier les doublons avec seen
                     if (seen.find(full) != seen.end())
                         continue;
                     seen.insert(full);
@@ -755,7 +844,7 @@ void ExplorerManager::LoadDirectoryContents()
                     ci.isDirectory = entry.is_directory();
                     ci.depth = depth;
 
-                    // Restaurer l'état expanded immédiatement
+                    // Restaurer l'�tat expanded imm�diatement
                     auto f = prevExpanded.find(ci.fullPath);
                     ci.expanded = (f != prevExpanded.end()) ? f->second : false;
 
@@ -966,7 +1055,7 @@ void ExplorerManager::UpdateLayout(HWND hwnd)
 
     UpdateItemPositions();
 
-    // Bouton "Ouvrir un projet" (affiché seulement si rootPath vide)
+    // Bouton "Ouvrir un projet" (affich� seulement si rootPath vide)
     {
         float left  = state_.leftEdge + state_.leftPadding;
         float right = state_.rightEdge - state_.leftPadding;
@@ -1039,16 +1128,16 @@ bool ExplorerManager::IsPointInExplorer(POINT clientPoint) const
 
 void ExplorerManager::OnMouseMove(HWND hwnd, POINT clientPoint)
 {
-    // PRIORITÉ 1 : Scrollbar (si on drag ou si la souris est dessus)
+    // PRIORIT� 1 : Scrollbar (si on drag ou si la souris est dessus)
     if (scrollbar_.OnMouseMove(clientPoint))
     {
         InvalidateRect(hwnd, nullptr, FALSE);
     }
 
-    // Si la scrollbar gère le hover, ne pas gérer l'Explorer
+    // Si la scrollbar g�re le hover, ne pas g�rer l'Explorer
     if (scrollbar_.IsHoveringThumb() || scrollbar_.IsHoveringTrack())
     {
-        // Réinitialiser le hover de l'Explorer
+        // R�initialiser le hover de l'Explorer
         if (state_.hoveredItemIndex != -1)
         {
             state_.hoveredItemIndex = -1;
@@ -1069,7 +1158,7 @@ void ExplorerManager::OnMouseMove(HWND hwnd, POINT clientPoint)
         // but keep current behavior (just visual)
     }
 
-    // PRIORITÉ 2 : Mode normal - vérifier hover
+    // PRIORIT� 2 : Mode normal - v�rifier hover
     int oldHovered = state_.hoveredItemIndex;
 
     if (IsPointInExplorer(clientPoint))
@@ -1302,7 +1391,7 @@ void ExplorerManager::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
             HideInlineInput();
         }
 
-        // 2. Désélectionner le dossier actif (revenir à la racine)
+        // 2. D�s�lectionner le dossier actif (revenir � la racine)
         state_.activePath.clear();
 
         InvalidateRect(hwnd, nullptr, FALSE);
@@ -1392,10 +1481,11 @@ void ExplorerManager::OnRightButtonUp(HWND hwnd, POINT clientPoint)
 
     const ExplorerItem &item = state_.items[idx];
 
-    std::vector<std::wstring> menuItems;
+        std::vector<std::wstring> menuItems;
     menuItems.push_back(item.isDirectory ? L"Ouvrir le dossier" : L"Ouvrir le fichier");
     menuItems.push_back(L"Ouvrir dans l'explorateur");
     menuItems.push_back(L"Copier le chemin");
+    menuItems.push_back(L"Ajouter");
     menuItems.push_back(L"Duplicate");
     menuItems.push_back(L"Rename");
     menuItems.push_back(L"Delete");
@@ -1403,7 +1493,12 @@ void ExplorerManager::OnRightButtonUp(HWND hwnd, POINT clientPoint)
     D2D1_POINT_2F pos = D2D1::Point2F((float)clientPoint.x, (float)clientPoint.y);
     int baseId = 5000 + idx * 10;
 
+    contextItemIndex_ = idx;
     ShowContextMenuDropdown(hwnd, menuItems, pos, baseId);
+    MenuDropdown &dd = GetActiveDropdown();
+    dd.hasSubmenu.assign(menuItems.size(), false);
+    if (menuItems.size() > 3)
+        dd.hasSubmenu[3] = true;
 }
 
 void ExplorerManager::HandleContextCommand(int commandId)
@@ -1421,12 +1516,10 @@ void ExplorerManager::HandleContextCommand(int commandId)
 
     if (cmdIndex == 0)
     {
-        // Open
         ShellExecuteW(NULL, L"open", path.c_str(), NULL, NULL, SW_SHOWNORMAL);
     }
     else if (cmdIndex == 1)
     {
-        // Open in Windows Explorer (select file if possible)
         if (item.isDirectory)
         {
             ShellExecuteW(NULL, L"open", path.c_str(), NULL, NULL, SW_SHOWNORMAL);
@@ -1439,7 +1532,6 @@ void ExplorerManager::HandleContextCommand(int commandId)
     }
     else if (cmdIndex == 2)
     {
-        // Copy path to clipboard
         if (OpenClipboard(NULL))
         {
             EmptyClipboard();
@@ -1457,7 +1549,11 @@ void ExplorerManager::HandleContextCommand(int commandId)
     }
     else if (cmdIndex == 3)
     {
-        // Duplicate: create a copy of the file or folder next to the original with a unique name
+        // Add submenu handled separately
+        return;
+    }
+    else if (cmdIndex == 4)
+    {
         namespace fs = std::filesystem;
         try
         {
@@ -1495,7 +1591,6 @@ void ExplorerManager::HandleContextCommand(int commandId)
             }
 
             Logger::Instance().Log(L"Explorer: duplicated " + path + L" -> " + dest.wstring());
-            // Reload explorer contents and refresh UI
             LoadDirectoryContents();
             UpdateItemPositions();
             InvalidateMainWindow();
@@ -1505,40 +1600,30 @@ void ExplorerManager::HandleContextCommand(int commandId)
             Logger::Instance().Log(L"Explorer: duplicate failed for " + path);
         }
     }
-    else if (cmdIndex == 4)
+    else if (cmdIndex == 5)
     {
-        // Rename: show inline input for this item
         ShowRenameInline(itemIndex);
         InvalidateMainWindow();
     }
-    else if (cmdIndex == 5)
+    else if (cmdIndex == 6)
     {
-        // Delete (modern TaskDialog if available)
         std::wstring mainInstr = item.isDirectory ? (L"Delete folder: \n" + path) : (L"Delete file: \n" + path);
         BOOL confirm = FALSE;
 
-        // Try TaskDialogIndirect for a modern look
         HMODULE hComCtl = LoadLibraryW(L"Comctl32.dll");
         if (hComCtl)
         {
             typedef HRESULT(WINAPI * TaskDialogIndirect_t)(const void *, int *, int *, void *);
-            // Use TaskDialogIndirect via header-less invocation to avoid extra headers here
-            // We'll call TaskDialog to keep it simple if available.
-            // Fallback to MessageBox if TaskDialog not available.
             FreeLibrary(hComCtl);
         }
 
-        // Simpler approach: use TaskDialog if available via TaskDialog API
         int tdResult = 0;
-        // Use TaskDialog via explicit function pointer to avoid requiring commctrl headers
         HMODULE h = LoadLibraryW(L"comctl32.dll");
         if (h)
         {
             auto proc = (HRESULT(WINAPI *)(HWND, HINSTANCE, PCWSTR, PCWSTR, PCWSTR, unsigned, PCWSTR, int *))GetProcAddress(h, "TaskDialog");
             if (proc)
             {
-                // Use common Yes/No buttons. Numeric flag values (from commctrl.h):
-                // TDCBF_YES_BUTTON = 0x0004, TDCBF_NO_BUTTON = 0x0008
                 unsigned dwCommon = 0x0004 | 0x0008;
                 HRESULT hr = proc(NULL, NULL, L"Confirm Delete", mainInstr.c_str(), L"Are you sure you want to delete this item?", dwCommon, NULL, &tdResult);
                 if (SUCCEEDED(hr))
@@ -1547,14 +1632,12 @@ void ExplorerManager::HandleContextCommand(int commandId)
                 }
                 else
                 {
-                    // fallback to MessageBox
                     int mb = MessageBoxW(NULL, mainInstr.c_str(), L"Confirm Delete", MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2);
                     confirm = (mb == IDYES);
                 }
             }
             else
             {
-                // fallback
                 int mb = MessageBoxW(NULL, mainInstr.c_str(), L"Confirm Delete", MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2);
                 confirm = (mb == IDYES);
             }
@@ -1582,46 +1665,51 @@ void ExplorerManager::HandleContextCommand(int commandId)
 
                 if (ok)
                 {
-                    // Reload explorer contents and refresh UI
                     LoadDirectoryContents();
                     InvalidateMainWindow();
-                    // If a file was deleted, close its tab if open
-                    try
-                    {
-                        HWND wnd = FindWindowW(L"NebulaTextWindowClass", NULL);
-                        if (wnd)
-                        {
-                            Window *window = GetWindowFromHwnd(wnd);
-                            if (window)
-                            {
-                                TabBar *tb = window->GetTabBar();
-                                if (tb)
-                                {
-                                    int tidx = tb->FindTabIndexByFilePath(path);
-                                    if (tidx >= 0)
-                                        tb->CloseTab(tidx);
-                                }
-                            }
-                        }
-                    }
-                    catch (...)
-                    {
-                        // ignore any errors while attempting to close tabs
-                    }
-                }
-                else
-                {
-                    MessageBoxW(NULL, L"Failed to delete item.", L"Delete", MB_OK | MB_ICONERROR);
                 }
             }
-            catch (const std::exception &)
+            catch (...)
             {
-                MessageBoxW(NULL, L"Failed to delete item.", L"Delete", MB_OK | MB_ICONERROR);
+                Logger::Instance().Log(L"Explorer: delete failed for " + path);
             }
         }
     }
 }
 
+void ExplorerManager::HandleContextSubmenuCommand(int commandId)
+{
+    if (commandId < 9000 || commandId >= 9100)
+        return;
+
+    int cmdIndex = commandId - 9000;
+    int itemIndex = contextItemIndex_;
+    if (itemIndex < 0 || itemIndex >= (int)state_.items.size())
+        return;
+
+    const ExplorerItem &item = state_.items[itemIndex];
+    std::wstring targetDir = item.isDirectory ? item.fullPath : std::filesystem::path(item.fullPath).parent_path().wstring();
+
+    switch (cmdIndex)
+    {
+    case 0: // Nouveau fichier
+        ShowInlineInputPreset(Input::Type::File, L"", targetDir);
+        break;
+    case 1: // Nouveau dossier
+        ShowInlineInputPreset(Input::Type::Folder, L"", targetDir);
+        break;
+    case 2: // Class Header
+        ShowInlineInputPreset(Input::Type::File, L"ClassName.h", targetDir);
+        break;
+    case 3: // Class Source
+        ShowInlineInputPreset(Input::Type::File, L"ClassName.cpp", targetDir);
+        break;
+    default:
+        break;
+    }
+
+    InvalidateMainWindow();
+}
 void ExplorerManager::DrawBackground(ID2D1RenderTarget *ctx)
 {
     ID2D1SolidColorBrush *bgBrush = nullptr;
@@ -1854,10 +1942,15 @@ void ExplorerManager::DrawTitle(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
 }
 void ExplorerManager::ShowInlineInput(Input::Type type)
 {
+    ShowInlineInputPreset(type, L"", L"");
+}
+
+void ExplorerManager::ShowInlineInputPreset(Input::Type type, const std::wstring &presetName, const std::wstring &targetDirOverride)
+{
     inlineVisible_ = true;
     inlineType_ = type;
-    inlineText_.clear();
-    inlineCursorPos_ = 0;
+    inlineText_ = presetName;
+    inlineCursorPos_ = (int)inlineText_.size();
     inlineHasSelection_ = false;
     inlineSelStart_ = 0;
     inlineSelEnd_ = 0;
@@ -1865,33 +1958,46 @@ void ExplorerManager::ShowInlineInput(Input::Type type)
     inlineTargetLocked_ = true;
     inlineTargetFullPath_.clear();
 
-    std::wstring targetDir;
+    std::wstring targetDir = targetDirOverride;
 
-    // 1. Utiliser UNIQUEMENT le dossier actif s'il est valide
-    if (!state_.activePath.empty())
-    {
-        std::lock_guard<std::mutex> lk(itemsMutex_);
-        for (const auto &item : state_.items)
-        {
-            if (item.fullPath == state_.activePath && item.isDirectory)
-            {
-                targetDir = state_.activePath;
-                break;
-            }
-        }
-    }
-
-    // 2. Sinon → racine
     if (targetDir.empty())
     {
-        targetDir = GetActiveDirectory();
+        if (!state_.activePath.empty())
+        {
+            std::lock_guard<std::mutex> lk(itemsMutex_);
+            std::wstring activeNorm = NormalizePathForCompare(state_.activePath);
+            for (const auto &item : state_.items)
+            {
+                if (item.isDirectory && NormalizePathForCompare(item.fullPath) == activeNorm)
+                {
+                    targetDir = state_.activePath;
+                    break;
+                }
+            }
+        }
+
+        if (targetDir.empty())
+            targetDir = GetActiveDirectory();
     }
 
     inlineTargetFullPath_ = targetDir;
 
+    if (!inlineText_.empty())
+    {
+        inlineSelStart_ = 0;
+        inlineSelEnd_ = (int)inlineText_.size();
+        if (inlineType_ == Input::Type::File)
+        {
+            size_t dot = inlineText_.find_last_of(L'.');
+            if (dot != std::wstring::npos && dot > 0)
+                inlineSelEnd_ = (int)dot;
+        }
+        inlineHasSelection_ = (inlineSelEnd_ > inlineSelStart_);
+        inlineCursorPos_ = inlineSelEnd_;
+    }
+
     std::lock_guard<std::mutex> lk(itemsMutex_);
 
-    // Vérifier si un placeholder existe déjà
     bool placeholderExists = false;
     int existingPos = -1;
     for (size_t i = 0; i < state_.items.size(); ++i)
@@ -1905,14 +2011,12 @@ void ExplorerManager::ShowInlineInput(Input::Type type)
         }
     }
 
-    // Si déjà présent, juste mettre à jour
     if (placeholderExists)
     {
         UpdateItemPositions();
         return;
     }
 
-    // Créer le placeholder
     ExplorerItem placeholder;
     placeholder.name = L"__inline_placeholder__";
     placeholder.fullPath = L"__inline_placeholder__";
@@ -1922,7 +2026,6 @@ void ExplorerManager::ShowInlineInput(Input::Type type)
 
     int insertPos = -1;
 
-    // Chercher le dossier parent
     for (size_t i = 0; i < state_.items.size(); ++i)
     {
         if (state_.items[i].fullPath == inlineTargetFullPath_)
@@ -1930,13 +2033,9 @@ void ExplorerManager::ShowInlineInput(Input::Type type)
             int parentDepth = state_.items[i].depth;
             placeholder.depth = parentDepth + 1;
 
-            // Forcer le parent à être déplié
             if (!state_.items[i].expanded)
-            {
                 state_.items[i].expanded = true;
-            }
 
-            // Insérer après tous ses enfants
             insertPos = (int)i + 1;
             while (insertPos < (int)state_.items.size() &&
                    state_.items[insertPos].depth > parentDepth)
@@ -1947,12 +2046,9 @@ void ExplorerManager::ShowInlineInput(Input::Type type)
         }
     }
 
-    // Parent non trouvé → insérer à la racine
     if (insertPos == -1)
     {
         placeholder.depth = 0;
-
-        // Trouver la fin de la racine (après le dernier élément depth 0)
         insertPos = (int)state_.items.size();
 
         for (int i = (int)state_.items.size() - 1; i >= 0; --i)
@@ -1960,8 +2056,6 @@ void ExplorerManager::ShowInlineInput(Input::Type type)
             if (state_.items[i].depth == 0)
             {
                 insertPos = i + 1;
-
-                // sauter ses enfants éventuels
                 while (insertPos < (int)state_.items.size() &&
                        state_.items[insertPos].depth > 0)
                 {
@@ -1972,12 +2066,10 @@ void ExplorerManager::ShowInlineInput(Input::Type type)
         }
     }
 
-    // Insérer le placeholder
     state_.items.insert(state_.items.begin() + insertPos, placeholder);
 
     UpdateItemPositions();
 }
-
 void ExplorerManager::ShowRenameInline(int itemIndex)
 {
     if (itemIndex < 0 || itemIndex >= (int)state_.items.size())
@@ -2155,58 +2247,20 @@ void ExplorerManager::OnKeyDownInline(WPARAM key)
                 else
                     parentDir = GetActiveDirectory();
 
-                std::wstring targetPath = parentDir;
-                if (!targetPath.empty() && targetPath.back() != L'\\' && targetPath.back() != L'/')
-                    targetPath.push_back(L'\\');
-                targetPath += inlineText_;
-
                 try
                 {
                     if (inlineType_ == Input::Type::File)
                     {
-                        int size = WideCharToMultiByte(CP_UTF8, 0, targetPath.c_str(), -1, NULL, 0, NULL, NULL);
-                        std::string path(size, '\0');
-                        WideCharToMultiByte(CP_UTF8, 0, targetPath.c_str(), -1, path.data(), size, NULL, NULL);
-                        std::ofstream file;
-                        file.open(path);
-                        if (file.is_open())
-                        {
-                            file.close();
-                            Logger::Instance().Log(L"Explorer: created file: " + targetPath);
-                            LoadDirectoryContents();
-                            SetActivePath(targetPath);
-                            // Open in editor
-                            HWND wnd = FindWindowW(L"NebulaTextWindowClass", NULL);
-                            if (wnd)
-                            {
-                                auto *heapPath = new std::wstring(targetPath);
-                                PostMessageW(wnd, WM_USER + 100, 0, (LPARAM)heapPath);
-                            }
-                            InvalidateMainWindow();
-                        }
-                        else
-                        {
-                            MessageBoxW(NULL, L"Impossible de créer le fichier.", L"Erreur", MB_OK | MB_ICONERROR);
-                        }
+                        CreateNewFileAt(parentDir, inlineText_);
                     }
                     else
                     {
-                        if (std::filesystem::create_directory(targetPath))
-                        {
-                            Logger::Instance().Log(L"Explorer: created folder: " + targetPath);
-                            LoadDirectoryContents();
-                            SetActivePath(targetPath);
-                            InvalidateMainWindow();
-                        }
-                        else
-                        {
-                            MessageBoxW(NULL, L"Impossible de créer le dossier.", L"Erreur", MB_OK | MB_ICONERROR);
-                        }
+                        CreateNewFolderAt(parentDir, inlineText_);
                     }
                 }
                 catch (...)
                 {
-                    MessageBoxW(NULL, L"Erreur lors de la création.", L"Erreur", MB_OK | MB_ICONERROR);
+                    MessageBoxW(NULL, L"Erreur lors de la creation.", L"Erreur", MB_OK | MB_ICONERROR);
                 }
             }
         }
@@ -2348,13 +2402,13 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
     float folderIconGap = (float)win32_dpi_scale(4, dpi);
 
     // Rounded background constants and helper for crisp rounded fills
-    const float corner = 4.0f;           // petit arrondi (réduit)
-    const float insetX = 4.0f;           // marge gauche/droite du fond (réduite)
+    const float corner = 4.0f;           // petit arrondi (r�duit)
+    const float insetX = 4.0f;           // marge gauche/droite du fond (r�duite)
     const float insetY = 0.0f;           // marge haut/bas du fond (aucune, couvre toute la hauteur)
 
     auto DrawRoundedFill = [&](const D2D1_RECT_F& r, ID2D1Brush* brush)
     {
-        // Snap pour éviter le flou
+        // Snap pour �viter le flou
         D2D1_RECT_F rr = D2D1::RectF(
             std::round(r.left),
             std::round(r.top),
@@ -2583,7 +2637,7 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
             continue;
         }
 
-        // Si c'est le placeholder, dessiner l'input inline à cet endroit
+        // Si c'est le placeholder, dessiner l'input inline � cet endroit
         if (item.fullPath == L"__inline_placeholder__")
         {
             if (inlineVisible_)
@@ -3231,3 +3285,13 @@ void ExplorerManager::DrawSearchPanel(ID2D1RenderTarget *ctx, IDWriteFactory *dw
     if (txt)
         txt->Release();
 }
+
+
+
+
+
+
+
+
+
+

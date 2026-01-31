@@ -720,28 +720,31 @@ namespace Orion
         }
 
         // Keep include completion open while typing inside #include <...> or #include "..."
+        // Only refresh if the popup is already visible (manual trigger via Ctrl+Space).
         if (completionService_ && completionPopup_ && IsCppLikeExt(ext))
         {
             bool includeCtx = IsIncludeContext(state_.lines, state_.caret.line, state_.caret.column);
             if (includeCtx)
             {
-                Completion::CompletionContext ctx{state_.filePath, state_.lines, state_.caret.line, state_.caret.column, ext};
-                auto items = completionService_->GetCompletions(ctx);
-                if (!items.empty())
+                if (completionPopup_->IsVisible())
                 {
-                    std::vector<std::wstring> labels;
-                    labels.reserve(items.size());
-                    for (const auto &it : items)
-                        labels.push_back(it.label);
+                    Completion::CompletionContext ctx{state_.filePath, state_.lines, state_.caret.line, state_.caret.column, ext};
+                    auto items = completionService_->GetCompletions(ctx);
+                    if (!items.empty())
+                    {
+                        std::vector<std::wstring> labels;
+                        labels.reserve(items.size());
+                        for (const auto &it : items)
+                            labels.push_back(it.label);
 
-                    completionPopup_->SetItems(labels);
-                    D2D1_POINT_2F p = TextToScreenPosition(state_.caret);
-                    completionPopup_->UpdateLayout(p.x, p.y + metrics_.lineHeight, 520.0f, metrics_.lineHeight);
-                    completionPopup_->Show();
-                }
-                else if (completionPopup_->IsVisible())
-                {
-                    completionPopup_->Hide();
+                        completionPopup_->SetItems(labels);
+                        D2D1_POINT_2F p = TextToScreenPosition(state_.caret);
+                        completionPopup_->UpdateLayout(p.x, p.y + metrics_.lineHeight, 520.0f, metrics_.lineHeight);
+                    }
+                    else
+                    {
+                        completionPopup_->Hide();
+                    }
                 }
             }
             else if (completionPopup_->IsVisible())
@@ -768,13 +771,7 @@ namespace Orion
 
         bool contentChanged = false;
 
-        {
-            wchar_t buf[128];
-            bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-            bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-            swprintf_s(buf, L"Editor::OnKeyDown - key=%d ctrl=%d shift=%d", (int)key, ctrl ? 1 : 0, shift ? 1 : 0);
-            Logger::Instance().Log(std::wstring(buf));
-        }
+        // Avoid per-keystroke logging; it hurts typing responsiveness.
 
         bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
         bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
@@ -950,6 +947,30 @@ namespace Orion
                                 {
                                     line.erase(startPos, caretCol - startPos);
                                     state_.caret.column = startPos;
+                                }
+                            }
+                        }
+                    }
+
+                    // For #include completion, replace the current prefix instead of inserting.
+                    bool includeCtx = IsIncludeContext(state_.lines, state_.caret.line, state_.caret.column);
+                    if (includeCtx && parts.size() == 1)
+                    {
+                        std::wstring &line = state_.lines[state_.caret.line];
+                        size_t posInclude = line.rfind(L"#include", (size_t)state_.caret.column);
+                        if (posInclude != std::wstring::npos)
+                        {
+                            size_t lt = line.find_last_of(L"<\"", (size_t)state_.caret.column - 1);
+                            if (lt != std::wstring::npos && lt > posInclude)
+                            {
+                                size_t startPos = lt + 1;
+                                size_t endPos = (size_t)state_.caret.column;
+                                if (endPos > line.size())
+                                    endPos = line.size();
+                                if (endPos > startPos)
+                                {
+                                    line.erase(startPos, endPos - startPos);
+                                    state_.caret.column = (int)startPos;
                                 }
                             }
                         }
@@ -1400,28 +1421,31 @@ namespace Orion
         }
 
         // Keep include completion open while typing inside #include <...> or #include "..."
+        // Only refresh if the popup is already visible (manual trigger via Ctrl+Space).
         if (completionService_ && completionPopup_ && IsCppLikeExt(ext))
         {
             bool includeCtx = IsIncludeContext(state_.lines, state_.caret.line, state_.caret.column);
             if (includeCtx)
             {
-                Completion::CompletionContext ctx{state_.filePath, state_.lines, state_.caret.line, state_.caret.column, ext};
-                auto items = completionService_->GetCompletions(ctx);
-                if (!items.empty())
+                if (completionPopup_->IsVisible())
                 {
-                    std::vector<std::wstring> labels;
-                    labels.reserve(items.size());
-                    for (const auto &it : items)
-                        labels.push_back(it.label);
+                    Completion::CompletionContext ctx{state_.filePath, state_.lines, state_.caret.line, state_.caret.column, ext};
+                    auto items = completionService_->GetCompletions(ctx);
+                    if (!items.empty())
+                    {
+                        std::vector<std::wstring> labels;
+                        labels.reserve(items.size());
+                        for (const auto &it : items)
+                            labels.push_back(it.label);
 
-                    completionPopup_->SetItems(labels);
-                    D2D1_POINT_2F p = TextToScreenPosition(state_.caret);
-                    completionPopup_->UpdateLayout(p.x, p.y + metrics_.lineHeight, 520.0f, metrics_.lineHeight);
-                    completionPopup_->Show();
-                }
-                else if (completionPopup_->IsVisible())
-                {
-                    completionPopup_->Hide();
+                        completionPopup_->SetItems(labels);
+                        D2D1_POINT_2F p = TextToScreenPosition(state_.caret);
+                        completionPopup_->UpdateLayout(p.x, p.y + metrics_.lineHeight, 520.0f, metrics_.lineHeight);
+                    }
+                    else
+                    {
+                        completionPopup_->Hide();
+                    }
                 }
             }
             else if (completionPopup_->IsVisible())

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <cstring>
+#include <cmath>
 #include <windows.h>
 #include <windowsx.h>
 #include <commdlg.h>
@@ -109,6 +110,10 @@ static void ThrottledInvalidateRect(HWND hwnd, const RECT *rect, BOOL erase)
 
 static constexpr UINT CARET_TIMER_ID = 1;
 static constexpr UINT CARET_TIMER_INTERVAL_MS = 250;
+static constexpr UINT TITLEBAR_HOVER_TIMER_ID = 2;
+static constexpr UINT TITLEBAR_HOVER_TIMER_INTERVAL_MS = 16;
+static constexpr UINT DIAG_TIMER_ID = 3;
+static constexpr UINT DIAG_TIMER_INTERVAL_MS = 80;
 
 struct KeyMods
 {
@@ -586,6 +591,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         ScreenToClient(hwnd_, &cursor_point);
 
         RECT title_bar_rect = win32_titlebar_rect(hwnd_);
+        TRACKMOUSEEVENT tmeNc = {};
+        tmeNc.cbSize = sizeof(tmeNc);
+        tmeNc.dwFlags = TME_LEAVE | TME_NONCLIENT;
+        tmeNc.hwndTrack = hwnd_;
+        TrackMouseEvent(&tmeNc);
 
         if (newProjectVisible_)
         {
@@ -605,6 +615,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 InvalidateRect(hwnd_, &button_rects.minimize, FALSE);
                 InvalidateRect(hwnd_, &button_rects.maximize, FALSE);
                 hoveredButton_ = new_hovered_button;
+                StartTitlebarHoverAnimation();
             }
             return DefWindowProc(hwnd_, uMsg, wParam, lParam);
         }
@@ -642,6 +653,18 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             InvalidateRect(hwnd_, &button_rects.maximize, FALSE);
             InvalidateRect(hwnd_, &button_rects.run, FALSE);
             hoveredButton_ = new_hovered_button;
+            StartTitlebarHoverAnimation();
+        }
+        return DefWindowProc(hwnd_, uMsg, wParam, lParam);
+    }
+    case WM_NCMOUSELEAVE:
+    {
+        if (hoveredButton_ != Hovered_None)
+        {
+            hoveredButton_ = Hovered_None;
+            StartTitlebarHoverAnimation();
+            RECT tb = win32_titlebar_rect(hwnd_);
+            InvalidateRect(hwnd_, &tb, FALSE);
         }
         return DefWindowProc(hwnd_, uMsg, wParam, lParam);
     }
@@ -682,6 +705,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                         if (targetCol < 0)
                             targetCol = 0;
                         Orion::Caret::SetCaret(*ed, targetLine, targetCol);
+                        ed->RevealCaretOnNextLayout();
                     }
 
                     Lsp::LspManager::Instance().UpdateFile(ed->GetFilePath(), ed->GetLinesSnapshot());
@@ -847,6 +871,22 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 int baseId = GetActiveDropdown().baseId;
                 if (baseId >= 5000 && baseId < 6000)
                 {
+                    MenuDropdown &dd = GetActiveDropdown();
+                    bool hasSub = (!dd.hasSubmenu.empty() && itemIndex < (int)dd.hasSubmenu.size() && dd.hasSubmenu[itemIndex]);
+                    if (hasSub)
+                    {
+                        std::vector<std::wstring> items = {
+                            L"Nouveau fichier",
+                            L"Nouveau dossier",
+                            L"Class Header (.h)",
+                            L"Class Source (.cpp)"};
+                        D2D1_RECT_F r = dd.rect;
+                        float itemHeight = (r.bottom - r.top) / (dd.items.empty() ? 1.0f : (float)dd.items.size());
+                        D2D1_RECT_F itemRect = D2D1::RectF(r.left, r.top + itemIndex * itemHeight, r.right, r.top + (itemIndex + 1) * itemHeight);
+                        ShowSubmenuDropdown(hwnd_, items, D2D1::Point2F(itemRect.right - 1.0f, itemRect.top), 9000);
+                        InvalidateRect(hwnd_, nullptr, FALSE);
+                        return 0;
+                    }
                     int commandId = baseId + itemIndex;
                     GetExplorerManager().HandleContextCommand(commandId);
                 }
@@ -922,7 +962,30 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
-        // If click is inside Explorer, forward it first
+        // Check if click is in terminal area (tabs/plus/resize/panel)
+        TerminalPanel &terminal = GetTerminalPanel();
+        bool hitTerminal = false;
+        if (terminal.IsVisible())
+        {
+            bool inTerminal = terminal.IsPointInPanel(pt);
+            bool inTerminalResize = terminal.IsPointInResizeZone(pt);
+            bool inTerminalTabs = terminal.IsPointInTabsBarArea(pt) || terminal.IsPointInPlusButton(pt);
+
+            if (inTerminal || inTerminalResize || inTerminalTabs)
+            {
+                hitTerminal = true;
+                ReleaseCapture();
+                Orion::Editor *editor = GetEditor();
+                if (editor)
+                    editor->CancelInteraction();
+
+                terminal.OnLeftButtonDown(hwnd_, pt);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+        }
+
+        // If click is inside Explorer, forward it first (only when not hitting terminal)
         if (GetExplorerManager().IsVisible() && GetExplorerManager().IsPointInExplorer(pt))
         {
             GetExplorerManager().OnLeftButtonDown(hwnd_, pt);
@@ -1022,28 +1085,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
-        // Check if click is in terminal area (tabs/plus/resize/panel)
-        TerminalPanel &terminal = GetTerminalPanel();
-        bool hitTerminal = false;
-        if (terminal.IsVisible())
-        {
-            bool inTerminal = terminal.IsPointInPanel(pt);
-            bool inTerminalResize = terminal.IsPointInResizeZone(pt);
-            bool inTerminalTabs = terminal.IsPointInTabsBarArea(pt) || terminal.IsPointInPlusButton(pt);
-
-            if (inTerminal || inTerminalResize || inTerminalTabs)
-            {
-                hitTerminal = true;
-                ReleaseCapture();
-                Orion::Editor *editor = GetEditor();
-                if (editor)
-                    editor->CancelInteraction();
-
-                terminal.OnLeftButtonDown(hwnd_, pt);
-                InvalidateRect(hwnd_, nullptr, FALSE);
-                return 0;
-            }
-        }
+        // terminal handled above (before explorer)
 
         // Check if click is in active panel area
         Panel *activePanel = GetPanelManager().GetActivePanel();
@@ -1371,6 +1413,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         {
             // Optional: avoid explorer hover while over tabbar
             GetExplorerManager().ClearHover(hwnd_);
+            if (hoveredButton_ != Hovered_None)
+            {
+                hoveredButton_ = Hovered_None;
+                StartTitlebarHoverAnimation();
+                RECT tb = win32_titlebar_rect(hwnd_);
+                InvalidateRect(hwnd_, &tb, FALSE);
+            }
             return 0;
         }
 
@@ -1389,10 +1438,24 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
 
         bool lmbDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+        if (hoveredButton_ != Hovered_None)
+        {
+            RECT tb = win32_titlebar_rect(hwnd_);
+            if (pt.y >= tb.bottom)
+            {
+                hoveredButton_ = Hovered_None;
+                StartTitlebarHoverAnimation();
+                InvalidateRect(hwnd_, &tb, FALSE);
+            }
+        }
 
         // ===== TERMINAL HANDLING - Optimized =====
         TerminalPanel& terminal = GetTerminalPanel();
-        if (terminal.IsVisible())
+        bool terminalHasCapture = (GetCapture() == hwnd_);
+        bool inTerminalArea = terminal.IsVisible() &&
+            (terminal.IsPointInPanel(pt) || terminal.IsPointInResizeZone(pt) ||
+             terminal.IsPointInTabsBarArea(pt) || terminal.IsPointInPlusButton(pt));
+        if (terminal.IsVisible() && (inTerminalArea || terminalHasCapture))
         {
             // Priority 1: resizing
             if (terminal.IsResizing())
@@ -1429,8 +1492,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
         // ===== END TERMINAL HANDLING =====
 
-        // Keep terminal hover state in sync even when the cursor leaves its area.
-        if (terminal.IsVisible() && !lmbDown)
+        // Keep terminal hover state in sync while pointer is over terminal area.
+        if (terminal.IsVisible() && !lmbDown && inTerminalArea)
         {
             bool changed = terminal.OnMouseMove(hwnd_, pt);
             if (changed)
@@ -1482,6 +1545,29 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             {
                 SetDropdownHoveredItem(hoveredItem);
                 needsRedraw = true;
+            }
+
+            int baseId = GetActiveDropdown().baseId;
+            if (baseId >= 5000 && baseId < 6000)
+            {
+                MenuDropdown &dd = GetActiveDropdown();
+                bool hasSub = (hoveredItem >= 0 && !dd.hasSubmenu.empty() && hoveredItem < (int)dd.hasSubmenu.size() && dd.hasSubmenu[hoveredItem]);
+                if (hasSub)
+                {
+                    std::vector<std::wstring> items = {
+                        L"Nouveau fichier",
+                        L"Nouveau dossier",
+                        L"Class Header (.h)",
+                        L"Class Source (.cpp)"};
+                    D2D1_RECT_F r = dd.rect;
+                    float itemHeight = (r.bottom - r.top) / (dd.items.empty() ? 1.0f : (float)dd.items.size());
+                    D2D1_RECT_F itemRect = D2D1::RectF(r.left, r.top + hoveredItem * itemHeight, r.right, r.top + (hoveredItem + 1) * itemHeight);
+                    ShowSubmenuDropdown(hwnd_, items, D2D1::Point2F(itemRect.right - 1.0f, itemRect.top), 9000);
+                }
+                else if (IsSubmenuDropdownVisible())
+                {
+                    HideSubmenuDropdown(hwnd_);
+                }
             }
 
             int originMenu = GetActiveDropdown().menuIndex;
@@ -1572,12 +1658,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                     return 0;
                 }
 
-                ClearAllHoverStates();
-
                 // Explorer hover (ignore terminal panel area)
                 TerminalPanel &terminalHoverGuard = GetTerminalPanel();
                 bool inTerminalPanel = terminalHoverGuard.IsVisible() && terminalHoverGuard.IsPointInPanel(pt);
-                if (!inTerminalPanel && GetExplorerManager().IsVisible() && GetExplorerManager().IsPointInExplorer(pt))
+                bool inExplorer = !inTerminalPanel &&
+                                  GetExplorerManager().IsVisible() &&
+                                  GetExplorerManager().IsPointInExplorer(pt);
+
+                if (!inExplorer)
+                    ClearAllHoverStates();
+
+                if (inExplorer)
                 {
                     GetExplorerManager().OnMouseMove(hwnd_, pt);
                 }
@@ -1766,6 +1857,45 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             }
             return 0;
         }
+        if (wParam == TITLEBAR_HOVER_TIMER_ID)
+        {
+            StepTitlebarHoverAnimation();
+            return 0;
+        }
+        if (wParam == DIAG_TIMER_ID)
+        {
+            DWORD now = GetTickCount();
+            std::vector<int> ready;
+            for (const auto &kv : pendingDiagTick_)
+            {
+                if (now - kv.second >= 200)
+                    ready.push_back(kv.first);
+            }
+
+            for (int tabIndex : ready)
+            {
+                auto it = pendingDiagTick_.find(tabIndex);
+                if (it != pendingDiagTick_.end())
+                    pendingDiagTick_.erase(it);
+
+                Orion::Editor *ed = GetEditorForTab(tabIndex);
+                if (!ed)
+                    continue;
+                std::wstring fp = ed->GetFilePath();
+                if (fp.empty() || fp.rfind(L"__untitled__", 0) == 0)
+                    continue;
+                auto lines = ed->GetLinesSnapshot();
+                Lsp::LspManager::Instance().UpdateFile(fp, lines);
+                Lsp::LspManager::Instance().RequestDiagnosticsAsync(fp, lines, hwnd_, tabIndex);
+            }
+
+            if (pendingDiagTick_.empty())
+            {
+                diagTimerActive_ = false;
+                KillTimer(hwnd_, DIAG_TIMER_ID);
+            }
+            return 0;
+        }
         break;
     }
     case WM_COMMAND:
@@ -1780,26 +1910,39 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             Orion::Editor *editor = GetEditor();
             if (editor)
             {
-                // 0: Couper, 1: Copier, 2: Coller, 3: Envoyer avec ggwave
-                switch (cmdIndex)
-                {
-                case 0: // Couper
-                    editor->CutSelectionToClipboard();
-                    InvalidateRect(hwnd_, nullptr, FALSE);
-                    return 0;
-                case 1: // Copier
-                    editor->CopySelectionToClipboard();
-                    return 0;
-                case 2: // Coller
-                    editor->PasteFromClipboard();
-                    InvalidateRect(hwnd_, nullptr, FALSE);
-                    return 0;
-                case 3: // Envoyer avec ggwave
-                {
-                    std::wstring sel = editor->GetSelectionText();
-                    if (!sel.empty())
-                    {
-                        ggwave::SpeakText(sel);
+                  // 0: Couper, 1: Copier, 2: Coller, 3: Aller a la definition, 4: Envoyer avec ggwave
+                  switch (cmdIndex)
+                  {
+                  case 0: // Couper
+                      editor->CutSelectionToClipboard();
+                      InvalidateRect(hwnd_, nullptr, FALSE);
+                      return 0;
+                  case 1: // Copier
+                      editor->CopySelectionToClipboard();
+                      return 0;
+                  case 2: // Coller
+                      editor->PasteFromClipboard();
+                      InvalidateRect(hwnd_, nullptr, FALSE);
+                      return 0;
+                  case 3: // Aller a la definition
+                  {
+                      if (pendingContextGoto_.has_value())
+                      {
+                          auto *req = new OpenFileRequest();
+                          req->filePath = pendingContextGoto_->filePath;
+                          req->line = pendingContextGoto_->line;
+                          req->column = pendingContextGoto_->column;
+                          PostMessageW(hwnd_, WM_OPEN_FILE_AT, 0, (LPARAM)req);
+                          return 0;
+                      }
+                      break;
+                  }
+                  case 4: // Envoyer avec ggwave
+                  {
+                      std::wstring sel = editor->GetSelectionText();
+                      if (!sel.empty())
+                      {
+                          ggwave::SpeakText(sel);
                         return 0;
                     }
                 }
@@ -1811,6 +1954,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         if (id >= 5000 && id < 6000)
         {
             GetExplorerManager().HandleContextCommand(id);
+            return 0;
+        }
+
+        if (id >= 9000 && id < 9100)
+        {
+            GetExplorerManager().HandleContextSubmenuCommand(id);
             return 0;
         }
 
@@ -2118,8 +2267,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         Orion::Editor *editor = GetEditor();
         if (editor)
         {
-            // Build context menu in French: Couper, Copier, Coller, Envoyer avec ggwave
-            std::vector<std::wstring> items = {L"Couper", L"Copier", L"Coller", L"Envoyer avec ggwave"};
+            // Build context menu in French: Couper, Copier, Coller, Aller a la definition, Envoyer avec ggwave
+            pendingContextGoto_ = editor->TryGoToDefinitionAtPoint(pt);
+            std::vector<std::wstring> items = {L"Couper", L"Copier", L"Coller", L"Aller a la definition", L"Envoyer avec ggwave"};
             D2D1_POINT_2F pos = D2D1::Point2F((float)pt.x, (float)pt.y);
             ShowContextMenuDropdown(hwnd_, items, pos, 7000);
 
@@ -2148,8 +2298,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 }
                 CloseClipboard();
             }
-            enabled[2] = canPaste;     // Coller
-            enabled[3] = hasSelection; // Envoyer avec ggwave
+            enabled[2] = canPaste;                              // Coller
+            enabled[3] = pendingContextGoto_.has_value();       // Aller a la definition
+            enabled[4] = hasSelection;                          // Envoyer avec ggwave
 
             // Apply to active dropdown
             MenuDropdown &dd = GetActiveDropdown();
@@ -2266,6 +2417,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         GetTerminalPanel().CloseAll();
         GetGGWavePanel().Shutdown();
         KillTimer(hwnd_, CARET_TIMER_ID);
+        KillTimer(hwnd_, TITLEBAR_HOVER_TIMER_ID);
+        KillTimer(hwnd_, DIAG_TIMER_ID);
         // Shutdown ggwave wrapper
         ggwave::Shutdown();
         CoUninitialize();
@@ -2299,6 +2452,80 @@ Window::~Window()
         delete skia_;
 }
 
+float Window::GetTitlebarHoverAlpha(CustomTitleBarHoveredButton btn) const
+{
+    switch (btn)
+    {
+    case Hovered_Minimize: return titlebarHoverMin_;
+    case Hovered_Maximize: return titlebarHoverMax_;
+    case Hovered_Close: return titlebarHoverClose_;
+    case Hovered_Run: return titlebarHoverRun_;
+    default: break;
+    }
+    return 0.0f;
+}
+
+void Window::StartTitlebarHoverAnimation()
+{
+    if (!hwnd_)
+        return;
+    if (!titlebarHoverAnimating_)
+    {
+        titlebarHoverAnimating_ = true;
+        titlebarHoverLastTick_ = GetTickCount();
+        SetTimer(hwnd_, TITLEBAR_HOVER_TIMER_ID, TITLEBAR_HOVER_TIMER_INTERVAL_MS, nullptr);
+    }
+}
+
+void Window::StepTitlebarHoverAnimation()
+{
+    DWORD now = GetTickCount();
+    float dt = (titlebarHoverLastTick_ == 0) ? 0.016f : (float)(now - titlebarHoverLastTick_) / 1000.0f;
+    titlebarHoverLastTick_ = now;
+
+    float targetMin = (hoveredButton_ == Hovered_Minimize) ? 1.0f : 0.0f;
+    float targetMax = (hoveredButton_ == Hovered_Maximize) ? 1.0f : 0.0f;
+    float targetClose = (hoveredButton_ == Hovered_Close) ? 1.0f : 0.0f;
+    float targetRun = (hoveredButton_ == Hovered_Run) ? 1.0f : 0.0f;
+
+    float speed = 18.0f;
+    auto approach = [&](float current, float target) -> float
+    {
+        float k = std::clamp(speed * dt, 0.0f, 1.0f);
+        return current + (target - current) * k;
+    };
+
+    titlebarHoverMin_ = approach(titlebarHoverMin_, targetMin);
+    titlebarHoverMax_ = approach(titlebarHoverMax_, targetMax);
+    titlebarHoverClose_ = approach(titlebarHoverClose_, targetClose);
+    titlebarHoverRun_ = approach(titlebarHoverRun_, targetRun);
+
+    auto isNear = [](float a, float b) { return std::fabs(a - b) < 0.01f; };
+    if (isNear(titlebarHoverMin_, targetMin) &&
+        isNear(titlebarHoverMax_, targetMax) &&
+        isNear(titlebarHoverClose_, targetClose) &&
+        isNear(titlebarHoverRun_, targetRun))
+    {
+        titlebarHoverAnimating_ = false;
+        KillTimer(hwnd_, TITLEBAR_HOVER_TIMER_ID);
+    }
+
+    RECT tb = win32_titlebar_rect(hwnd_);
+    InvalidateRect(hwnd_, &tb, FALSE);
+}
+
+void Window::ScheduleDiagnosticsForTab(int tabIndex)
+{
+    if (tabIndex < 0 || !hwnd_)
+        return;
+    pendingDiagTick_[tabIndex] = GetTickCount();
+    if (!diagTimerActive_)
+    {
+        diagTimerActive_ = true;
+        SetTimer(hwnd_, DIAG_TIMER_ID, DIAG_TIMER_INTERVAL_MS, nullptr);
+    }
+}
+
 void Window::ClearAllHoverStates()
 {
     hoveredButton_ = Hovered_None;
@@ -2306,9 +2533,17 @@ void Window::ClearAllHoverStates()
         SetMenuItemHovered(i, false);
     HideMenuDropdown(hwnd_);
 
-    GetExplorerManager().ClearHover(hwnd_);
+    POINT pt;
+    bool inExplorer = false;
+    if (GetCursorPos(&pt) && ScreenToClient(hwnd_, &pt))
+    {
+        inExplorer = GetExplorerManager().IsVisible() && GetExplorerManager().IsPointInExplorer(pt);
+    }
+    if (!inExplorer)
+        GetExplorerManager().ClearHover(hwnd_);
     GetPanelManager().ClearResizeHover(hwnd_);
     Footer_ClearHover(hwnd_);
+    StartTitlebarHoverAnimation();
 
     // tabbar hover se clear ailleurs (WM_MOUSELEAVE / sortie tabbar)
     ThrottledInvalidateRect(hwnd_, nullptr, FALSE);

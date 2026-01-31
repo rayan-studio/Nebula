@@ -2,6 +2,7 @@
 #include "ui/graphics/Skia.h"
 #include "orion/caret/Caret.h"
 #include "lsp/LspManager.h"
+#include "core/explorer/Explorer.h"
 #include <filesystem>
 #include <algorithm>
 #include <cwctype>
@@ -127,6 +128,8 @@ void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber, int 
 
         if (!filePath.empty())
         {
+            if (GetExplorerManager().IsVisible())
+                GetExplorerManager().SetActivePath(filePath);
             if (ShouldOpenAsPreview(filePath))
             {
                 editor->LoadPreviewAsync(hwnd_, filePath, tabIndex);
@@ -154,8 +157,7 @@ void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber, int 
             std::wstring fp = ed->GetFilePath();
             if (fp.empty() || fp.rfind(L"__untitled__", 0) == 0)
                 return;
-            Lsp::LspManager::Instance().UpdateFile(fp, ed->GetLinesSnapshot());
-            Lsp::LspManager::Instance().RequestDiagnosticsAsync(fp, ed->GetLinesSnapshot(), hwnd_, tabIndex);
+            ScheduleDiagnosticsForTab(tabIndex);
         };
     }
     else if (lineNumber >= 0)
@@ -166,9 +168,13 @@ void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber, int 
             int targetLine = lineNumber < 0 ? 0 : lineNumber;
             int targetCol = column < 0 ? 0 : column;
             Orion::Caret::SetCaret(*editor, targetLine, targetCol);
+            editor->RevealCaretOnNextLayout();
             InvalidateRect(hwnd_, nullptr, FALSE);
         }
     }
+
+    if (!filePath.empty() && GetExplorerManager().IsVisible())
+        GetExplorerManager().SetActivePath(filePath);
 }
 
 void Window::OpenSettingsTab()

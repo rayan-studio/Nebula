@@ -68,6 +68,9 @@ namespace Lsp
         mutable std::mutex mutex_;
         std::unordered_map<std::wstring, std::vector<Diagnostic>> diagnostics_;
         std::unordered_map<std::wstring, std::vector<std::wstring>> fileSymbols_;
+        std::unordered_map<std::wstring, std::unordered_map<std::wstring, Location>> fileSymbolDefLocs_;
+        std::unordered_map<std::wstring, std::unordered_map<std::wstring, Location>> fileSymbolDeclLocs_;
+        std::unordered_map<std::wstring, std::vector<std::wstring>> fileIncludes_;
         std::unordered_map<std::wstring, Location> symbolIndexDef_;
         std::unordered_map<std::wstring, Location> symbolIndexDecl_;
         std::unordered_map<std::wstring, DWORD> lastDiagTick_;

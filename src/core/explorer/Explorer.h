@@ -106,6 +106,7 @@ public:
     void OnMouseWheel(HWND hwnd, int delta);
 
     void HandleContextCommand(int commandId);
+    void HandleContextSubmenuCommand(int commandId);
 
     // Marquer un fichier/dossier comme actif (ex: onglet actif)
     void SetActivePath(const std::wstring &path);
@@ -160,6 +161,8 @@ private:
     void DrawSearchPanel(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd);
     void DrawRightBorder(ID2D1RenderTarget *ctx);
     ID2D1Bitmap *GetIconForItem(ID2D1RenderTarget *ctx, const ExplorerItem &item, HWND hwnd);
+    void CreateNewFileAt(const std::wstring &parentDir, const std::wstring &name);
+    void CreateNewFolderAt(const std::wstring &parentDir, const std::wstring &name);
 
     // Cache d'icônes
     std::unordered_map<std::string, ID2D1Bitmap *> iconCache_;
@@ -200,6 +203,7 @@ public:
 
     // Inline title input (used instead of global Input overlay)
     void ShowInlineInput(Input::Type type);
+    void ShowInlineInputPreset(Input::Type type, const std::wstring &presetName, const std::wstring &targetDir);
     // Show inline input prefilled for renaming the item at given index
     void ShowRenameInline(int itemIndex);
     void HideInlineInput();
@@ -211,6 +215,9 @@ public:
     int renameTargetIndex_ = -1;
     std::wstring renameOriginalFullPath_;
     bool renameTargetIsDir_ = false;
+
+    // Context menu target
+    int contextItemIndex_ = -1;
 
     // Thread entry (private static so it can access private members)
     static DWORD WINAPI WatcherThreadStatic(LPVOID param);

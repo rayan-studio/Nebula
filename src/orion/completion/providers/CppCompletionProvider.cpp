@@ -8,6 +8,7 @@
 #include <thread>
 #include <sstream>
 #include <cwctype>
+#include <unordered_set>
 #include "lsp/LspManager.h"
 
 namespace Orion::Completion
@@ -18,6 +19,7 @@ namespace Orion::Completion
         std::mutex g_headerMutex;
         std::atomic<bool> g_headerReady{false};
         std::atomic<bool> g_headerLoading{false};
+        std::wstring g_lastProjectRoot;
 
         static std::vector<int> ParseVersion(const std::wstring &v)
         {
@@ -149,12 +151,28 @@ namespace Orion::Completion
                     break;
                 if (!entry.is_regular_file(ec))
                     continue;
+                // Skip VCS/hidden/system directories (e.g. .git/.svn/.hg)
+                std::filesystem::path rel = std::filesystem::relative(entry.path(), root, ec);
+                if (!ec)
+                {
+                    bool skip = false;
+                    for (const auto &part : rel)
+                    {
+                        std::wstring name = part.wstring();
+                        if (!name.empty() && name[0] == L'.')
+                        {
+                            skip = true;
+                            break;
+                        }
+                    }
+                    if (skip)
+                        continue;
+                }
                 auto ext = entry.path().extension().wstring();
                 bool hasHeaderExt = (ext == L".h" || ext == L".hpp" || ext == L".hh" || ext == L".inc");
                 bool hasNoExt = ext.empty();
                 if (hasHeaderExt || hasNoExt)
                 {
-                    std::filesystem::path rel = std::filesystem::relative(entry.path(), root, ec);
                     std::wstring ws;
                     if (!ec)
                         ws = rel.generic_wstring();
@@ -165,6 +183,87 @@ namespace Orion::Completion
                         out.push_back(ws);
                         count++;
                         if (count >= 8000)
+                            return;
+                    }
+                }
+            }
+        }
+
+        static bool HasHeaderExt(const std::filesystem::path &p)
+        {
+            auto ext = p.extension().wstring();
+            return ext == L".h" || ext == L".hpp" || ext == L".hh" || ext == L".inc" || ext.empty();
+        }
+
+        static std::wstring NormalizeRoot(const std::wstring &path)
+        {
+            std::wstring out = path;
+            for (auto &c : out)
+            {
+                if (c == L'/')
+                    c = L'\\';
+                c = (wchar_t)towlower(c);
+            }
+            while (!out.empty() && (out.back() == L'\\' || out.back() == L'/'))
+                out.pop_back();
+            return out;
+        }
+
+        static void AddDirectSuggestions(const std::vector<std::filesystem::path> &roots,
+                                         const std::wstring &prefix,
+                                         std::vector<std::wstring> &out)
+        {
+            std::wstring p = prefix;
+            for (auto &c : p)
+                if (c == L'\\') c = L'/';
+
+            size_t slash = p.find_last_of(L"/");
+            std::wstring dirPart = (slash == std::wstring::npos) ? L"" : p.substr(0, slash + 1);
+            std::wstring base = (slash == std::wstring::npos) ? p : p.substr(slash + 1);
+
+            std::wstring baseLower = base;
+            for (auto &c : baseLower) c = (wchar_t)towlower(c);
+
+            std::unordered_set<std::wstring> uniq;
+            for (const auto &s : out) uniq.insert(s);
+
+            for (const auto &root : roots)
+            {
+                std::filesystem::path dir = root / std::filesystem::path(dirPart);
+                std::error_code ec;
+                if (!std::filesystem::exists(dir, ec) || !std::filesystem::is_directory(dir, ec))
+                    continue;
+
+                for (const auto &entry : std::filesystem::directory_iterator(dir, ec))
+                {
+                    if (ec) break;
+                    std::wstring name = entry.path().filename().wstring();
+                    if (!name.empty() && name[0] == L'.')
+                        continue;
+
+                    std::wstring nameLower = name;
+                    for (auto &c : nameLower) c = (wchar_t)towlower(c);
+                    if (!baseLower.empty() && nameLower.rfind(baseLower, 0) != 0)
+                        continue;
+
+                    std::wstring candidate;
+                    if (entry.is_directory(ec))
+                    {
+                        candidate = dirPart + name + L"/";
+                    }
+                    else if (entry.is_regular_file(ec) && HasHeaderExt(entry.path()))
+                    {
+                        candidate = dirPart + name;
+                    }
+                    else
+                    {
+                        continue;
+                    }
+
+                    if (uniq.insert(candidate).second)
+                    {
+                        out.push_back(candidate);
+                        if (out.size() >= 200)
                             return;
                     }
                 }
@@ -193,6 +292,18 @@ namespace Orion::Completion
 
         void EnsureHeaderIndexAsync()
         {
+            std::wstring root = NormalizeRoot(Lsp::LspManager::Instance().GetProjectRoot());
+            {
+                std::lock_guard<std::mutex> lk(g_headerMutex);
+                if (root != g_lastProjectRoot)
+                {
+                    g_lastProjectRoot = root;
+                    g_headerIndex.clear();
+                    g_headerReady.store(false);
+                    g_headerLoading.store(false);
+                }
+            }
+
             if (g_headerReady.load())
                 return;
 
@@ -251,8 +362,14 @@ namespace Orion::Completion
     std::vector<std::wstring> CppCompletionProvider::GetIncludeSuggestions(const std::wstring& prefix) const
     {
         EnsureHeaderIndexAsync();
+        std::vector<std::filesystem::path> roots;
+        AppendIncludeRoots(roots);
+
+        std::vector<std::wstring> out;
+        AddDirectSuggestions(roots, prefix, out);
+
         if (!g_headerReady.load())
-            return {};
+            return out;
 
         std::vector<std::wstring> snapshot;
         {
@@ -260,9 +377,9 @@ namespace Orion::Completion
             snapshot = g_headerIndex;
         }
 
-        std::vector<std::wstring> out;
         for (const auto& h : snapshot)
         {
+            if (out.size() >= 200) break;
             if (prefix.empty())
                 out.push_back(h);
             else
@@ -274,7 +391,6 @@ namespace Orion::Completion
                 if (low.rfind(lp, 0) == 0 || low.find(lp) != std::wstring::npos)
                     out.push_back(h);
             }
-            if (out.size() >= 200) break;
         }
         return out;
     }

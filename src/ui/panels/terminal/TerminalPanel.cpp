@@ -402,6 +402,7 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
         showProblems_ = !showProblems_;
         if (showProblems_)
             showOutput_ = false;
+        hoveredProblemIndex_ = -1;
         return;
     }
 
@@ -463,6 +464,38 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
             outputPendingScrollToBottom_ = false;
             SetCapture(hwnd);
             return;
+        }
+    }
+
+    if (showProblems_ && IsPointInPanel(pt))
+    {
+        if (!IsPointInTabsBar(pt) && !IsPointInResizeZone(pt))
+        {
+            int idx = -1;
+            if (problemsRowHeight_ > 0.0f &&
+                pt.x >= problemsListRect_.left && pt.x <= problemsListRect_.right &&
+                pt.y >= problemsListRect_.top && pt.y <= problemsListRect_.bottom)
+            {
+                idx = (int)((pt.y - problemsListRect_.top) / problemsRowHeight_);
+            }
+
+            if (idx >= 0 && idx < (int)problems_.size())
+            {
+                const auto &p = problems_[idx];
+                int targetLine = p.line - 1;
+                int targetCol = p.column - 1;
+                if (targetLine < 0)
+                    targetLine = 0;
+                if (targetCol < 0)
+                    targetCol = 0;
+
+                OpenFileRequest *req = new OpenFileRequest();
+                req->filePath = problemsFilePath_;
+                req->line = targetLine;
+                req->column = targetCol;
+                PostMessageW(hwnd, WM_OPEN_FILE_AT, 0, (LPARAM)req);
+                return;
+            }
         }
     }
 
@@ -635,6 +668,19 @@ bool TerminalPanel::OnMouseMove(HWND hwnd, POINT pt)
     bool prevOutput = hoveredOutput_;
     hoveredOutput_ = HitTestOutput(pt);
     if (prevOutput != hoveredOutput_)
+        changed = true;
+
+    int prevProblemRow = hoveredProblemIndex_;
+    hoveredProblemIndex_ = -1;
+    if (showProblems_ && problemsRowHeight_ > 0.0f &&
+        pt.x >= problemsListRect_.left && pt.x <= problemsListRect_.right &&
+        pt.y >= problemsListRect_.top && pt.y <= problemsListRect_.bottom)
+    {
+        int idx = (int)((pt.y - problemsListRect_.top) / problemsRowHeight_);
+        if (idx >= 0 && idx < (int)problems_.size())
+            hoveredProblemIndex_ = idx;
+    }
+    if (prevProblemRow != hoveredProblemIndex_)
         changed = true;
 
     if (showOutput_)
@@ -1034,12 +1080,12 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
 
         IDWriteTextFormat* listFormat = nullptr;
         dwrite->CreateTextFormat(
-            L"Segoe UI",
-            NULL,
+            fontFamily_.c_str(),
+            fontCollection_,
             DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
-            12.0f,
+            fontSize_,
             L"en-us",
             &listFormat);
         if (listFormat)
@@ -1050,35 +1096,61 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
 
             ID2D1SolidColorBrush* errorBrush = nullptr;
             ID2D1SolidColorBrush* warningBrush = nullptr;
+            ID2D1SolidColorBrush* rowAlt = nullptr;
+            ID2D1SolidColorBrush* rowHover = nullptr;
+            ID2D1SolidColorBrush* rowBorder = nullptr;
             rt->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.35f, 0.35f, 1.0f), &errorBrush);
             rt->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.70f, 0.30f, 1.0f), &warningBrush);
+            rt->CreateSolidColorBrush(D2D1::ColorF(0.11f, 0.12f, 0.14f, 1.0f), &rowAlt);
+            rt->CreateSolidColorBrush(D2D1::ColorF(0.16f, 0.20f, 0.26f, 1.0f), &rowHover);
+            rt->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.26f, 0.30f, 0.8f), &rowBorder);
 
             float y = contentRect.top + 12.0f;
             float x = contentRect.left + 16.0f;
-            float lineH = 18.0f;
+            float lineH = fontSize_ + 6.0f;
 
             std::wstring header = L"Problems";
             rt->DrawTextW(header.c_str(), (UINT32)header.size(), listFormat,
                           D2D1::RectF(x, y, contentRect.right - 8.0f, y + lineH), fg);
             y += lineH + 4.0f;
 
+            problemsRowHeight_ = lineH;
+            problemsListRect_ = D2D1::RectF(contentRect.left + 8.0f, y, contentRect.right - 8.0f, contentRect.bottom - 8.0f);
+
             if (problems_.empty())
             {
-                std::wstring empty = L"Aucun probl??me d??tect??";
+                std::wstring empty = L"Aucun probleme detecte";
                 rt->DrawTextW(empty.c_str(), (UINT32)empty.size(), listFormat,
                               D2D1::RectF(x, y, contentRect.right - 8.0f, y + lineH), fg);
             }
             else
             {
                 rt->PushAxisAlignedClip(contentRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                int idx = 0;
                 for (const auto& p : problems_)
                 {
+                    float rowLeft = contentRect.left + 8.0f;
+                    float rowRight = contentRect.right - 8.0f;
+                    float rowTop = y - 2.0f;
+                    float rowBottom = y + lineH + 2.0f;
+                    D2D1_RECT_F rowRect = D2D1::RectF(rowLeft, rowTop, rowRight, rowBottom);
+
+                    if (idx % 2 == 1 && rowAlt)
+                        rt->FillRectangle(rowRect, rowAlt);
+                    if (idx == hoveredProblemIndex_ && rowHover)
+                        rt->FillRectangle(rowRect, rowHover);
+                    if (idx == hoveredProblemIndex_ && rowBorder)
+                        rt->DrawRectangle(rowRect, rowBorder, 1.0f);
+
                     ID2D1SolidColorBrush* lineBrush = p.isError ? errorBrush : warningBrush;
-                    std::wstring line = (p.isError ? L"E " : L"W ") +
+                    std::wstring line = (p.isError ? L"Error " : L"Warning ") +
                         p.fileName + L":" + std::to_wstring(p.line) + L":" + std::to_wstring(p.column) + L" " + p.message;
+                    if (!p.suggestion.empty())
+                        line += L" | Suggestion: " + p.suggestion;
                     rt->DrawTextW(line.c_str(), (UINT32)line.size(), listFormat,
                                   D2D1::RectF(x, y, contentRect.right - 8.0f, y + lineH), lineBrush ? lineBrush : fg);
                     y += lineH;
+                    idx++;
                     if (y > contentRect.bottom - lineH)
                         break;
                 }
@@ -1089,6 +1161,12 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
                 errorBrush->Release();
             if (warningBrush)
                 warningBrush->Release();
+            if (rowAlt)
+                rowAlt->Release();
+            if (rowHover)
+                rowHover->Release();
+            if (rowBorder)
+                rowBorder->Release();
             listFormat->Release();
         }
     }

@@ -25,6 +25,7 @@ public:
         int column = 0;
         bool isError = false;
         std::wstring message;
+        std::wstring suggestion;
     };
 
     struct State

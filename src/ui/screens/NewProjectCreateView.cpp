@@ -1,8 +1,21 @@
 #include "ui/screens/NewProjectOverlay.h"
 #include "core/window/Window.h"
+#include <cmath>
 
 namespace UI
 {
+namespace
+{
+static D2D1_RECT_F PixelSnapRect(const D2D1_RECT_F &rect, float scale)
+{
+    return D2D1::RectF(
+        (std::floor(rect.left * scale) + 0.5f) / scale,
+        (std::floor(rect.top * scale) + 0.5f) / scale,
+        (std::floor(rect.right * scale) - 0.5f) / scale,
+        (std::floor(rect.bottom * scale) - 0.5f) / scale);
+}
+}
+
 void NewProjectCreateView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, const NewProjectRenderContext &rc)
 {
     const D2D1_RECT_F &rightPanel = rc.rightPanel;
@@ -22,7 +35,7 @@ void NewProjectCreateView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteF
             btnBg->Release();
         }
         if (rc.panelBorder)
-            ctx->DrawRoundedRectangle(D2D1::RoundedRect(rect, 6.0f * rc.scale, 6.0f * rc.scale), rc.panelBorder, 1.0f);
+            ctx->DrawRoundedRectangle(D2D1::RoundedRect(PixelSnapRect(rect, rc.scale), 6.0f * rc.scale, 6.0f * rc.scale), rc.panelBorder, 1.0f);
 
         if (rc.iconFmt && rc.muted)
         {
@@ -55,8 +68,8 @@ void NewProjectCreateView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteF
     window.newProjNameInput_.SetRect(D2D1::RectF(rightPanel.left + inputPad, nameY, rightPanel.left + inputPad + inputW, nameY + inputH));
 
     auto &styleName = window.newProjNameInput_.GetStyle();
-    styleName.backgroundColor = D2D1::ColorF(0.16f, 0.16f, 0.16f, 1.0f);
-    styleName.borderColor = D2D1::ColorF(0.26f, 0.26f, 0.26f, 1.0f);
+    styleName.backgroundColor = D2D1::ColorF(0.15f, 0.15f, 0.15f, 1.0f);
+    styleName.borderColor = D2D1::ColorF(0.24f, 0.24f, 0.24f, 1.0f);
     styleName.focusBorderColor = D2D1::ColorF(0.29f, 0.62f, 0.92f, 1.0f);
     styleName.cornerRadius = 8.0f * rc.scale;
     styleName.fontSize = 12.0f * rc.scale;
@@ -96,7 +109,7 @@ void NewProjectCreateView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteF
         window.newProjTemplateRects_.push_back(tRect);
     }
     ID2D1SolidColorBrush *tBorder = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.24f, 0.24f, 1.0f), &tBorder);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f), &tBorder);
     IDWriteTextFormat *tFmt = nullptr;
     dwrite->CreateTextFormat(rc.uiFont, rc.uiCollection, DWRITE_FONT_WEIGHT_SEMI_BOLD,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
@@ -122,7 +135,7 @@ void NewProjectCreateView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteF
             selBg->Release();
         }
         if (tBorder)
-            ctx->DrawRoundedRectangle(D2D1::RoundedRect(r, 6.0f * rc.scale, 6.0f * rc.scale), tBorder, 1.0f);
+            ctx->DrawRoundedRectangle(D2D1::RoundedRect(PixelSnapRect(r, rc.scale), 6.0f * rc.scale, 6.0f * rc.scale), tBorder, 1.0f);
         if (tFmt && rc.text)
         {
             D2D1_RECT_F tr = D2D1::RectF(r.left + 10.0f * rc.scale, r.top + 6.0f * rc.scale, r.right - 10.0f * rc.scale, r.bottom);

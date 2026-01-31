@@ -6,10 +6,25 @@
 #include <shlobj.h>
 #include <shellapi.h>
 #include <algorithm>
+#include <cmath>
 #include <cwctype>
 
 namespace
 {
+static float AlignToPixel(float value, float scale)
+{
+    return (std::floor(value * scale) + 0.5f) / scale;
+}
+
+static D2D1_RECT_F PixelSnapRect(const D2D1_RECT_F &rect, float scale)
+{
+    return D2D1::RectF(
+        (std::floor(rect.left * scale) + 0.5f) / scale,
+        (std::floor(rect.top * scale) + 0.5f) / scale,
+        (std::floor(rect.right * scale) - 0.5f) / scale,
+        (std::floor(rect.bottom * scale) - 0.5f) / scale);
+}
+
 static std::wstring GetDefaultSourceReposPath()
 {
     PWSTR profilePath = nullptr;
@@ -62,7 +77,7 @@ void NewProjectOverlay::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFact
     D2D1_RECT_F full = D2D1::RectF((float)clientRect.left, (float)tbRect.bottom, (float)clientRect.right, (float)clientRect.bottom);
 
     ID2D1SolidColorBrush *bg = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.10f, 0.10f, 1.0f), &bg);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f), &bg);
     if (bg)
     {
         ctx->FillRectangle(full, bg);
@@ -104,20 +119,25 @@ void NewProjectOverlay::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFact
     rc.iconFont = iconFont;
     rc.uiCollection = uiCollection;
 
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.13f, 0.13f, 0.13f, 1.0f), &rc.panelBg);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.22f, 1.0f), &rc.panelBorder);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.22f, 1.0f), &rc.divider);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.14f, 0.14f, 0.14f, 1.0f), &rc.panelBg);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f), &rc.panelBorder);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f), &rc.divider);
     ctx->CreateSolidColorBrush(D2D1::ColorF(0.60f, 0.60f, 0.60f, 1.0f), &rc.muted);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.93f, 0.93f, 0.93f, 1.0f), &rc.text);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.17f, 0.17f, 0.17f, 1.0f), &rc.subtle);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0xE0E0E0), &rc.text);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.18f, 0.18f, 1.0f), &rc.subtle);
 
     if (rc.panelBg)
         ctx->FillRoundedRectangle(D2D1::RoundedRect(rightPanel, 8.0f * scale, 8.0f * scale), rc.panelBg);
     if (rc.panelBorder)
-        ctx->DrawRoundedRectangle(D2D1::RoundedRect(rightPanel, 8.0f * scale, 8.0f * scale), rc.panelBorder, 1.0f);
+        ctx->DrawRoundedRectangle(D2D1::RoundedRect(PixelSnapRect(rightPanel, scale), 8.0f * scale, 8.0f * scale), rc.panelBorder, 1.0f);
     if (showHome && rc.divider)
-        ctx->DrawLine(D2D1::Point2F(rightPanel.left - gap * 0.5f, rightPanel.top),
-                      D2D1::Point2F(rightPanel.left - gap * 0.5f, rightPanel.bottom), rc.divider, 1.0f);
+    {
+        float dividerX = AlignToPixel(rightPanel.left - gap * 0.5f, scale);
+        float dividerTop = AlignToPixel(rightPanel.top, scale);
+        float dividerBottom = AlignToPixel(rightPanel.bottom, scale);
+        ctx->DrawLine(D2D1::Point2F(dividerX, dividerTop),
+                      D2D1::Point2F(dividerX, dividerBottom), rc.divider, 1.0f);
+    }
 
     dwrite->CreateTextFormat(uiFont, uiCollection, DWRITE_FONT_WEIGHT_SEMI_BOLD,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
@@ -155,8 +175,8 @@ void NewProjectOverlay::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFact
         float searchY = leftTitle.bottom + 10.0f * scale;
         window.newProjLocationInput_.SetRect(D2D1::RectF(leftPanel.left, searchY, leftPanel.right, searchY + searchH));
         auto &searchStyle = window.newProjLocationInput_.GetStyle();
-        searchStyle.backgroundColor = D2D1::ColorF(0.16f, 0.16f, 0.16f, 1.0f);
-        searchStyle.borderColor = D2D1::ColorF(0.26f, 0.26f, 0.26f, 1.0f);
+        searchStyle.backgroundColor = D2D1::ColorF(0.15f, 0.15f, 0.15f, 1.0f);
+        searchStyle.borderColor = D2D1::ColorF(0.24f, 0.24f, 0.24f, 1.0f);
         searchStyle.focusBorderColor = D2D1::ColorF(0.29f, 0.62f, 0.92f, 1.0f);
         searchStyle.cornerRadius = 8.0f * scale;
         searchStyle.fontSize = 12.0f * scale;
@@ -179,7 +199,7 @@ void NewProjectOverlay::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFact
     }
     D2D1_RECT_F listRect = D2D1::RectF(leftPanel.left, recentsLabelY + 18.0f * scale, leftPanel.right, leftPanel.bottom - 10.0f * scale);
     if (rc.panelBorder)
-        ctx->DrawRoundedRectangle(D2D1::RoundedRect(listRect, 8.0f * scale, 8.0f * scale), rc.panelBorder, 1.0f);
+        ctx->DrawRoundedRectangle(D2D1::RoundedRect(PixelSnapRect(listRect, scale), 8.0f * scale, 8.0f * scale), rc.panelBorder, 1.0f);
 
     window.recentProjectRects_.clear();
     window.recentProjectIndexMap_.clear();
@@ -214,7 +234,7 @@ void NewProjectOverlay::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFact
         if (hovered && rc.subtle)
             ctx->FillRoundedRectangle(D2D1::RoundedRect(rowRect, 6.0f * scale, 6.0f * scale), rc.subtle);
         if (rc.panelBorder)
-            ctx->DrawRoundedRectangle(D2D1::RoundedRect(rowRect, 6.0f * scale, 6.0f * scale), rc.panelBorder, 1.0f);
+            ctx->DrawRoundedRectangle(D2D1::RoundedRect(PixelSnapRect(rowRect, scale), 6.0f * scale, 6.0f * scale), rc.panelBorder, 1.0f);
 
         if (rc.iconFmt && rc.muted)
         {

@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <atomic>
+#include <optional>
 #include <windows.h>
 #include "ui/components/scrollbar/Scrollbar.h"
 #include <functional>
@@ -222,6 +223,7 @@ namespace Orion
         void Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
         bool UpdateCaretBlink();
         void UpdateLayout(HWND hwnd, float left, float top, float right, float bottom);
+        void RevealCaretOnNextLayout();
         bool HasFile() const { return !state_.lines.empty(); }
         bool LoadCustomFont(IDWriteFactory *dwrite, const std::wstring &fontPath);
         void FormatDocument();
@@ -240,6 +242,7 @@ namespace Orion
         void HideSearch();
         bool IsSearchVisible() const { return searchBox_.IsVisible(); }
         SearchBox *GetSearchBox() { return &searchBox_; }
+        std::optional<Lsp::Location> TryGoToDefinitionAtPoint(POINT pt);
         // Create an empty buffer for a new untitled tab
         void CreateEmpty();
         // Save buffer to file (UTF-8). Returns true on success.
@@ -351,6 +354,7 @@ namespace Orion
         bool pendingCompletionShow_ = false;
         std::wstring pendingCompletionLabel_;
         std::wstring pendingCompletionTemplate_;
+        bool pendingRevealCaret_ = false;
 
         bool suppressNextChar_ = false;
         wchar_t suppressNextCharValue_ = 0;

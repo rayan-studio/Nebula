@@ -1,5 +1,6 @@
 #include "LspManager.h"
 #include "core/window/Window.h"
+#include "utils/logger/Logger.h"
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
@@ -126,6 +127,57 @@ namespace Lsp
                 return cand;
         }
 
+        return std::nullopt;
+    }
+
+    static std::optional<std::filesystem::path> ResolveIncludePath(const std::wstring &filePath,
+                                                                   const std::wstring &inc,
+                                                                   bool isAngle,
+                                                                   const std::wstring &projectRootCopy)
+    {
+        if (inc.empty())
+            return std::nullopt;
+
+        std::vector<std::filesystem::path> searchRoots;
+        std::filesystem::path currentFile(filePath);
+        if (!isAngle && currentFile.has_parent_path())
+            searchRoots.push_back(currentFile.parent_path());
+
+        if (!projectRootCopy.empty())
+        {
+            searchRoots.push_back(std::filesystem::path(projectRootCopy));
+            searchRoots.push_back(std::filesystem::path(projectRootCopy) / "src");
+            searchRoots.push_back(std::filesystem::path(projectRootCopy) / "external");
+        }
+
+        for (const auto &root : searchRoots)
+        {
+            std::filesystem::path candidate = root / inc;
+            std::error_code ec;
+            if (std::filesystem::exists(candidate, ec))
+                return candidate;
+        }
+
+        return std::nullopt;
+    }
+
+    static std::optional<std::wstring> ExtractFunctionName(const std::wstring &lineText)
+    {
+        size_t lparen = lineText.find(L'(');
+        if (lparen == std::wstring::npos || lparen == 0)
+            return std::nullopt;
+        size_t end = lparen;
+        while (end > 0 && iswspace(lineText[end - 1]))
+            end--;
+        size_t start = end;
+        auto isIdentChar = [](wchar_t c)
+        {
+            return iswalnum(c) || c == L'_';
+        };
+        while (start > 0 && isIdentChar(lineText[start - 1]))
+            start--;
+        if (end > start)
+            return lineText.substr(start, end - start);
         return std::nullopt;
     }
 
@@ -388,6 +440,9 @@ namespace Lsp
     void LspManager::IndexFileSymbols(const std::wstring &filePath, const std::vector<std::wstring> &lines)
     {
         std::vector<std::wstring> newSymbols;
+        std::unordered_map<std::wstring, Location> newDefLocs;
+        std::unordered_map<std::wstring, Location> newDeclLocs;
+        std::vector<std::wstring> newIncludes;
         int lineIndex = 0;
         for (const auto &line : lines)
         {
@@ -410,6 +465,40 @@ namespace Lsp
                 continue;
             }
 
+            if (t.rfind(L"#include", 0) == 0)
+            {
+                bool isAngle = false;
+                size_t q1 = t.find(L'"');
+                size_t q2 = std::wstring::npos;
+                if (q1 != std::wstring::npos)
+                {
+                    q2 = t.find(L'"', q1 + 1);
+                }
+                else
+                {
+                    size_t a1 = t.find(L'<');
+                    size_t a2 = std::wstring::npos;
+                    if (a1 != std::wstring::npos)
+                    {
+                        a2 = t.find(L'>', a1 + 1);
+                        if (a2 != std::wstring::npos)
+                        {
+                            q1 = a1;
+                            q2 = a2;
+                            isAngle = true;
+                        }
+                    }
+                }
+
+                if (q1 != std::wstring::npos && q2 != std::wstring::npos && q2 > q1 + 1)
+                {
+                    std::wstring inc = t.substr(q1 + 1, q2 - q1 - 1);
+                    auto resolved = ResolveIncludePath(filePath, inc, isAngle, projectRoot_);
+                    if (resolved.has_value())
+                        newIncludes.push_back(NormalizePath(resolved->wstring()));
+                }
+            }
+
             auto addSymbol = [&](const std::wstring &name, int col, bool isDefinition)
             {
                 if (name.empty())
@@ -419,6 +508,10 @@ namespace Lsp
                     symbolIndexDef_[name] = loc;
                 else
                     symbolIndexDecl_[name] = loc;
+                if (isDefinition)
+                    newDefLocs[name] = loc;
+                else
+                    newDeclLocs[name] = loc;
                 newSymbols.push_back(name);
             };
 
@@ -547,6 +640,10 @@ namespace Lsp
         {
             fileSymbols_[filePath] = newSymbols;
         }
+
+        fileSymbolDefLocs_[NormalizePath(filePath)] = std::move(newDefLocs);
+        fileSymbolDeclLocs_[NormalizePath(filePath)] = std::move(newDeclLocs);
+        fileIncludes_[NormalizePath(filePath)] = std::move(newIncludes);
     }
 
     void LspManager::UpdateFile(const std::wstring &filePath, const std::vector<std::wstring> &lines)
@@ -560,6 +657,25 @@ namespace Lsp
     std::vector<Diagnostic> LspManager::AnalyzeDiagnostics(const std::wstring &filePath, const std::vector<std::wstring> &lines) const
     {
         std::vector<Diagnostic> out;
+        bool hasWindowsHeader = false;
+        std::unordered_set<std::wstring> knownSymbols;
+        {
+            std::lock_guard<std::mutex> lk(mutex_);
+            for (const auto &it : symbolIndexDef_)
+                knownSymbols.insert(it.first);
+            for (const auto &it : symbolIndexDecl_)
+                knownSymbols.insert(it.first);
+        }
+        for (const auto &line : lines)
+        {
+            std::wstring lower = ToLower(line);
+            if (lower.find(L"#include") != std::wstring::npos &&
+                (lower.find(L"<windows.h>") != std::wstring::npos || lower.find(L"\"windows.h\"") != std::wstring::npos))
+            {
+                hasWindowsHeader = true;
+                break;
+            }
+        }
         bool inBlockComment = false;
         bool inString = false;
         bool inChar = false;
@@ -884,6 +1000,190 @@ namespace Lsp
                     }
                 }
             }
+
+            // Known API typos (simple heuristic)
+            {
+                auto isIdentChar = [](wchar_t c)
+                {
+                    return (iswalnum(c) != 0) || (c == L'_');
+                };
+                auto checkTypo = [&](const std::wstring &bad, const std::wstring &good)
+                {
+                    size_t pos = cleaned.find(bad);
+                    while (pos != std::wstring::npos)
+                    {
+                        bool leftOk = (pos == 0) || !isIdentChar(cleaned[pos - 1]);
+                        bool rightOk = (pos + bad.size() >= cleaned.size()) || !isIdentChar(cleaned[pos + bad.size()]);
+                        if (leftOk && rightOk)
+                        {
+                            Diagnostic d;
+                            d.line = line;
+                            d.startCol = (int)pos;
+                            d.endCol = (int)(pos + bad.size());
+                            d.severity = DiagnosticSeverity::Error;
+                            d.message = L"Unknown identifier: " + bad;
+                            d.suggestion = L"Did you mean " + good + L"?";
+                            out.push_back(d);
+                            break;
+                        }
+                        pos = cleaned.find(bad, pos + 1);
+                    }
+                };
+
+                checkTypo(L"DefWowProcW", L"DefWindowProcW");
+            }
+
+            // Suspicious WinAPI fallback calls like "DefW(" or "DefA(" (likely typo)
+            if (hasWindowsHeader)
+            {
+                auto isIdentChar = [](wchar_t c)
+                {
+                    return (iswalnum(c) != 0) || (c == L'_');
+                };
+                size_t pos = cleaned.find(L"Def");
+                while (pos != std::wstring::npos)
+                {
+                    if (pos == 0 || !isIdentChar(cleaned[pos - 1]))
+                    {
+                        size_t end = pos + 3;
+                        while (end < cleaned.size() && isIdentChar(cleaned[end]))
+                            ++end;
+                        std::wstring ident = cleaned.substr(pos, end - pos);
+                        if (ident.size() <= 6)
+                        {
+                            wchar_t last = ident.back();
+                            if ((last == L'W' || last == L'A') &&
+                                ident != L"DefWindowProcW" && ident != L"DefWindowProcA")
+                            {
+                                Diagnostic d;
+                                d.line = line;
+                                d.startCol = (int)pos;
+                                d.endCol = (int)end;
+                                d.severity = DiagnosticSeverity::Error;
+                                d.message = L"Unknown WinAPI function: " + ident;
+                                d.suggestion = (last == L'W') ? L"Use DefWindowProcW" : L"Use DefWindowProcA";
+                                out.push_back(d);
+                                break;
+                            }
+                        }
+                    }
+                        pos = cleaned.find(L"Def", pos + 1);
+                }
+            }
+
+            // Heuristic: unknown WinAPI-like function calls (windows.h included)
+            if (hasWindowsHeader)
+            {
+                static const std::unordered_set<std::wstring> kAllow = {
+                    L"DefWindowProcW", L"DefWindowProcA",
+                    L"PostQuitMessage",
+                    L"LoadCursor", L"LoadCursorW", L"LoadCursorA",
+                    L"RegisterClassW", L"RegisterClassA", L"RegisterClassExW", L"RegisterClassExA",
+                    L"CreateWindowExW", L"CreateWindowExA",
+                    L"ShowWindow", L"UpdateWindow",
+                    L"GetMessageW", L"GetMessageA",
+                    L"TranslateMessage", L"DispatchMessageW", L"DispatchMessageA",
+                    L"BeginPaint", L"EndPaint",
+                    L"InvalidateRect", L"GetClientRect", L"GetWindowRect",
+                    L"GetModuleHandleW", L"GetModuleHandleA",
+                    L"SetWindowLongPtrW", L"SetWindowLongPtrA",
+                    L"GetWindowLongPtrW", L"GetWindowLongPtrA",
+                    L"SetWindowPos", L"SendMessageW", L"SendMessageA",
+                    L"PeekMessageW", L"PeekMessageA",
+                    L"MessageBoxW", L"MessageBoxA"
+                };
+                static const std::wstring kPrefixes[] = {
+                    L"Get", L"Set", L"Post", L"Create", L"Register",
+                    L"Load", L"Show", L"Dispatch", L"Translate", L"Def",
+                    L"Peek", L"Send", L"Destroy", L"Update", L"Begin", L"End",
+                    L"Invalidate", L"MessageBox"
+                };
+                auto isIdentChar = [](wchar_t c)
+                {
+                    return (iswalnum(c) != 0) || (c == L'_');
+                };
+                auto isKeyword = [](const std::wstring &s)
+                {
+                    static const std::unordered_set<std::wstring> k = {
+                        L"if", L"for", L"while", L"switch", L"case", L"default",
+                        L"return", L"sizeof", L"typedef", L"catch", L"else",
+                        L"do", L"static", L"const", L"inline", L"struct", L"class",
+                        L"enum", L"namespace", L"using", L"new", L"delete"
+                    };
+                    return k.find(ToLower(s)) != k.end();
+                };
+                auto isAllCaps = [](const std::wstring &s)
+                {
+                    bool any = false;
+                    for (wchar_t c : s)
+                    {
+                        if (iswalpha(c))
+                        {
+                            any = true;
+                            if (!iswupper(c))
+                                return false;
+                        }
+                    }
+                    return any;
+                };
+
+                bool added = false;
+                for (size_t i = 0; i < cleaned.size(); ++i)
+                {
+                    if (!isIdentChar(cleaned[i]) || (i > 0 && isIdentChar(cleaned[i - 1])))
+                        continue;
+                    size_t start = i;
+                    size_t end = i + 1;
+                    while (end < cleaned.size() && isIdentChar(cleaned[end]))
+                        ++end;
+                    std::wstring ident = cleaned.substr(start, end - start);
+                    if (ident.empty())
+                        continue;
+                    if (isKeyword(ident) || isAllCaps(ident))
+                        continue;
+                    // Skip member/namespace calls (obj.Func(), ns::Func())
+                    if (start > 1)
+                    {
+                        wchar_t prev = cleaned[start - 1];
+                        wchar_t prev2 = cleaned[start - 2];
+                        if (prev == L'.' || (prev == L'>' && prev2 == L'-') || prev == L':')
+                            continue;
+                    }
+                    // Lookahead for a call
+                    size_t j = end;
+                    while (j < cleaned.size() && iswspace(cleaned[j]))
+                        ++j;
+                    if (j >= cleaned.size() || cleaned[j] != L'(')
+                        continue;
+                    if (knownSymbols.find(ident) != knownSymbols.end())
+                        continue;
+                    if (kAllow.find(ident) != kAllow.end())
+                        continue;
+                    bool prefixMatch = false;
+                    for (const auto &p : kPrefixes)
+                    {
+                        if (ident.rfind(p, 0) == 0)
+                        {
+                            prefixMatch = true;
+                            break;
+                        }
+                    }
+                    if (!prefixMatch)
+                        continue;
+
+                    Diagnostic d;
+                    d.line = line;
+                    d.startCol = (int)start;
+                    d.endCol = (int)end;
+                    d.severity = DiagnosticSeverity::Error;
+                    d.message = L"Unknown WinAPI function: " + ident;
+                    d.suggestion = L"Check spelling or include the correct header";
+                    out.push_back(d);
+                    added = true;
+                    break;
+                }
+                (void)added;
+            }
         }
 
         for (const auto &it : stack)
@@ -977,38 +1277,42 @@ namespace Lsp
         if (start == std::wstring::npos || end == std::wstring::npos)
             return std::nullopt;
 
-        if (column < (int)start || column > (int)end)
-            return std::nullopt;
+        // Be lenient: if the user clicks anywhere on the include line, try to resolve.
+        // This avoids false negatives when the column mapping is slightly off.
 
         std::wstring inc = lineText.substr(start, end - start);
         if (inc.empty())
             return std::nullopt;
 
-        std::vector<std::filesystem::path> searchRoots;
-        std::filesystem::path currentFile(filePath);
-        if (!isAngle && currentFile.has_parent_path())
-            searchRoots.push_back(currentFile.parent_path());
+        Logger::Instance().Log(L"LSP include resolve: " + inc +
+                               L" (angle=" + std::wstring(isAngle ? L"true" : L"false") + L")");
 
-        if (!projectRootCopy.empty())
+        auto resolved = ResolveIncludePath(filePath, inc, isAngle, projectRootCopy);
+        if (resolved.has_value())
         {
-            searchRoots.push_back(projectRootCopy);
-            searchRoots.push_back(std::filesystem::path(projectRootCopy) / "src");
-            searchRoots.push_back(std::filesystem::path(projectRootCopy) / "external");
+            Location loc;
+            loc.filePath = NormalizePath(resolved->wstring());
+            loc.line = 0;
+            loc.column = 0;
+            Logger::Instance().Log(L"LSP include resolved: " + loc.filePath);
+            return loc;
         }
 
-        for (const auto &root : searchRoots)
+        if (isAngle)
         {
-            std::filesystem::path candidate = root / inc;
-            if (std::filesystem::exists(candidate))
+            auto stdHeader = FindStdHeaderFile(inc, projectRootCopy);
+            if (stdHeader.has_value())
             {
                 Location loc;
-                loc.filePath = NormalizePath(candidate.wstring());
+                loc.filePath = NormalizePath(stdHeader->wstring());
                 loc.line = 0;
                 loc.column = 0;
+                Logger::Instance().Log(L"LSP std include resolved: " + loc.filePath);
                 return loc;
             }
         }
 
+        Logger::Instance().Log(L"LSP include NOT found: " + inc + L" (root=" + projectRootCopy + L")");
         return std::nullopt;
     }
 
@@ -1018,10 +1322,23 @@ namespace Lsp
                                                        int column,
                                                        const std::wstring &word)
     {
-        (void)line;
         auto inc = ResolveIncludeAtCursor(filePath, lineText, column);
         if (inc.has_value())
             return inc;
+
+        std::wstring lookupWord = word;
+        if (!lookupWord.empty())
+        {
+            static const std::unordered_set<std::wstring> kTypeKeywords = {
+                L"void", L"int", L"float", L"double", L"char", L"wchar_t", L"bool",
+                L"short", L"long", L"signed", L"unsigned", L"auto", L"const", L"static"};
+            if (kTypeKeywords.find(lookupWord) != kTypeKeywords.end())
+            {
+                auto fn = ExtractFunctionName(lineText);
+                if (fn.has_value())
+                    lookupWord = *fn;
+            }
+        }
 
         {
             std::wstring rootCopy;
@@ -1029,16 +1346,75 @@ namespace Lsp
                 std::lock_guard<std::mutex> lk(mutex_);
                 rootCopy = projectRoot_;
             }
-            auto stdLoc = ResolveStdSymbolAtCursor(rootCopy, lineText, column, word);
+            auto stdLoc = ResolveStdSymbolAtCursor(rootCopy, lineText, column, lookupWord);
             if (stdLoc.has_value())
                 return stdLoc;
         }
 
         std::lock_guard<std::mutex> lk(mutex_);
-        auto it = symbolIndexDef_.find(word);
+        std::wstring normFile = NormalizePath(filePath);
+
+        auto findInFile = [&](const std::wstring &path, bool allowDecl) -> std::optional<Location>
+        {
+            auto dIt = fileSymbolDefLocs_.find(path);
+            if (dIt != fileSymbolDefLocs_.end())
+            {
+                auto it = dIt->second.find(lookupWord);
+                if (it != dIt->second.end())
+                    return it->second;
+            }
+            if (allowDecl)
+            {
+                auto cIt = fileSymbolDeclLocs_.find(path);
+                if (cIt != fileSymbolDeclLocs_.end())
+                {
+                    auto it = cIt->second.find(lookupWord);
+                    if (it != cIt->second.end())
+                        return it->second;
+                }
+            }
+            return std::nullopt;
+        };
+
+        if (auto loc = findInFile(normFile, false))
+            return loc;
+
+        std::vector<std::wstring> queue;
+        std::unordered_set<std::wstring> visited;
+        visited.insert(normFile);
+
+        auto incIt = fileIncludes_.find(normFile);
+        if (incIt != fileIncludes_.end())
+            queue = incIt->second;
+
+        for (int depth = 0; depth < 4; ++depth)
+        {
+            if (queue.empty())
+                break;
+            std::vector<std::wstring> next;
+            for (const auto &incPath : queue)
+            {
+                if (visited.find(incPath) != visited.end())
+                    continue;
+                visited.insert(incPath);
+
+                if (auto loc = findInFile(incPath, true))
+                    return loc;
+
+                auto it = fileIncludes_.find(incPath);
+                if (it != fileIncludes_.end())
+                {
+                    for (const auto &p : it->second)
+                        next.push_back(p);
+                }
+            }
+            queue.swap(next);
+        }
+
+        auto it = symbolIndexDef_.find(lookupWord);
         if (it != symbolIndexDef_.end())
             return it->second;
-        auto dit = symbolIndexDecl_.find(word);
+        auto dit = symbolIndexDecl_.find(lookupWord);
         if (dit != symbolIndexDecl_.end())
             return dit->second;
         return std::nullopt;

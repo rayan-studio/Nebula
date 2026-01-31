@@ -62,18 +62,6 @@ static std::string TitleBarMenuIconPathForLabel(const std::wstring &label)
 {
     if (label == L"File")
         return "assets/ressource/icons/folder-open.svg";
-    if (label == L"Edit")
-        return "assets/ressource/icons/editorconfig.svg";
-    if (label == L"Selection")
-        return "assets/ressource/icons/search.svg";
-    if (label == L"View")
-        return "assets/ressource/icons/folder-view-open.svg";
-    if (label == L"Go")
-        return "assets/ressource/icons/folder-link-open.svg";
-    if (label == L"Run")
-        return "assets/ressource/icons/playwright.svg";
-    if (label == L"Help")
-        return "assets/ressource/icons/folder-helper-open.svg";
     return {};
 }
 
@@ -236,26 +224,33 @@ static void DrawRestoreIcon(
 }
 
 // Fonction helper pour dessiner l'icône close (X)
-static void DrawCloseIcon(ID2D1RenderTarget *ctx, ID2D1SolidColorBrush *brush, D2D1_RECT_F rect)
+static void DrawCloseIcon(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, ID2D1SolidColorBrush *brush, D2D1_RECT_F rect)
 {
-    float centerX = std::round((rect.left + rect.right) / 2.0f);
-    float centerY = std::round((rect.top + rect.bottom) / 2.0f);
-    float size = 10.0f;
+    if (!dwrite || !ctx || !brush)
+        return;
 
-    // Align strokes to pixel grid for crisp 1px lines
-    float half = size / 2.0f;
-    float left = std::floor(centerX - half) + 0.5f;
-    float right = std::floor(centerX + half) + 0.5f;
-    float top = std::floor(centerY - half) + 0.5f;
-    float bottom = std::floor(centerY + half) + 0.5f;
+    float height = rect.bottom - rect.top;
+    float fontSize = std::clamp(height * 0.36f, 10.0f, height - 4.0f);
 
-    D2D1_POINT_2F p1 = D2D1::Point2F(left, top);
-    D2D1_POINT_2F p2 = D2D1::Point2F(right, bottom);
-    D2D1_POINT_2F p3 = D2D1::Point2F(right, top);
-    D2D1_POINT_2F p4 = D2D1::Point2F(left, bottom);
+    IDWriteTextFormat *iconFormat = nullptr;
+    if (SUCCEEDED(dwrite->CreateTextFormat(
+            L"Segoe MDL2 Assets", NULL,
+            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+            fontSize, L"en-us", &iconFormat)))
+    {
+        iconFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        iconFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
-    ctx->DrawLine(p1, p2, brush, 1.0f);
-    ctx->DrawLine(p3, p4, brush, 1.0f);
+        const wchar_t glyph[2] = {0xE8BB, 0}; // Close icon
+
+        D2D1_TEXT_ANTIALIAS_MODE prevTextAA = ctx->GetTextAntialiasMode();
+        ctx->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_ALIASED);
+        ctx->DrawTextW(glyph, 1, iconFormat, rect, brush,
+                       D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+        ctx->SetTextAntialiasMode(prevTextAA);
+
+        iconFormat->Release();
+    }
 }
 
 // Fonction helper pour dessiner l'icône play (triangle)
@@ -305,6 +300,10 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     ctx->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
 
     Window *window = GetWindowFromHwnd(hwnd);
+    float aMin = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Minimize) : (hoveredButton == Window::Hovered_Minimize ? 1.0f : 0.0f);
+    float aMax = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Maximize) : (hoveredButton == Window::Hovered_Maximize ? 1.0f : 0.0f);
+    float aClose = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Close) : (hoveredButton == Window::Hovered_Close ? 1.0f : 0.0f);
+    float aRun = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Run) : (hoveredButton == Window::Hovered_Run ? 1.0f : 0.0f);
     if (window && window->IsNewProjectOverlayVisible())
     {
         // Minimal titlebar for the new-project screen (no editor menus).
@@ -327,14 +326,17 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
 
         ID2D1SolidColorBrush *hoverBrush = nullptr;
         ID2D1SolidColorBrush *closeHoverBrush = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0x3e3e42), &hoverBrush);
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0xe81123), &closeHoverBrush);
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0x3e3e42, 0.75f * aMin), &hoverBrush);
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0xe81123, 0.85f * aClose), &closeHoverBrush);
 
-    if (hoveredButton == Window::Hovered_Minimize && hoverBrush)
-        ctx->FillRectangle(rMin, hoverBrush);
-        if (hoveredButton == Window::Hovered_Maximize && hoverBrush)
+        if (hoverBrush && aMin > 0.01f)
+            ctx->FillRectangle(rMin, hoverBrush);
+        if (hoverBrush && aMax > 0.01f)
+        {
+            hoverBrush->SetColor(D2D1::ColorF(0x3e3e42, 0.75f * aMax));
             ctx->FillRectangle(rMax, hoverBrush);
-        if (hoveredButton == Window::Hovered_Close && closeHoverBrush)
+        }
+        if (closeHoverBrush && aClose > 0.01f)
             ctx->FillRectangle(rClose, closeHoverBrush);
 
         ID2D1SolidColorBrush *iconBrush = nullptr;
@@ -347,7 +349,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
                 DrawRestoreIcon(ctx, dwrite, iconBrush, rMax);
             else
                 DrawMaximizeIcon(ctx, iconBrush, rMax);
-            DrawCloseIcon(ctx, iconBrush, rClose);
+            DrawCloseIcon(ctx, dwrite, iconBrush, rClose);
         }
 
         // App icon + title
@@ -426,18 +428,24 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     D2D1_RECT_F rRun = D2D1::RectF((FLOAT)button_rects.run.left, (FLOAT)button_rects.run.top, (FLOAT)button_rects.run.right, (FLOAT)button_rects.run.bottom);
 
     ID2D1SolidColorBrush *hoverBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0x3e3e42), &hoverBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0x3e3e42, 0.75f * aMin), &hoverBrush);
 
     ID2D1SolidColorBrush *closeHoverBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0xe81123), &closeHoverBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0xe81123, 0.85f * aClose), &closeHoverBrush);
 
-    if (hoveredButton == Window::Hovered_Minimize)
+    if (hoverBrush && aMin > 0.01f)
         ctx->FillRectangle(rMin, hoverBrush);
-    if (hoveredButton == Window::Hovered_Run)
+    if (hoverBrush && aRun > 0.01f)
+    {
+        hoverBrush->SetColor(D2D1::ColorF(0x3e3e42, 0.75f * aRun));
         ctx->FillRectangle(rRun, hoverBrush);
-    if (hoveredButton == Window::Hovered_Maximize)
+    }
+    if (hoverBrush && aMax > 0.01f)
+    {
+        hoverBrush->SetColor(D2D1::ColorF(0x3e3e42, 0.75f * aMax));
         ctx->FillRectangle(rMax, hoverBrush);
-    if (hoveredButton == Window::Hovered_Close)
+    }
+    if (closeHoverBrush && aClose > 0.01f)
         ctx->FillRectangle(rClose, closeHoverBrush);
 
     UINT dpi = win32_get_dpi_for_window(hwnd);
@@ -460,7 +468,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
         else
             DrawMaximizeIcon(ctx, iconBrush, rMax);
 
-        DrawCloseIcon(ctx, iconBrush, rClose);
+        DrawCloseIcon(ctx, dwrite, iconBrush, rClose);
     }
 
     // Icône de l'app
@@ -510,7 +518,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     }
 
     // Menu items (Terminal removed)
-    std::vector<std::wstring> menus = {L"File", L"Edit", L"Selection", L"View", L"Go", L"Run", L"Help"};
+    std::vector<std::wstring> menus = {L"File"};
 
     // Initialiser g_menuItems si vide
     if (g_menuItems.empty())
@@ -602,70 +610,8 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     float titleLeft = currentX;
     float titleRight = rRun.left;
     float titleWidth = titleRight - titleLeft;
-    if (titleWidth > 40.0f && dwrite)
-    {
-        IDWriteTextFormat *titleFormat = nullptr;
-        dwrite->CreateTextFormat(
-            L"JetBrains Mono",
-            NULL,
-            DWRITE_FONT_WEIGHT_REGULAR,
-            DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL,
-            12.5f,
-            L"en-us",
-            &titleFormat);
-
-        if (titleFormat)
-        {
-            titleFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            titleFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-
-            // Calculer le même offset vertical que les menus
-            float menuVerticalOffset = 0.0f; // Les menus n'ont pas d'offset supplémentaire
-
-            D2D1_RECT_F titleRect = D2D1::RectF(
-                titleLeft,
-                tb.top + menuVerticalOffset, // Même top que les menus
-                titleRight,
-                tb.bottom + menuVerticalOffset); // Même bottom que les menus
-
-            std::wstring displayTitle;
-            std::wstring rootPath = GetExplorerManager().GetState().rootPath;
-            if (!rootPath.empty())
-            {
-                size_t pos = rootPath.find_last_of(L"\\/");
-                std::wstring projectName = (pos != std::wstring::npos) ? rootPath.substr(pos + 1) : rootPath;
-                displayTitle = title + L" - " + projectName;
-            }
-            else
-            {
-                displayTitle = title + L" - Aucun projet ouvert";
-            }
-
-            ID2D1SolidColorBrush *titleBrush = nullptr;
-            ctx->CreateSolidColorBrush(D2D1::ColorF(0xb0b0b0), &titleBrush);
-
-            D2D1_TEXT_ANTIALIAS_MODE prevTextAA = ctx->GetTextAntialiasMode();
-            ctx->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_ALIASED);
-            ctx->DrawTextW(
-                displayTitle.c_str(),
-                (UINT32)displayTitle.size(),
-                titleFormat,
-                titleRect,
-                titleBrush,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL);
-            ctx->SetTextAntialiasMode(prevTextAA);
-
-            if (titleBrush)
-                titleBrush->Release();
-            if (titleFormat)
-                titleFormat->Release();
-        }
-    }
-
-    // Réutilise menuFormat au lieu de créer titleFormat
-    if (menuFormat)
+    // Reuse menuFormat to avoid double rendering and keep ClearType
+    if (menuFormat && titleWidth > 40.0f)
     {
         D2D1_RECT_F titleRect = D2D1::RectF(titleLeft, tb.top, titleRight, tb.bottom);
 
@@ -697,9 +643,12 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
             centerFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
             centerFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
+            D2D1_TEXT_ANTIALIAS_MODE prevTextAA = ctx->GetTextAntialiasMode();
+            ctx->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
             ctx->DrawTextW(displayTitle.c_str(), (UINT32)displayTitle.size(),
                            centerFormat, titleRect, titleBrush,
                            D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            ctx->SetTextAntialiasMode(prevTextAA);
 
             centerFormat->Release();
         }
@@ -769,7 +718,7 @@ void ShowMenuDropdown(HWND hwnd, int menuIndex, D2D1_RECT_F menuRect)
     {
     case 0:
         // File menu with Open Recent submenu.
-        g_activeDropdown.items = {L"New", L"New Window", L"Open...", L"Open Recent", L"Open Project", L"Close"};
+        g_activeDropdown.items = {L"New", L"New Window", L"Open...", L"Open Recent", L"Open Project"};
         g_activeDropdown.shortcuts = {L"Ctrl+N", L"", L"Ctrl+O", L"", L"Ctrl+Shift+O", L"Ctrl+W"};
         g_activeDropdown.icons = {0xE710, 0xE8A7, 0xE8B7, 0xE8B7, 0xE8B7, 0xE8BB};
         g_activeDropdown.separators = {false, false, false, false, false, false};
@@ -1504,3 +1453,4 @@ void ShowContextMenuDropdown(HWND hwnd, const std::vector<std::wstring> &items, 
         InvalidateRect(hwnd, nullptr, FALSE);
     }
 }
+

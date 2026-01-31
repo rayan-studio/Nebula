@@ -43,6 +43,18 @@ namespace Orion
         scrollbar_.UpdateLayout(state_.leftEdge, state_.topEdge, width, height, contentHeight);
 
         state_.scrollOffsetY = scrollbar_.GetScrollOffset();
+        if (pendingRevealCaret_)
+        {
+            // Reveal with a small top margin so the caret isn't glued to the bottom.
+            float caretTop = state_.caret.line * metrics_.lineHeight;
+            float margin = metrics_.lineHeight * 2.0f;
+            float desired = caretTop - margin;
+            if (desired < 0.0f)
+                desired = 0.0f;
+            scrollbar_.SetScrollOffset(desired);
+            state_.scrollOffsetY = scrollbar_.GetScrollOffset();
+            pendingRevealCaret_ = false;
+        }
 
         float availableWidth = (right - left) - metrics_.gutterWidth;
         if (scrollbar_.IsVisible())
@@ -412,6 +424,11 @@ namespace Orion
 
         if (brush)
             brush->Release();
+    }
+
+    void Editor::RevealCaretOnNextLayout()
+    {
+        pendingRevealCaret_ = true;
     }
 
 

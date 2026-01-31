@@ -6,6 +6,7 @@
 #include <memory>
 #include <vector>
 #include <ctime>
+#include <optional>
 #include "lsp/LspManager.h"
 #include "ui/components/input/TextInput.h"
 #include "ui/screens/NewProjectOverlay.h"
@@ -50,6 +51,7 @@ private:
     KeyboardManager keyboard_;
     std::unique_ptr<SettingsTabView> settingsTab_;
     std::map<int, std::pair<int, int>> pendingGoToLocation_;
+    std::optional<Lsp::Location> pendingContextGoto_;
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleMessage(UINT, WPARAM, LPARAM);
@@ -61,6 +63,9 @@ private:
     void ClearAllHoverStates();
     void RunActiveProject();
     bool HandleCommandLineArgs();
+    void StartTitlebarHoverAnimation();
+    void StepTitlebarHoverAnimation();
+    void ScheduleDiagnosticsForTab(int tabIndex);
 
     HINSTANCE hInstance_;
     HWND hwnd_;
@@ -130,6 +135,17 @@ public:
         Hovered_Close,
     };
     CustomTitleBarHoveredButton hoveredButton_ = Hovered_None;
+    float titlebarHoverMin_ = 0.0f;
+    float titlebarHoverMax_ = 0.0f;
+    float titlebarHoverClose_ = 0.0f;
+    float titlebarHoverRun_ = 0.0f;
+    bool titlebarHoverAnimating_ = false;
+    DWORD titlebarHoverLastTick_ = 0;
+    std::map<int, DWORD> pendingDiagTick_;
+    bool diagTimerActive_ = false;
+
+public:
+    float GetTitlebarHoverAlpha(CustomTitleBarHoveredButton btn) const;
 
 private:
     enum class NewProjectPage

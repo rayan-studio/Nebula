@@ -42,7 +42,7 @@ namespace Orion
 
     void CompletionPopup::UpdateLayout(float x, float y, float maxWidth, float itemHeight)
     {
-        maxWidth_ = maxWidth;
+        maxWidth_ = maxWidth + 120.0f;
         itemHeight_ = itemHeight;
         int maxShown = (std::min)((int)items_.size(), 10);
         float h = itemHeight_ * maxShown;
@@ -53,22 +53,60 @@ namespace Orion
     {
         if (!visible_ || items_.empty()) return;
 
+        const float radius = 5.0f;
+        const float padX = 10.0f;
+        const float padY = 2.0f;
+        const float borderThickness = 1.0f;
+
+        // Shadow
+        ID2D1SolidColorBrush* shadow = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.35f), &shadow);
+        if (shadow)
+        {
+            D2D1_ROUNDED_RECT sh = D2D1::RoundedRect(
+                D2D1::RectF(rect_.left + 2.0f, rect_.top + 3.0f, rect_.right + 2.0f, rect_.bottom + 3.0f),
+                radius, radius);
+            ctx->FillRoundedRectangle(sh, shadow);
+            shadow->Release();
+        }
+
         ID2D1SolidColorBrush* bg = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.10f, 0.10f, 0.95f), &bg);
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.09f, 0.10f, 0.97f), &bg);
         if (bg)
         {
-            ctx->FillRectangle(rect_, bg);
+            D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(rect_, radius, radius);
+            ctx->FillRoundedRectangle(rr, bg);
             bg->Release();
         }
 
+        ID2D1SolidColorBrush* border = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.22f, 0.25f, 0.75f), &border);
+        if (border)
+        {
+            D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(rect_, radius, radius);
+            D2D1_ANTIALIAS_MODE prevAA = ctx->GetAntialiasMode();
+            ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+            ctx->DrawRoundedRectangle(rr, border, borderThickness);
+            ctx->SetAntialiasMode(prevAA);
+            border->Release();
+        }
+
         ID2D1SolidColorBrush* textBrush = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.9f, 0.9f, 0.9f), &textBrush);
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.93f, 0.95f), &textBrush);
+        ID2D1SolidColorBrush* dimBrush = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.68f, 0.70f, 0.74f), &dimBrush);
 
         IDWriteTextFormat* tf = nullptr;
         if (dwrite)
         {
-            dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 13.0f, L"en-us", &tf);
+            dwrite->CreateTextFormat(L"JetBrains Mono", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.5f, L"en-us", &tf);
+            if (tf)
+            {
+                tf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                tf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                tf->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            }
         }
 
         float y = rect_.top;
@@ -84,7 +122,7 @@ namespace Orion
         float contentRight = rect_.right;
         bool needScrollbar = total > visibleCount;
         if (needScrollbar)
-            contentRight -= scrollbarWidth_ + 4.0f; // reserve space for scrollbar
+            contentRight -= scrollbarWidth_ + 6.0f; // reserve space for scrollbar
 
         for (int i = 0; i < visibleCount; ++i)
         {
@@ -93,24 +131,50 @@ namespace Orion
             if (idx == selected_)
             {
                 ID2D1SolidColorBrush* sel = nullptr;
-                ctx->CreateSolidColorBrush(D2D1::ColorF(0.2f, 0.4f, 0.8f, 0.9f), &sel);
-                if (sel) { ctx->FillRectangle(D2D1::RectF(rect_.left, itemTop, rect_.right, itemTop + itemHeight_), sel); sel->Release(); }
+                ctx->CreateSolidColorBrush(D2D1::ColorF(0.16f, 0.24f, 0.38f, 0.95f), &sel);
+                if (sel)
+                {
+                    D2D1_RECT_F sr = D2D1::RectF(rect_.left + 4.0f, itemTop + 2.0f, contentRight - 2.0f, itemTop + itemHeight_ - 2.0f);
+                    ctx->FillRoundedRectangle(D2D1::RoundedRect(sr, 4.0f, 4.0f), sel);
+                    sel->Release();
+                }
             }
 
-            if (tf && textBrush)
+            if (tf && textBrush && dwrite)
             {
-                D2D1_RECT_F r = D2D1::RectF(rect_.left + 6.0f, itemTop + 2.0f, contentRight - 6.0f, itemTop + itemHeight_ - 2.0f);
-                ctx->DrawTextW(items_[idx].c_str(), (UINT32)items_[idx].size(), tf, r, textBrush);
+                D2D1_RECT_F r = D2D1::RectF(rect_.left + padX, itemTop + padY, contentRight - padX, itemTop + itemHeight_ - padY);
+
+                IDWriteTextLayout* layout = nullptr;
+                dwrite->CreateTextLayout(
+                    items_[idx].c_str(),
+                    (UINT32)items_[idx].size(),
+                    tf,
+                    r.right - r.left,
+                    r.bottom - r.top,
+                    &layout);
+                if (layout)
+                {
+                    DWRITE_TRIMMING trim = {};
+                    trim.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
+                    IDWriteInlineObject* ellipsis = nullptr;
+                    dwrite->CreateEllipsisTrimmingSign(tf, &ellipsis);
+                    layout->SetTrimming(&trim, ellipsis);
+                    if (ellipsis) ellipsis->Release();
+
+                    ctx->DrawTextLayout(D2D1::Point2F(r.left, r.top), layout,
+                                        (idx == selected_) ? textBrush : (dimBrush ? dimBrush : textBrush));
+                    layout->Release();
+                }
             }
         }
 
         // Draw scrollbar if needed
         if (needScrollbar)
         {
-            float trackLeft = rect_.right - scrollbarWidth_ - 2.0f;
-            float trackTop = rect_.top + 2.0f;
-            float trackRight = rect_.right - 2.0f;
-            float trackBottom = rect_.bottom - 2.0f;
+            float trackLeft = rect_.right - scrollbarWidth_ - 3.0f;
+            float trackTop = rect_.top + 3.0f;
+            float trackRight = rect_.right - 3.0f;
+            float trackBottom = rect_.bottom - 3.0f;
             float trackHeight = trackBottom - trackTop;
 
             // Track
@@ -135,15 +199,18 @@ namespace Orion
             }
 
             ID2D1SolidColorBrush* thumbBrush = nullptr;
-            ctx->CreateSolidColorBrush(D2D1::ColorF(0.25f, 0.25f, 0.25f, 0.9f), &thumbBrush);
+            ctx->CreateSolidColorBrush(D2D1::ColorF(0.30f, 0.32f, 0.36f, 0.9f), &thumbBrush);
             if (thumbBrush)
             {
-                ctx->FillRectangle(D2D1::RectF(trackLeft + 2.0f, thumbTopPos, trackRight - 2.0f, thumbTopPos + thumbH), thumbBrush);
+                ctx->FillRoundedRectangle(
+                    D2D1::RoundedRect(D2D1::RectF(trackLeft + 2.0f, thumbTopPos, trackRight - 2.0f, thumbTopPos + thumbH), 3.0f, 3.0f),
+                    thumbBrush);
                 thumbBrush->Release();
             }
         }
 
         if (textBrush) textBrush->Release();
+        if (dimBrush) dimBrush->Release();
         if (tf) tf->Release();
     }
 

@@ -970,12 +970,12 @@ void Window::RunActiveProject()
     {
         if (activeFile.empty() || activeFile.rfind(L"__untitled__", 0) == 0)
         {
-            MessageBoxW(hwnd_, L"Aucun projet dÃ©tectÃ© et aucun fichier sauvegardÃ© actif.", L"Run", MB_OK | MB_ICONINFORMATION);
+            ShowRunErrorPopup(hwnd_, L"Aucun projet detecte", L"Aucun fichier sauvegarde actif.");
             return;
         }
         if (!IsCppLikeFile(activeFile))
         {
-            MessageBoxW(hwnd_, L"Aucun projet C++ dÃ©tectÃ© et le fichier actif n'est pas C/C++.", L"Run", MB_OK | MB_ICONINFORMATION);
+            ShowRunErrorPopup(hwnd_, L"Aucun projet C++ detecte", L"Le fichier actif n'est pas C/C++.");
             return;
         }
 

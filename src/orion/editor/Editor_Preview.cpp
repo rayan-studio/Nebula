@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <thread>
 #include <shobjidl.h>
+#include <thumbcache.h>
 #include <wincodec.h>
 
 namespace
@@ -160,6 +161,47 @@ namespace
         outBitmap = hBitmap;
         return true;
     }
+
+    bool LoadPreviewWithThumbnailCache(const std::wstring &filePath, HBITMAP &outBitmap, SIZE &outSize)
+    {
+        IShellItem *item = nullptr;
+        HRESULT hr = SHCreateItemFromParsingName(filePath.c_str(), nullptr, IID_PPV_ARGS(&item));
+        if (FAILED(hr) || !item)
+            return false;
+
+        IThumbnailCache *cache = nullptr;
+        hr = CoCreateInstance(CLSID_LocalThumbnailCache, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&cache));
+        if (FAILED(hr) || !cache)
+        {
+            item->Release();
+            return false;
+        }
+
+        ISharedBitmap *shared = nullptr;
+        WTS_CACHEFLAGS cacheFlags = (WTS_CACHEFLAGS)0;
+        hr = cache->GetThumbnail(item, 2048, WTS_EXTRACT | WTS_SCALETOREQUESTEDSIZE, &shared, &cacheFlags, nullptr);
+
+        cache->Release();
+        item->Release();
+
+        if (FAILED(hr) || !shared)
+            return false;
+
+        HBITMAP hBitmap = nullptr;
+        hr = shared->GetSharedBitmap(&hBitmap);
+        shared->Release();
+        if (FAILED(hr) || !hBitmap)
+            return false;
+
+        BITMAP bmp = {};
+        if (GetObject(hBitmap, sizeof(BITMAP), &bmp) > 0)
+        {
+            outSize.cx = bmp.bmWidth;
+            outSize.cy = bmp.bmHeight;
+        }
+        outBitmap = hBitmap;
+        return true;
+    }
 }
 
 namespace Orion
@@ -211,7 +253,7 @@ namespace Orion
             result->filePath = filePathCopy;
             result->isPreview = true;
 
-            HRESULT hrCo = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            HRESULT hrCo = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
             bool comInitialized = SUCCEEDED(hrCo);
 
             std::wstring extension = ToLower(std::filesystem::path(filePathCopy).extension().wstring());
@@ -224,6 +266,8 @@ namespace Orion
 
             if (!loaded)
                 loaded = LoadPreviewWithShellThumbnail(filePathCopy, previewBitmap, previewSize);
+            if (!loaded)
+                loaded = LoadPreviewWithThumbnailCache(filePathCopy, previewBitmap, previewSize);
 
             result->previewBitmap = previewBitmap;
             result->previewSize = previewSize;

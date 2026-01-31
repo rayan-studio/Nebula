@@ -232,6 +232,7 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
                         item.column = diag.startCol + 1;
                         item.isError = diag.isError;
                         item.message = diag.message;
+                        item.suggestion = diag.suggestion;
                         problems.push_back(std::move(item));
                     }
                     terminal.SetProblems(filePath, problems);
