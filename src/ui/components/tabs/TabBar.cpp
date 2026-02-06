@@ -1,6 +1,7 @@
 #include "TabBar.h"
 #include <algorithm>
 #include <filesystem>
+#include <cwctype>
 #include <Windows.h>
 #include "core/explorer/Explorer.h"
 #include "helpers/window_helpers.h"
@@ -89,6 +90,9 @@ void TabBar::SetActiveTab(int index)
     if (index < 0 || index >= (int)tabs_.size())
         return;
 
+    if (activeTabIndex_ == index && tabs_[index].isActive)
+        return;
+
     // clear active flags
     for (auto &tab : tabs_)
     {
@@ -103,8 +107,9 @@ void TabBar::SetActiveTab(int index)
     mruHistory_.erase(std::remove(mruHistory_.begin(), mruHistory_.end(), fp), mruHistory_.end());
     mruHistory_.insert(mruHistory_.begin(), fp);
 
-    // Notify explorer of the active file so it can highlight the corresponding item
-    GetExplorerManager().SetActivePath(fp);
+    // Notify explorer only for real file tabs.
+    if (!fp.empty())
+        GetExplorerManager().SetActivePath(fp);
 }
 
 const Tab *TabBar::GetActiveTab() const
@@ -345,6 +350,12 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
 
             D2D1_RECT_F closeRect = CloseRectForTab(i);
             float textRight = closeRect.left - gapToClose;
+            bool showPreviewToggle = tab.isMarkdown && (tab.isActive || hoveredTabIndex_ == i);
+            if (showPreviewToggle)
+            {
+                D2D1_RECT_F previewRect = PreviewRectForTab(i);
+                textRight = previewRect.left - gapToClose;
+            }
 
             // sécurité si onglet trop petit
             float minTextWidth = 10.0f;
@@ -402,6 +413,41 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
             bool isHoveredClose = (hoveredCloseIndex_ == i);
             DrawCloseOrDirty(ctx, closeRect, isHoveredClose, tab.isDirty);
         }
+        if (tab.isMarkdown)
+        {
+            bool showPreviewToggle = (tab.isActive || hoveredTabIndex_ == i);
+            if (showPreviewToggle)
+            {
+                D2D1_RECT_F previewRect = PreviewRectForTab(i);
+                bool hovered = (hoveredPreviewIndex_ == i);
+
+                if (hovered)
+                {
+                    ID2D1SolidColorBrush *bg = nullptr;
+                    ctx->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.18f, 0.18f), &bg);
+                    if (bg)
+                    {
+                        D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(previewRect, 3.0f, 3.0f);
+                        ctx->FillRoundedRectangle(rr, bg);
+                        bg->Release();
+                    }
+                }
+
+                std::string iconPath = tab.markdownPreview
+                                           ? "assets/ressource/icons/folder-review-open.svg"
+                                           : "assets/ressource/icons/folder-review.svg";
+                UINT dpi = win32_get_dpi_for_window(hwnd);
+                int iconPx = win32_dpi_scale(14, dpi);
+                ID2D1Bitmap *iconBmp = GetExplorerManager().LoadSvgIconPublic(ctx, iconPath, iconPx, dpi);
+                if (iconBmp)
+                {
+                    float iconY = previewRect.top + (previewRect.bottom - previewRect.top - (float)iconPx) * 0.5f;
+                    float iconX = previewRect.left + (previewRect.right - previewRect.left - (float)iconPx) * 0.5f;
+                    D2D1_RECT_F iconRect = D2D1::RectF(iconX, iconY, iconX + (float)iconPx, iconY + (float)iconPx);
+                    ctx->DrawBitmap(iconBmp, iconRect, tab.markdownPreview ? 1.0f : 0.8f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                }
+            }
+        }
 
         x += tabWidth_;
     }
@@ -416,6 +462,15 @@ int TabBar::OnLeftButtonDown(POINT pt)
     for (int i = 0; i < (int)tabs_.size(); ++i)
     {
         D2D1_RECT_F tabRect = D2D1::RectF(x, topEdge_, x + tabWidth_, topEdge_ + tabHeight_);
+        if (tabs_[i].isMarkdown && IsPointInPreviewRect(i, pt))
+        {
+            lastPreviewToggleIndex_ = i;
+            hoveredPreviewIndex_ = -1;
+            hoveredCloseIndex_ = -1;
+            hoveredTabIndex_ = -1;
+            return TAB_CLICKED_TOGGLE_PREVIEW;
+        }
+
 
         // 1) Close button has priority -> signal close request (UI only)
         if (IsPointInCloseRect(i, pt))
@@ -444,10 +499,12 @@ int TabBar::OnMouseMove(POINT pt)
 {
     int prevTab = hoveredTabIndex_;
     int prevClose = hoveredCloseIndex_;
+    int prevPreview = hoveredPreviewIndex_;
 
     // Reset hover states
     int newTab = -1;
     int newClose = -1;
+    int newPreview = -1;
 
     // Tolérance horizontale pour éviter les pertes de hover
     const float horizTolerance = 4.0f;
@@ -485,6 +542,18 @@ int TabBar::OnMouseMove(POINT pt)
                 newClose = i;
             }
 
+            if (tabs_[i].isMarkdown)
+            {
+                D2D1_RECT_F previewRect = PreviewRectForTab(i);
+                const float previewTolerance = 6.0f;
+                bool inPreviewZone = (pt.x >= previewRect.left - previewTolerance &&
+                                      pt.x <= previewRect.right + previewTolerance &&
+                                      pt.y >= previewRect.top - previewTolerance &&
+                                      pt.y <= previewRect.bottom + previewTolerance);
+                if (inPreviewZone)
+                    newPreview = i;
+            }
+
             break; // On a trouvé l'onglet survolé
         }
 
@@ -492,10 +561,11 @@ int TabBar::OnMouseMove(POINT pt)
     }
 
     // ✨ OPTIMISATION : Ne redessiner QUE si quelque chose a vraiment changé
-    if (newTab != prevTab || newClose != prevClose)
+    if (newTab != prevTab || newClose != prevClose || newPreview != prevPreview)
     {
         hoveredTabIndex_ = newTab;
         hoveredCloseIndex_ = newClose;
+        hoveredPreviewIndex_ = newPreview;
         return newTab; // Signal qu'il faut redessiner
     }
 
@@ -504,9 +574,10 @@ int TabBar::OnMouseMove(POINT pt)
 
 bool TabBar::ClearHover()
 {
-    bool hadHover = (hoveredTabIndex_ >= 0 || hoveredCloseIndex_ >= 0);
+    bool hadHover = (hoveredTabIndex_ >= 0 || hoveredCloseIndex_ >= 0 || hoveredPreviewIndex_ >= 0);
     hoveredTabIndex_ = -1;
     hoveredCloseIndex_ = -1;
+    hoveredPreviewIndex_ = -1;
     return hadHover;
 }
 
@@ -531,6 +602,36 @@ D2D1_RECT_F TabBar::CloseRectForTab(int index) const
         topEdge_ + (tabHeight_ - closeSize) * 0.5f,
         x + tabWidth_ - closePadding,
         topEdge_ + (tabHeight_ + closeSize) * 0.5f);
+}
+
+D2D1_RECT_F TabBar::PreviewRectForTab(int index) const
+{
+    float x = leftEdge_ + index * tabWidth_;
+    float size = 14.0f;
+    float closePadding = 10.0f;
+    float gap = 6.0f;
+    float right = x + tabWidth_ - closePadding - 14.0f - gap;
+    return D2D1::RectF(
+        right - size,
+        topEdge_ + (tabHeight_ - size) * 0.5f,
+        right,
+        topEdge_ + (tabHeight_ + size) * 0.5f);
+}
+
+bool TabBar::IsPointInPreviewRect(int index, POINT pt) const
+{
+    if (index < 0 || index >= (int)tabs_.size())
+        return false;
+    if (!tabs_[index].isMarkdown)
+        return false;
+
+    D2D1_RECT_F r = PreviewRectForTab(index);
+    const float tolerance = 2.0f;
+
+    return (pt.x >= r.left - tolerance &&
+            pt.x <= r.right + tolerance &&
+            pt.y >= r.top - tolerance &&
+            pt.y <= r.bottom + tolerance);
 }
 
 bool TabBar::IsPointInCloseRect(int index, POINT pt) const
@@ -604,4 +705,27 @@ void TabBar::UpdateTabPath(int index, const std::wstring &filePath, const std::w
     // update MRU
     mruHistory_.erase(std::remove(mruHistory_.begin(), mruHistory_.end(), filePath), mruHistory_.end());
     mruHistory_.insert(mruHistory_.begin(), filePath);
+
+    size_t pos = filePath.find_last_of(L'.');
+    std::wstring ext = (pos != std::wstring::npos) ? filePath.substr(pos) : L"";
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t c) { return (wchar_t)towlower(c); });
+    tabs_[index].isMarkdown = (ext == L".md");
+    if (!tabs_[index].isMarkdown)
+        tabs_[index].markdownPreview = false;
+}
+
+void TabBar::SetTabMarkdown(int index, bool isMarkdown)
+{
+    if (index < 0 || index >= (int)tabs_.size())
+        return;
+    tabs_[index].isMarkdown = isMarkdown;
+    if (!isMarkdown)
+        tabs_[index].markdownPreview = false;
+}
+
+void TabBar::SetTabMarkdownPreview(int index, bool enabled)
+{
+    if (index < 0 || index >= (int)tabs_.size())
+        return;
+    tabs_[index].markdownPreview = enabled;
 }

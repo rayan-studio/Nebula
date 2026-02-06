@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include <string>
 
 class Window; // forward declaration
 
@@ -17,6 +18,9 @@ public:
     // WM_CHAR
     bool OnChar(WPARAM wParam);
 
+    // Start tampon edit mode (menu action)
+    void BeginTamponEdit();
+
 private:
     struct Mods
     {
@@ -27,6 +31,11 @@ private:
 
 private:
     Window* window_ = nullptr;
+    bool chordActive_ = false;
+    wchar_t chordFirst_ = 0;
+    ULONGLONG chordExpiresAt_ = 0;
+    bool tamponEditActive_ = false;
+    std::wstring tamponEditBuffer_;
 
 private:
     static Mods GetMods();
@@ -34,6 +43,12 @@ private:
 
     // 1) Global shortcuts (ne doivent pas être bouffés par focus)
     bool HandleGlobalShortcuts(WPARAM wParam, const Mods& m);
+    bool HandleChordShortcut(WPARAM wParam, const Mods& m);
+    void StartChord(wchar_t first);
+    void ClearChord();
+    bool HandleTamponEditKeyDown(WPARAM wParam, const Mods& m);
+    bool HandleTamponEditChar(WPARAM wParam);
+    void UpdateTamponHint();
 
     // 2) Routing vers le focus (Explorer/SearchPanel/Terminal/Editor)
     bool RouteKeyDownToFocused(WPARAM wParam);

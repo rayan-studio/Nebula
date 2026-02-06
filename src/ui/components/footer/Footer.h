@@ -12,3 +12,7 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
 // Mouse handling for footer hover effects
 void Footer_OnMouseMove(HWND hwnd, POINT pt);
 void Footer_ClearHover(HWND hwnd);
+
+// Footer hint text (short-lived UI hints like shortcut prompts)
+void Footer_SetHint(HWND hwnd, const std::wstring &text, unsigned int durationMs = 2000);
+void Footer_ClearHint(HWND hwnd);

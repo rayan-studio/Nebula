@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <cwctype>
 
 // -----------------------------------------------------------
 // Global accessor
@@ -37,6 +39,197 @@ static std::string WideToUtf8(const std::wstring& w)
     WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), out.data(), len, NULL, NULL);
     return out;
 }
+
+namespace
+{
+static std::wstring TrimCopy(const std::wstring &value)
+{
+    size_t start = 0;
+    size_t end = value.size();
+    while (start < end && std::iswspace(value[start]))
+        ++start;
+    while (end > start && std::iswspace(value[end - 1]))
+        --end;
+    return value.substr(start, end - start);
+}
+
+static std::wstring StripWrappers(std::wstring value)
+{
+    value = TrimCopy(value);
+    while (!value.empty() &&
+           (value.front() == L'"' || value.front() == L'\'' || value.front() == L'[' || value.front() == L'('))
+    {
+        value.erase(value.begin());
+        value = TrimCopy(value);
+    }
+    while (!value.empty() &&
+           (value.back() == L'"' || value.back() == L'\'' || value.back() == L']' || value.back() == L')' ||
+            value.back() == L',' || value.back() == L';'))
+    {
+        value.pop_back();
+        value = TrimCopy(value);
+    }
+    return value;
+}
+
+static bool ParseIntSpan(const std::wstring &s, size_t begin, size_t end, int &out)
+{
+    if (begin >= end || end > s.size())
+        return false;
+    for (size_t i = begin; i < end; ++i)
+    {
+        if (!std::iswdigit(s[i]))
+            return false;
+    }
+    try
+    {
+        out = std::stoi(s.substr(begin, end - begin));
+        return true;
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
+static bool ResolvePathCandidate(const std::wstring &raw, std::wstring &resolvedPath)
+{
+    std::wstring candidate = StripWrappers(raw);
+    if (candidate.empty())
+        return false;
+
+    std::error_code ec;
+    std::filesystem::path p(candidate);
+    if (std::filesystem::is_regular_file(p, ec))
+    {
+        resolvedPath = p.wstring();
+        return true;
+    }
+
+    if (p.is_relative())
+    {
+        const auto &rootPath = GetExplorerManager().GetState().rootPath;
+        if (!rootPath.empty())
+        {
+            std::filesystem::path fromRoot = std::filesystem::path(rootPath) / p;
+            if (std::filesystem::is_regular_file(fromRoot, ec))
+            {
+                resolvedPath = fromRoot.wstring();
+                return true;
+            }
+        }
+
+        std::filesystem::path cwd = std::filesystem::current_path(ec);
+        if (!ec)
+        {
+            std::filesystem::path fromCwd = cwd / p;
+            if (std::filesystem::is_regular_file(fromCwd, ec))
+            {
+                resolvedPath = fromCwd.wstring();
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+static bool ResolvePathFromPrefix(const std::wstring &prefix, std::wstring &resolvedPath)
+{
+    std::wstring trimmed = TrimCopy(prefix);
+    if (trimmed.empty())
+        return false;
+
+    std::vector<size_t> starts;
+    starts.push_back(0);
+    for (size_t i = 0; i < trimmed.size(); ++i)
+    {
+        const wchar_t c = trimmed[i];
+        if (c == L' ' || c == L'\t' || c == L'"' || c == L'\'' || c == L'[' || c == L'(')
+        {
+            if (i + 1 < trimmed.size())
+                starts.push_back(i + 1);
+        }
+    }
+
+    for (auto it = starts.rbegin(); it != starts.rend(); ++it)
+    {
+        if (ResolvePathCandidate(trimmed.substr(*it), resolvedPath))
+            return true;
+    }
+    return false;
+}
+
+static bool TryParseOutputLocation(const std::wstring &line, std::wstring &resolvedPath, int &lineOut, int &colOut)
+{
+    // Format: path(line,col)
+    for (size_t i = 0; i < line.size(); ++i)
+    {
+        if (line[i] != L'(')
+            continue;
+        size_t a = i + 1;
+        if (a >= line.size() || !std::iswdigit(line[a]))
+            continue;
+        size_t b = a;
+        while (b < line.size() && std::iswdigit(line[b]))
+            ++b;
+        if (b >= line.size() || line[b] != L',')
+            continue;
+        size_t c = b + 1;
+        if (c >= line.size() || !std::iswdigit(line[c]))
+            continue;
+        size_t d = c;
+        while (d < line.size() && std::iswdigit(line[d]))
+            ++d;
+        if (d >= line.size() || line[d] != L')')
+            continue;
+
+        int ln = 0, col = 0;
+        if (!ParseIntSpan(line, a, b, ln) || !ParseIntSpan(line, c, d, col))
+            continue;
+        if (!ResolvePathFromPrefix(line.substr(0, i), resolvedPath))
+            continue;
+
+        lineOut = (std::max)(0, ln - 1);
+        colOut = (std::max)(0, col - 1);
+        return true;
+    }
+
+    // Format: path:line:col
+    for (size_t i = 0; i < line.size(); ++i)
+    {
+        if (line[i] != L':')
+            continue;
+
+        size_t a = i + 1;
+        if (a >= line.size() || !std::iswdigit(line[a]))
+            continue;
+        size_t b = a;
+        while (b < line.size() && std::iswdigit(line[b]))
+            ++b;
+        if (b >= line.size() || line[b] != L':')
+            continue;
+        size_t c = b + 1;
+        if (c >= line.size() || !std::iswdigit(line[c]))
+            continue;
+        size_t d = c;
+        while (d < line.size() && std::iswdigit(line[d]))
+            ++d;
+
+        int ln = 0, col = 0;
+        if (!ParseIntSpan(line, a, b, ln) || !ParseIntSpan(line, c, d, col))
+            continue;
+        if (!ResolvePathFromPrefix(line.substr(0, i), resolvedPath))
+            continue;
+
+        lineOut = (std::max)(0, ln - 1);
+        colOut = (std::max)(0, col - 1);
+        return true;
+    }
+
+    return false;
+}
+} // namespace
 
 bool TerminalPanel::IsInitialized() const
 {
@@ -168,6 +361,9 @@ void TerminalPanel::CloseAll()
     activeIndex_ = -1;
     visible_ = false;
     focused_ = false;
+    if (mouseCaptureOwned_ && GetCapture() != NULL)
+        ReleaseCapture();
+    mouseCaptureOwned_ = false;
     SyncTabBar();
 }
 
@@ -176,14 +372,24 @@ void TerminalPanel::ToggleVisible()
 {
     visible_ = !visible_;
     if (!visible_)
+    {
         focused_ = false;
+        if (mouseCaptureOwned_ && GetCapture() != NULL)
+            ReleaseCapture();
+        mouseCaptureOwned_ = false;
+    }
 }
 
 void TerminalPanel::SetVisible(bool v)
 {
     visible_ = v;
     if (!visible_)
+    {
         focused_ = false;
+        if (mouseCaptureOwned_ && GetCapture() != NULL)
+            ReleaseCapture();
+        mouseCaptureOwned_ = false;
+    }
 }
 
 void TerminalPanel::Unfocus()
@@ -384,6 +590,49 @@ void TerminalPanel::SyncTabBar()
         tabBar_.SetActiveTab(activeIndex_);
 }
 
+void TerminalPanel::UpdateHoveredOutputLink(POINT pt)
+{
+    hoveredOutputLink_ = {};
+
+    if (!showOutput_)
+        return;
+    if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) == 0)
+        return;
+    if (outputLineHeight_ <= 0.0f)
+        return;
+    if (HitTestOutputCopy(pt))
+        return;
+    if (pt.x < outputBodyRect_.left || pt.x > outputBodyRect_.right ||
+        pt.y < outputBodyRect_.top || pt.y > outputBodyRect_.bottom)
+        return;
+
+    float scrollOffset = outputScrollbar_.GetScrollOffset();
+    float localY = (float)pt.y + scrollOffset - outputBodyStartY_;
+    if (localY < 0.0f)
+        return;
+
+    int idx = (int)(localY / outputLineHeight_);
+    std::wstring line;
+    {
+        std::lock_guard<std::mutex> lock(outputMutex_);
+        if (idx < 0 || idx >= (int)outputLines_.size())
+            return;
+        line = outputLines_[idx];
+    }
+
+    std::wstring path;
+    int lineNo = -1;
+    int colNo = -1;
+    if (!TryParseOutputLocation(line, path, lineNo, colNo))
+        return;
+
+    hoveredOutputLink_.active = true;
+    hoveredOutputLink_.filePath = std::move(path);
+    hoveredOutputLink_.line = lineNo;
+    hoveredOutputLink_.column = colNo;
+    hoveredOutputLink_.lineIndex = idx;
+}
+
 // ---------------- Mouse ----------------
 void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
 {
@@ -394,6 +643,7 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
         showOutput_ = !showOutput_;
         if (showOutput_)
             showProblems_ = false;
+        hoveredOutputLink_ = {};
         return;
     }
 
@@ -403,6 +653,7 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
         if (showProblems_)
             showOutput_ = false;
         hoveredProblemIndex_ = -1;
+        hoveredOutputLink_ = {};
         return;
     }
 
@@ -416,6 +667,17 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
 
     if (showOutput_ && IsPointInPanel(pt))
     {
+        UpdateHoveredOutputLink(pt);
+        if (hoveredOutputLink_.active)
+        {
+            OpenFileRequest *req = new OpenFileRequest();
+            req->filePath = hoveredOutputLink_.filePath;
+            req->line = hoveredOutputLink_.line;
+            req->column = hoveredOutputLink_.column;
+            PostMessageW(hwnd, WM_OPEN_FILE_AT, 0, (LPARAM)req);
+            return;
+        }
+
         if (HitTestOutputCopy(pt))
         {
             std::wstring all;
@@ -463,6 +725,7 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
             outputAutoFollow_ = false;
             outputPendingScrollToBottom_ = false;
             SetCapture(hwnd);
+            mouseCaptureOwned_ = true;
             return;
         }
     }
@@ -503,7 +766,8 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
     {
         if (!IsPointInTabsBar(pt) && !IsPointInResizeZone(pt))
         {
-            focused_ = false;
+            // Keep terminal focused when interacting with output/problems panel
+            focused_ = true;
             return;
         }
     }
@@ -536,6 +800,7 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
         dragStart_ = pt;
         startTop_ = top_;
         SetCapture(hwnd);
+        mouseCaptureOwned_ = true;
         return;
     }
 
@@ -545,6 +810,7 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
         if (s->OnScrollbarLButtonDown(pt))
         {
             SetCapture(hwnd);
+            mouseCaptureOwned_ = true;
             focused_ = true;
             return;
         }
@@ -556,7 +822,10 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
         if (TerminalSession* s = ActiveSession())
         {
             if (s->OnLeftButtonDown(pt))
+            {
                 SetCapture(hwnd);
+                mouseCaptureOwned_ = true;
+            }
         }
     }
 }
@@ -570,6 +839,7 @@ void TerminalPanel::OnLeftButtonUp(HWND hwnd)
         if (outputScrollbar_.OnLeftButtonUp())
         {
             ReleaseCapture();
+            mouseCaptureOwned_ = false;
             return;
         }
     }
@@ -579,6 +849,7 @@ void TerminalPanel::OnLeftButtonUp(HWND hwnd)
         if (s->OnScrollbarLButtonUp())
         {
             ReleaseCapture();
+            mouseCaptureOwned_ = false;
             return;
         }
     }
@@ -588,6 +859,7 @@ void TerminalPanel::OnLeftButtonUp(HWND hwnd)
         if (s->OnLeftButtonUp())
         {
             ReleaseCapture();
+            mouseCaptureOwned_ = false;
             return;
         }
     }
@@ -596,7 +868,15 @@ void TerminalPanel::OnLeftButtonUp(HWND hwnd)
     {
         resizing_ = false;
         ReleaseCapture();
+        mouseCaptureOwned_ = false;
         return;
+    }
+
+    if (mouseCaptureOwned_)
+    {
+        if (GetCapture() != NULL)
+            ReleaseCapture();
+        mouseCaptureOwned_ = false;
     }
 }
 
@@ -689,6 +969,20 @@ bool TerminalPanel::OnMouseMove(HWND hwnd, POINT pt)
         hoveredOutputCopy_ = HitTestOutputCopy(pt);
         if (prevCopy != hoveredOutputCopy_)
             changed = true;
+
+        TerminalPanel::HoveredOutputLink prevLink = hoveredOutputLink_;
+        UpdateHoveredOutputLink(pt);
+        if (prevLink.active != hoveredOutputLink_.active ||
+            prevLink.lineIndex != hoveredOutputLink_.lineIndex ||
+            prevLink.filePath != hoveredOutputLink_.filePath)
+        {
+            changed = true;
+        }
+    }
+    else if (hoveredOutputLink_.active)
+    {
+        hoveredOutputLink_ = {};
+        changed = true;
     }
 
     if (IsPointInTabsBar(pt) && !hoveredPlus_ && !hoveredProblems_ && !hoveredOutput_)
@@ -1067,6 +1361,13 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
 
 
     // Content viewport
+    if (!showOutput_)
+    {
+        outputBodyRect_ = D2D1::RectF(0, 0, 0, 0);
+        outputBodyStartY_ = 0.0f;
+        outputLineHeight_ = 0.0f;
+        hoveredOutputLink_ = {};
+    }
     if (showProblems_)
     {
         D2D1_RECT_F contentRect = D2D1::RectF(left_, contentTop, right_, contentBottom);
@@ -1221,6 +1522,9 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
             float headerBlock = lineH + 4.0f;
             float bodyStartY = headerY + headerBlock;
             D2D1_RECT_F bodyRect = D2D1::RectF(contentRect.left, bodyStartY, contentRect.right, contentRect.bottom);
+            outputBodyRect_ = bodyRect;
+            outputBodyStartY_ = bodyStartY;
+            outputLineHeight_ = lineH;
 
             // Copy button (icon)
             {
@@ -1321,6 +1625,11 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
                         brush = dim ? dim : fg;
                     else if (line.find(L"Building") != std::wstring::npos || line.find(L"Linking") != std::wstring::npos || line.find(L"done") != std::wstring::npos)
                         brush = ok ? ok : fg;
+                    if (hoveredOutputLink_.active && hoveredOutputLink_.lineIndex == (int)i &&
+                        (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0)
+                    {
+                        brush = accent ? accent : brush;
+                    }
                     rt->DrawTextW(line.c_str(), (UINT32)line.size(), listFormat,
                                   D2D1::RectF(x, y, contentRect.right - 8.0f, y + lineH), brush);
                     y += lineH;

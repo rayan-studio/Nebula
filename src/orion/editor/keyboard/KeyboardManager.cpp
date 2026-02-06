@@ -8,12 +8,27 @@
 #include "ui/panels/search/SearchPanel.h"
 #include "ui/panels/terminal/TerminalPanel.h"
 #include "ui/components/input/InputTypeFixed.h"
+#include "ui/components/footer/Footer.h"
 #include "lsp/LspManager.h"
 
 #include <commdlg.h>
 #include <shobjidl.h>
 #include <vector>
 #include <map>
+#include <cwctype>
+
+static bool IsCppLikePath(const std::wstring &path)
+{
+    if (path.empty())
+        return false;
+    size_t pos = path.find_last_of(L'.');
+    if (pos == std::wstring::npos)
+        return false;
+    std::wstring ext = path.substr(pos + 1);
+    for (auto &c : ext) c = (wchar_t)towlower(c);
+    return ext == L"c" || ext == L"cpp" || ext == L"cc" || ext == L"cxx" ||
+           ext == L"h" || ext == L"hpp" || ext == L"hh" || ext == L"hxx";
+}
 
 KeyboardManager::Mods KeyboardManager::GetMods()
 {
@@ -41,6 +56,13 @@ bool KeyboardManager::OnKeyDown(WPARAM wParam)
 
     const Mods m = GetMods();
 
+    if (HandleTamponEditKeyDown(wParam, m))
+        return true;
+
+    // Chord shortcuts (ex: Ctrl+K, Ctrl+D)
+    if (HandleChordShortcut(wParam, m))
+        return true;
+
     // 1) Global shortcuts FIRST
     if (HandleGlobalShortcuts(wParam, m))
         return true;
@@ -55,7 +77,177 @@ bool KeyboardManager::OnChar(WPARAM wParam)
         return false;
 
     // WM_CHAR -> route vers l’input actif
+    if (HandleTamponEditChar(wParam))
+        return true;
     return RouteCharToFocused(wParam);
+}
+
+void KeyboardManager::BeginTamponEdit()
+{
+    if (!window_)
+        return;
+    tamponEditActive_ = true;
+    tamponEditBuffer_ = GetTamponText();
+    UpdateTamponHint();
+}
+
+void KeyboardManager::UpdateTamponHint()
+{
+    if (!window_)
+        return;
+
+    std::wstring preview = tamponEditBuffer_;
+    for (auto &ch : preview)
+    {
+        if (ch == L'\n' || ch == L'\r')
+            ch = L' ';
+    }
+    if (preview.empty())
+        preview = L"(vide)";
+    if (preview.size() > 120)
+    {
+        preview = preview.substr(0, 120);
+        preview += L"...";
+    }
+    Footer_SetHint(window_->GetHwnd(), L"Tampon: " + preview, 0);
+}
+
+bool KeyboardManager::HandleTamponEditKeyDown(WPARAM wParam, const Mods &m)
+{
+    if (!tamponEditActive_)
+        return false;
+
+    if (wParam == VK_ESCAPE)
+    {
+        tamponEditActive_ = false;
+        Footer_ClearHint(window_->GetHwnd());
+        return true;
+    }
+
+    if (wParam == VK_RETURN)
+    {
+        if (m.shift)
+        {
+            tamponEditBuffer_.push_back(L'\n');
+            UpdateTamponHint();
+            return true;
+        }
+
+        if (tamponEditBuffer_.empty())
+            ClearTamponText();
+        else
+            SetTamponText(tamponEditBuffer_);
+
+        tamponEditActive_ = false;
+        Footer_ClearHint(window_->GetHwnd());
+        Footer_SetHint(window_->GetHwnd(), L"Tampon mis a jour", 1500);
+        return true;
+    }
+
+    if (wParam == VK_BACK)
+    {
+        if (!tamponEditBuffer_.empty())
+            tamponEditBuffer_.pop_back();
+        UpdateTamponHint();
+        return true;
+    }
+
+    if (m.ctrl && !m.alt && (wParam == 'V'))
+    {
+        if (OpenClipboard(NULL))
+        {
+            HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+            if (hData)
+            {
+                wchar_t *clip = static_cast<wchar_t *>(GlobalLock(hData));
+                if (clip)
+                {
+                    tamponEditBuffer_ += clip;
+                    GlobalUnlock(hData);
+                }
+            }
+            CloseClipboard();
+        }
+        UpdateTamponHint();
+        return true;
+    }
+
+    return true;
+}
+
+bool KeyboardManager::HandleTamponEditChar(WPARAM wParam)
+{
+    if (!tamponEditActive_)
+        return false;
+
+    wchar_t ch = (wchar_t)wParam;
+    if (ch >= 32)
+    {
+        tamponEditBuffer_.push_back(ch);
+        UpdateTamponHint();
+    }
+    return true;
+}
+
+void KeyboardManager::StartChord(wchar_t first)
+{
+    chordActive_ = true;
+    chordFirst_ = first;
+    chordExpiresAt_ = GetTickCount64() + 2000;
+}
+
+void KeyboardManager::ClearChord()
+{
+    chordActive_ = false;
+    chordFirst_ = 0;
+    chordExpiresAt_ = 0;
+}
+
+bool KeyboardManager::HandleChordShortcut(WPARAM wParam, const Mods &m)
+{
+    if (!chordActive_)
+        return false;
+
+    ULONGLONG now = GetTickCount64();
+    if (chordExpiresAt_ != 0 && now > chordExpiresAt_)
+    {
+        ClearChord();
+        return false;
+    }
+
+    // Chord expects Ctrl + second key
+    if (!m.ctrl || m.alt)
+    {
+        Footer_SetHint(window_->GetHwnd(), L"Raccourci annule", 1200);
+        ClearChord();
+        return true;
+    }
+
+    if (chordFirst_ == L'K' && !m.shift && IsLetter(wParam, 'D'))
+    {
+        Orion::Editor *editor = window_->GetEditor();
+        if (editor)
+        {
+            std::wstring path = editor->GetFilePath();
+            if (IsCppLikePath(path))
+            {
+                editor->FormatDocument();
+                InvalidateRect(window_->GetHwnd(), nullptr, FALSE);
+                GetPanelManager().UpdateLayout(window_->GetHwnd());
+                Footer_SetHint(window_->GetHwnd(), L"Format C++ applique", 1500);
+            }
+            else
+            {
+                Footer_SetHint(window_->GetHwnd(), L"Format dispo uniquement pour C/C++", 2000);
+            }
+        }
+        ClearChord();
+        return true;
+    }
+
+    Footer_SetHint(window_->GetHwnd(), L"Raccourci annule", 1200);
+    ClearChord();
+    return true;
 }
 
 // =====================================================
@@ -323,6 +515,14 @@ bool KeyboardManager::HandleGlobalShortcuts(WPARAM wParam, const Mods &m)
     {
         Logger::Instance().Log(L"Shortcut: Ctrl+S Save");
         SaveActiveTab();
+        return true;
+    }
+
+    // Ctrl+K => start chord (ex: Ctrl+K, Ctrl+D)
+    if (m.ctrl && !m.shift && !m.alt && IsLetter(wParam, 'K'))
+    {
+        StartChord(L'K');
+        Footer_SetHint(window_->GetHwnd(), L"Ctrl+K, Ctrl+D : Formater C++", 2000);
         return true;
     }
 

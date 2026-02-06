@@ -45,6 +45,63 @@ namespace Orion
             return powf((srgb + 0.055f) / 1.055f, 2.4f);
     }
 
+    struct MarkdownSpan
+    {
+        UINT32 start = 0;
+        UINT32 length = 0;
+        float fontSize = 14.0f;
+        DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL;
+        DWRITE_FONT_STYLE style = DWRITE_FONT_STYLE_NORMAL;
+        bool code = false;
+    };
+
+
+    struct MarkdownSvgText
+    {
+        float x = 0.0f;
+        float y = 0.0f;
+        float fontSize = 12.0f;
+        DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL;
+        D2D1_COLOR_F color = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
+        int anchor = 0;
+        std::wstring text;
+    };
+
+    enum class MarkdownImageAlign
+    {
+        Left,
+        Center,
+        Right
+    };
+
+    struct MarkdownInlineImage
+    {
+        std::wstring path;
+        float width = 0.0f;
+        float height = 0.0f;
+        MarkdownImageAlign align = MarkdownImageAlign::Left;
+    };
+    struct MarkdownBlock
+    {
+        enum class Type
+        {
+            Text,
+            Image,
+            Rule,
+            Table
+        };
+        Type type = Type::Text;
+        std::wstring text;
+        std::vector<MarkdownSpan> spans;
+        std::wstring imagePath;
+        float imageWidth = 0.0f;
+        float imageHeight = 0.0f;
+        MarkdownImageAlign imageAlign = MarkdownImageAlign::Left;
+        bool isQuote = false;
+        std::vector<std::vector<std::wstring>> tableRows;
+        std::vector<MarkdownInlineImage> inlineImages;
+    };
+
     // ========================================================================
     // CONVERSION HEX → D2D1_COLOR_F avec correction gamma
     // ========================================================================
@@ -245,6 +302,8 @@ namespace Orion
         std::optional<Lsp::Location> TryGoToDefinitionAtPoint(POINT pt);
         // Create an empty buffer for a new untitled tab
         void CreateEmpty();
+        // Replace entire buffer content (used for templates)
+        void SetTextContent(const std::wstring &text, bool markDirty = true);
         // Save buffer to file (UTF-8). Returns true on success.
         bool SaveToFile(const std::wstring &filePath);
         std::vector<Diagnostic> GetDiagnostics() const;
@@ -294,6 +353,8 @@ namespace Orion
 
         void LoadFileAsync(HWND hwnd, const std::wstring &filePath, int tabIndex);
         void LoadPreviewAsync(HWND hwnd, const std::wstring &filePath, int tabIndex);
+        void SetMarkdownPreviewEnabled(bool enabled);
+        bool IsMarkdownPreviewEnabled() const;
 
         // appel?? UNIQUEMENT sur le thread UI
         void ApplyLoadedFile(std::wstring filePath,
@@ -323,6 +384,7 @@ namespace Orion
         void DrawPreview(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
         void DrawCaret(ID2D1RenderTarget *ctx);
         void ResetPreview();
+        void ResetMarkdownPreviewLayout();
 
         D2D1_POINT_2F TextToScreenPosition(CaretPosition pos);
         CaretPosition ScreenToTextPosition(POINT screenPoint);
@@ -390,10 +452,28 @@ namespace Orion
         bool dragSelecting_ = false;
 
         bool isPreview_ = false;
+        enum class PreviewMode
+        {
+            None,
+            Image,
+            Markdown
+        };
+        PreviewMode previewMode_ = PreviewMode::None;
         std::wstring previewMessage_;
         HBITMAP previewBitmap_ = nullptr;
         SIZE previewBitmapSize_ = {0, 0};
         ID2D1Bitmap *previewD2DBitmap_ = nullptr;
+        std::wstring previewMarkdownText_;
+        std::vector<MarkdownSpan> previewMarkdownSpans_;
+        std::vector<MarkdownBlock> previewMarkdownBlocks_;
+        std::vector<IDWriteTextLayout *> previewMarkdownLayouts_;
+        std::vector<DWRITE_TEXT_METRICS> previewMarkdownMetrics_;
+        IDWriteTextLayout *previewMarkdownLayout_ = nullptr;
+        float previewMarkdownLayoutWidth_ = 0.0f;
+        float previewMarkdownLayoutHeight_ = 0.0f;
+        std::unordered_map<std::wstring, ID2D1Bitmap *> previewImageCache_;
+        std::unordered_map<std::wstring, std::vector<MarkdownSvgText>> previewSvgTextCache_;
+        std::unordered_map<std::wstring, D2D1_SIZE_F> previewSvgSizeCache_;
 
         std::wstring diagHoverText_;
         bool diagHoverVisible_ = false;

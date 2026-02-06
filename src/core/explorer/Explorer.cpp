@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <fstream>
 #include <sstream>
+#include <string>
 #include <cwctype>
 #include <regex>
 #include "ui/components/popups/CustomPopup.h"
@@ -19,6 +20,8 @@
 #include "utils/logger/Logger.h"
 #include "ui/layout/ExplorerLayoutState.h"
 #include "lsp/LspManager.h"
+#include <vector>
+#include <exception>
 
 // Disable min/max macros from Windows headers
 #undef min
@@ -226,7 +229,6 @@ static void LoadIconMapBlocking()
     std::string folderNamesExpandedObj;
     if (ExtractJsonObject("folderNamesExpanded", folderNamesExpandedObj))
         ParseNameMap(folderNamesExpandedObj, folderNamesExpanded);
-
     {
         std::lock_guard<std::mutex> lk(g_iconMapMutex);
         g_iconMap = std::move(local);
@@ -477,7 +479,7 @@ DWORD WINAPI ExplorerManager::WatcherThreadStatic(LPVOID param)
 
     HANDLE hDir = CreateFileW(dir.c_str(), FILE_LIST_DIRECTORY,
                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                              NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+                              NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, NULL);
 
     if (hDir == INVALID_HANDLE_VALUE)
         return 0;
@@ -487,87 +489,126 @@ DWORD WINAPI ExplorerManager::WatcherThreadStatic(LPVOID param)
     DWORD lastReloadTime = 0;
     const DWORD minReloadInterval = 500; // Ne recharger qu'une fois toutes les 500ms
 
-    while (WaitForSingleObject(mgr->watcherStopEvent_, 0) == WAIT_TIMEOUT)
+    HANDLE ioEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!ioEvent)
     {
+        CloseHandle(hDir);
+        return 0;
+    }
+
+    OVERLAPPED ov = {};
+    ov.hEvent = ioEvent;
+
+    auto parseShouldReload = [&](DWORD bytes) -> bool
+    {
+        if (bytes == 0)
+            return false;
+        FILE_NOTIFY_INFORMATION *info = (FILE_NOTIFY_INFORMATION *)buffer.data();
+        while (info)
+        {
+            if (info->Action == FILE_ACTION_ADDED ||
+                info->Action == FILE_ACTION_REMOVED ||
+                info->Action == FILE_ACTION_RENAMED_NEW_NAME ||
+                info->Action == FILE_ACTION_RENAMED_OLD_NAME)
+            {
+                return true;
+            }
+            if (info->NextEntryOffset == 0)
+                break;
+            info = (FILE_NOTIFY_INFORMATION *)((BYTE *)info + info->NextEntryOffset);
+        }
+        return false;
+    };
+
+    auto issueRead = [&]() -> bool
+    {
+        ResetEvent(ioEvent);
         DWORD bytesReturned = 0;
         BOOL ok = ReadDirectoryChangesW(hDir, buffer.data(), bufSize, TRUE,
                                         FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME,
-                                        &bytesReturned, NULL, NULL);
+                                        &bytesReturned, &ov, NULL);
+        if (!ok)
+            return false;
+        return true;
+    };
 
-        if (ok && bytesReturned > 0)
+    while (WaitForSingleObject(mgr->watcherStopEvent_, 0) == WAIT_TIMEOUT)
+    {
+        if (!issueRead())
+            break;
+
+        HANDLE waits[2] = {mgr->watcherStopEvent_, ioEvent};
+        DWORD w = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+        if (w == WAIT_OBJECT_0)
         {
-            // Vérifier qu'il s'agit bien d'un changement de structure (ajout/suppression)
-            FILE_NOTIFY_INFORMATION *info = (FILE_NOTIFY_INFORMATION *)buffer.data();
-            bool shouldReload = false;
+            CancelIoEx(hDir, &ov);
+            WaitForSingleObject(ioEvent, INFINITE);
+            break;
+        }
+        if (w != WAIT_OBJECT_0 + 1)
+            continue;
 
-            while (info)
-            {
-                // Ne recharger que si fichier/dossier créé ou supprimé
-                if (info->Action == FILE_ACTION_ADDED ||
-                    info->Action == FILE_ACTION_REMOVED ||
-                    info->Action == FILE_ACTION_RENAMED_NEW_NAME ||
-                    info->Action == FILE_ACTION_RENAMED_OLD_NAME)
-                {
-                    shouldReload = true;
-                    break;
-                }
+        DWORD bytesReturned = 0;
+        if (!GetOverlappedResult(hDir, &ov, &bytesReturned, FALSE))
+            continue;
 
-                // Passer à l'événement suivant
-                if (info->NextEntryOffset == 0)
-                    break;
-                info = (FILE_NOTIFY_INFORMATION *)((BYTE *)info + info->NextEntryOffset);
-            }
+        bool shouldReload = parseShouldReload(bytesReturned);
+        if (!shouldReload)
+            continue;
 
-            if (shouldReload)
-            {
-                // Si le flag d'ignore est activé, ignorer ce prochain changement lié
-                if (mgr->ignoreNextChange_.load())
-                {
-                    mgr->ignoreNextChange_.store(false);
-                    continue;
-                }
-                // Debounce: attendre qu'il n'y ait plus d'événements pendant 200ms
-                DWORD quietStart = GetTickCount();
-                const DWORD quietPeriod = 200;
-                bool stillChanging = true;
-
-                while (stillChanging && (GetTickCount() - quietStart < 2000)) // max 2s d'attente
-                {
-                    Sleep(50);
-                    DWORD br = 0;
-                    BOOL hasMore = ReadDirectoryChangesW(hDir, buffer.data(), bufSize, TRUE,
-                                                         FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME,
-                                                         &br, NULL, NULL);
-
-                    if (!hasMore || br == 0)
-                    {
-                        // Plus d'événements pendant 50ms
-                        if (GetTickCount() - quietStart >= quietPeriod)
-                        {
-                            stillChanging = false;
-                        }
-                    }
-                    else
-                    {
-                        // Nouveaux événements, recommencer le timer
-                        quietStart = GetTickCount();
-                    }
-                }
-
-                // Vérifier l'intervalle minimum entre deux rechargements
-                DWORD now = GetTickCount();
-                if (now - lastReloadTime >= minReloadInterval)
-                {
-                    mgr->LoadDirectoryContents();
-                    InvalidateMainWindow();
-                    lastReloadTime = now;
-                }
-            }
+        if (mgr->ignoreNextChange_.load())
+        {
+            mgr->ignoreNextChange_.store(false);
+            continue;
         }
 
-        Sleep(50);
+        // Debounce: wait a short time for more events without blocking indefinitely.
+        const DWORD quietPeriod = 200;
+        DWORD quietStart = GetTickCount();
+        for (;;)
+        {
+            DWORD elapsed = GetTickCount() - quietStart;
+            if (elapsed >= quietPeriod)
+                break;
+
+            if (!issueRead())
+                break;
+
+            HANDLE waits2[2] = {mgr->watcherStopEvent_, ioEvent};
+            DWORD waitMs = quietPeriod - elapsed;
+            DWORD w2 = WaitForMultipleObjects(2, waits2, FALSE, waitMs);
+            if (w2 == WAIT_OBJECT_0)
+            {
+                CancelIoEx(hDir, &ov);
+                WaitForSingleObject(ioEvent, INFINITE);
+                CloseHandle(ioEvent);
+                CloseHandle(hDir);
+                return 0;
+            }
+            if (w2 == WAIT_OBJECT_0 + 1)
+            {
+                DWORD br2 = 0;
+                GetOverlappedResult(hDir, &ov, &br2, FALSE);
+                quietStart = GetTickCount();
+                continue;
+            }
+
+            // timeout -> cancel pending io and exit debounce
+            CancelIoEx(hDir, &ov);
+            WaitForSingleObject(ioEvent, INFINITE);
+            break;
+        }
+
+        DWORD now = GetTickCount();
+        if (now - lastReloadTime >= minReloadInterval)
+        {
+            mgr->LoadDirectoryContents();
+            InvalidateMainWindow();
+            lastReloadTime = now;
+        }
     }
 
+    CloseHandle(ioEvent);
     CloseHandle(hDir);
     return 0;
 }
@@ -624,6 +665,14 @@ void ExplorerManager::CreateNewFileAt(const std::wstring &parentDir, const std::
             ss << classNameUtf8 << "::" << classNameUtf8 << "()\n{\n}\n\n";
             ss << classNameUtf8 << "::~" << classNameUtf8 << "()\n{\n}\n";
             content = ss.str();
+        }
+
+        std::string tamponUtf8 = WideToUtf8(GetTamponText());
+        if (!tamponUtf8.empty())
+        {
+            if (tamponUtf8.back() != '\n')
+                tamponUtf8.push_back('\n');
+            content = tamponUtf8 + content;
         }
 
         std::ofstream file;
@@ -693,7 +742,7 @@ void ExplorerManager::CreateNewFolderAt(const std::wstring &parentDir, const std
 
 std::wstring ExplorerManager::GetActiveDirectory() const
 {
-    // Si un dossier est hover/sélectionné, retourner ce chemin
+    // Si un dossier est hover/sï¿½lectionnï¿½, retourner ce chemin
     if (state_.hoveredItemIndex >= 0 && state_.hoveredItemIndex < (int)state_.items.size())
     {
         const auto &item = state_.items[state_.hoveredItemIndex];
@@ -796,7 +845,7 @@ void ExplorerManager::LoadDirectoryContents()
             item.isDirectory = entry.is_directory();
             item.depth = 0;
 
-            // CORRECTION 1: Restaurer l'état expanded IMMÉDIATEMENT
+            // CORRECTION 1: Restaurer l'ï¿½tat expanded IMMï¿½DIATEMENT
             auto f = prevExpanded.find(full);
             item.expanded = (f != prevExpanded.end()) ? f->second : false;
 
@@ -832,7 +881,7 @@ void ExplorerManager::LoadDirectoryContents()
 
                     std::wstring full = entry.path().wstring();
 
-                    // CORRECTION 2: Vérifier les doublons avec seen
+                    // CORRECTION 2: Vï¿½rifier les doublons avec seen
                     if (seen.find(full) != seen.end())
                         continue;
                     seen.insert(full);
@@ -844,7 +893,7 @@ void ExplorerManager::LoadDirectoryContents()
                     ci.isDirectory = entry.is_directory();
                     ci.depth = depth;
 
-                    // Restaurer l'état expanded immédiatement
+                    // Restaurer l'ï¿½tat expanded immï¿½diatement
                     auto f = prevExpanded.find(ci.fullPath);
                     ci.expanded = (f != prevExpanded.end()) ? f->second : false;
 
@@ -1055,7 +1104,7 @@ void ExplorerManager::UpdateLayout(HWND hwnd)
 
     UpdateItemPositions();
 
-    // Bouton "Ouvrir un projet" (affiché seulement si rootPath vide)
+    // Bouton "Ouvrir un projet" (affichï¿½ seulement si rootPath vide)
     {
         float left  = state_.leftEdge + state_.leftPadding;
         float right = state_.rightEdge - state_.leftPadding;
@@ -1128,16 +1177,16 @@ bool ExplorerManager::IsPointInExplorer(POINT clientPoint) const
 
 void ExplorerManager::OnMouseMove(HWND hwnd, POINT clientPoint)
 {
-    // PRIORITÉ 1 : Scrollbar (si on drag ou si la souris est dessus)
+    // PRIORITï¿½ 1 : Scrollbar (si on drag ou si la souris est dessus)
     if (scrollbar_.OnMouseMove(clientPoint))
     {
         InvalidateRect(hwnd, nullptr, FALSE);
     }
 
-    // Si la scrollbar gère le hover, ne pas gérer l'Explorer
+    // Si la scrollbar gï¿½re le hover, ne pas gï¿½rer l'Explorer
     if (scrollbar_.IsHoveringThumb() || scrollbar_.IsHoveringTrack())
     {
-        // Réinitialiser le hover de l'Explorer
+        // Rï¿½initialiser le hover de l'Explorer
         if (state_.hoveredItemIndex != -1)
         {
             state_.hoveredItemIndex = -1;
@@ -1158,7 +1207,7 @@ void ExplorerManager::OnMouseMove(HWND hwnd, POINT clientPoint)
         // but keep current behavior (just visual)
     }
 
-    // PRIORITÉ 2 : Mode normal - vérifier hover
+    // PRIORITï¿½ 2 : Mode normal - vï¿½rifier hover
     int oldHovered = state_.hoveredItemIndex;
 
     if (IsPointInExplorer(clientPoint))
@@ -1391,7 +1440,7 @@ void ExplorerManager::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
             HideInlineInput();
         }
 
-        // 2. Désélectionner le dossier actif (revenir à la racine)
+        // 2. Dï¿½sï¿½lectionner le dossier actif (revenir ï¿½ la racine)
         state_.activePath.clear();
 
         InvalidateRect(hwnd, nullptr, FALSE);
@@ -1449,6 +1498,7 @@ void ExplorerManager::OnLeftButtonDoubleClick(HWND hwnd, POINT clientPoint)
 
     std::wstring fullPath;
     bool isDir = false;
+    bool isExpanded = false;
 
     {
         std::lock_guard<std::mutex> lk(itemsMutex_);
@@ -1456,6 +1506,7 @@ void ExplorerManager::OnLeftButtonDoubleClick(HWND hwnd, POINT clientPoint)
             return;
         fullPath = state_.items[idx].fullPath;
         isDir = state_.items[idx].isDirectory;
+        isExpanded = state_.items[idx].expanded;
     }
 
     if (!isDir)
@@ -1465,9 +1516,13 @@ void ExplorerManager::OnLeftButtonDoubleClick(HWND hwnd, POINT clientPoint)
     }
     else
     {
-        // For directories, reuse existing left-button logic to toggle expansion
-        state_.hoveredItemIndex = idx;
-        OnLeftButtonDown(hwnd, clientPoint);
+        // Avoid double-toggle on folder double-click: the first click already toggled once.
+        // Only expand if folder is still collapsed.
+        if (!isExpanded)
+        {
+            state_.hoveredItemIndex = idx;
+            OnLeftButtonDown(hwnd, clientPoint);
+        }
     }
 }
 
@@ -1491,7 +1546,7 @@ void ExplorerManager::OnRightButtonUp(HWND hwnd, POINT clientPoint)
     menuItems.push_back(L"Delete");
 
     D2D1_POINT_2F pos = D2D1::Point2F((float)clientPoint.x, (float)clientPoint.y);
-    int baseId = 5000 + idx * 10;
+    int baseId = 5000;
 
     contextItemIndex_ = idx;
     ShowContextMenuDropdown(hwnd, menuItems, pos, baseId);
@@ -1499,15 +1554,16 @@ void ExplorerManager::OnRightButtonUp(HWND hwnd, POINT clientPoint)
     dd.hasSubmenu.assign(menuItems.size(), false);
     if (menuItems.size() > 3)
         dd.hasSubmenu[3] = true;
+    
+    // Submenu for "Ajouter" opens on hover (handled in WM_MOUSEMOVE).
 }
 
 void ExplorerManager::HandleContextCommand(int commandId)
 {
-    if (commandId < 5000 || commandId >= 20000)
+    if (commandId < 5000 || commandId >= 6000)
         return;
-    int rel = commandId - 5000;
-    int itemIndex = rel / 10;
-    int cmdIndex = rel % 10;
+    int cmdIndex = commandId - 5000;
+    int itemIndex = contextItemIndex_;
     if (itemIndex < 0 || itemIndex >= (int)state_.items.size())
         return;
 
@@ -2402,13 +2458,13 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
     float folderIconGap = (float)win32_dpi_scale(4, dpi);
 
     // Rounded background constants and helper for crisp rounded fills
-    const float corner = 4.0f;           // petit arrondi (réduit)
-    const float insetX = 4.0f;           // marge gauche/droite du fond (réduite)
+    const float corner = 4.0f;           // petit arrondi (rï¿½duit)
+    const float insetX = 4.0f;           // marge gauche/droite du fond (rï¿½duite)
     const float insetY = 0.0f;           // marge haut/bas du fond (aucune, couvre toute la hauteur)
 
     auto DrawRoundedFill = [&](const D2D1_RECT_F& r, ID2D1Brush* brush)
     {
-        // Snap pour éviter le flou
+        // Snap pour ï¿½viter le flou
         D2D1_RECT_F rr = D2D1::RectF(
             std::round(r.left),
             std::round(r.top),
@@ -2637,7 +2693,7 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
             continue;
         }
 
-        // Si c'est le placeholder, dessiner l'input inline à cet endroit
+        // Si c'est le placeholder, dessiner l'input inline ï¿½ cet endroit
         if (item.fullPath == L"__inline_placeholder__")
         {
             if (inlineVisible_)
@@ -3285,13 +3341,3 @@ void ExplorerManager::DrawSearchPanel(ID2D1RenderTarget *ctx, IDWriteFactory *dw
     if (txt)
         txt->Release();
 }
-
-
-
-
-
-
-
-
-
-

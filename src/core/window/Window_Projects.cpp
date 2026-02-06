@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <ctime>
 #include <cctype>
+#include <optional>
 
 namespace
 {
@@ -23,6 +24,33 @@ namespace
             out = (base / L"source" / L"repos").wstring();
         }
         return out;
+    }
+
+    static std::optional<std::wstring> FindReadmeMarkdown(const std::wstring &rootPath)
+    {
+        if (rootPath.empty())
+            return std::nullopt;
+        try
+        {
+            std::filesystem::path root(rootPath);
+            if (!std::filesystem::exists(root))
+                return std::nullopt;
+
+            for (const auto &entry : std::filesystem::directory_iterator(root))
+            {
+                if (!entry.is_regular_file())
+                    continue;
+                std::wstring name = entry.path().filename().wstring();
+                std::wstring lower = name;
+                std::transform(lower.begin(), lower.end(), lower.begin(), [](wchar_t c) { return (wchar_t)towlower(c); });
+                if (lower == L"readme.md")
+                    return entry.path().wstring();
+            }
+        }
+        catch (...)
+        {
+        }
+        return std::nullopt;
     }
 
     static std::wstring PickFolder(HWND parent)
@@ -91,7 +119,10 @@ bool Window::CreateProjectFromOverlay()
         GetExplorerManager().Initialize(root);
         GetExplorerManager().SetVisible(true);
         AddRecentProject(root);
-        if (!mainFile.empty())
+        auto readme = FindReadmeMarkdown(root);
+        if (readme.has_value())
+            OpenFileInNewTabWithMarkdownPreview(*readme);
+        else if (!mainFile.empty())
             OpenFileInNewTab(mainFile, -1);
         InvalidateRect(hwnd_, nullptr, FALSE);
         return true;
@@ -106,6 +137,9 @@ void Window::OpenProjectAtPath(const std::wstring &path)
     GetExplorerManager().Initialize(path);
     GetExplorerManager().SetVisible(true);
     AddRecentProject(path);
+    auto readme = FindReadmeMarkdown(path);
+    if (readme.has_value())
+        OpenFileInNewTabWithMarkdownPreview(*readme);
     HideNewProjectOverlay();
     InvalidateRect(hwnd_, nullptr, FALSE);
 }

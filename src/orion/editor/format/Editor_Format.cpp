@@ -241,7 +241,17 @@ namespace Orion
 
         for (size_t li = 0; li < state_.lines.size(); ++li)
         {
-            std::wstring leftTrimmed = TrimLeftCopy(state_.lines[li]);
+            const std::wstring &rawLine = state_.lines[li];
+            std::wstring leftTrimmed = TrimLeftCopy(rawLine);
+
+            // Keep preprocessor lines intact (do not reindent or re-space includes).
+            if (!leftTrimmed.empty() && leftTrimmed[0] == L'#')
+            {
+                std::wstring keep = TrimRightCopy(rawLine);
+                newLines.push_back(keep);
+                prevEmpty = false;
+                continue;
+            }
             // Remove trailing whitespace
             leftTrimmed = TrimRightCopy(leftTrimmed);
             // Convert tabs inside the content to spaces

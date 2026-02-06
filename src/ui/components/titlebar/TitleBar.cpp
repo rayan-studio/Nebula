@@ -45,6 +45,16 @@ static std::string ContextMenuIconPathForLabel(const std::wstring &label)
         return "assets\\ressource\\icons\\folder-open.svg";
     if (label.find(L"Copier le chemin") != std::wstring::npos || label.find(L"Copy Path") != std::wstring::npos)
         return "assets\\ressource\\icons\\folder-link-open.svg";
+    if (label.find(L"Ajouter") != std::wstring::npos || label.find(L"Add") != std::wstring::npos)
+        return "assets\\ressource\\icons\\folder-open.svg";
+    if (label.find(L"Nouveau fichier") != std::wstring::npos || label.find(L"New File") != std::wstring::npos)
+        return "assets\\ressource\\icons\\document.svg";
+    if (label.find(L"Nouveau dossier") != std::wstring::npos || label.find(L"New Folder") != std::wstring::npos)
+        return "assets\\ressource\\icons\\folder.svg";
+    if (label.find(L"Class Header") != std::wstring::npos || label.find(L"Header") != std::wstring::npos)
+        return "assets\\ressource\\icons\\h.svg";
+    if (label.find(L"Class Source") != std::wstring::npos || label.find(L"Source") != std::wstring::npos)
+        return "assets\\ressource\\icons\\cpp.svg";
     if (label.find(L"Duplicate") != std::wstring::npos)
         return "assets\\ressource\\icons\\folder-template-open.svg";
     if (label.find(L"Rename") != std::wstring::npos)
@@ -518,7 +528,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     }
 
     // Menu items (Terminal removed)
-    std::vector<std::wstring> menus = {L"File"};
+    std::vector<std::wstring> menus = {L"File", L"Tampon"};
 
     // Initialiser g_menuItems si vide
     if (g_menuItems.empty())
@@ -726,59 +736,14 @@ void ShowMenuDropdown(HWND hwnd, int menuIndex, D2D1_RECT_F menuRect)
         break;
 
     case 1:
-        g_activeDropdown.items = {
-            L"Undo", L"Redo", L"Cut", L"Copy", L"Paste", L"Paste Without Formatting", L"Delete",
-            L"Select All", L"Find", L"Replace", L"Find in Files", L"Replace in Files", L"Toggle Comment", L"Format Document"};
-        g_activeDropdown.shortcuts = {
-            L"Ctrl+Z", L"Ctrl+Y", L"Ctrl+X", L"Ctrl+C", L"Ctrl+V", L"Ctrl+Shift+V", L"Del",
-            L"Ctrl+A", L"Ctrl+F", L"Ctrl+H", L"Ctrl+Shift+F", L"Ctrl+Shift+H", L"Ctrl+/", L"Shift+Alt+F"};
+        // Tampon (template) menu
+        g_activeDropdown.items = {L"Definir Tampon...", L"Effacer Tampon", L"Voir Tampon"};
+        g_activeDropdown.shortcuts.assign(g_activeDropdown.items.size(), L"");
         g_activeDropdown.icons.assign(g_activeDropdown.items.size(), 0);
         g_activeDropdown.separators.assign(g_activeDropdown.items.size(), false);
         g_activeDropdown.hasSubmenu.assign(g_activeDropdown.items.size(), false);
-        // Initialize enabled flags based on editor state and clipboard
         g_activeDropdown.enabled.clear();
         g_activeDropdown.enabled.resize(g_activeDropdown.items.size(), true);
-        {
-            Orion::Editor *editor = GetOrionEditor(hwnd);
-            bool hasEditor = (editor != nullptr);
-            bool hasSelection = false;
-            bool hasContent = false;
-            if (hasEditor)
-            {
-                std::wstring sel = editor->GetSelectionText();
-                hasSelection = !sel.empty();
-                hasContent = editor->HasNonEmptyContent();
-            }
-
-            // Cut/Copy/Delete enabled only if selection exists
-            if (g_activeDropdown.items.size() >= 7)
-            {
-                g_activeDropdown.enabled[2] = hasSelection; // Cut
-                g_activeDropdown.enabled[3] = hasSelection; // Copy
-                g_activeDropdown.enabled[6] = hasSelection; // Delete
-            }
-
-            // Paste enabled only if clipboard has text
-            bool canPaste = false;
-            if (OpenClipboard(NULL))
-            {
-                HANDLE hData = GetClipboardData(CF_UNICODETEXT);
-                if (hData)
-                    canPaste = true;
-                CloseClipboard();
-            }
-            if (g_activeDropdown.items.size() >= 5)
-            {
-                g_activeDropdown.enabled[4] = canPaste; // Paste
-                g_activeDropdown.enabled[5] = canPaste; // Paste Without Formatting
-            }
-
-            // Select All enabled only if there's content
-            if (g_activeDropdown.items.size() >= 8)
-            {
-                g_activeDropdown.enabled[7] = hasContent;
-            }
-        }
         break;
     case 2:
         g_activeDropdown.items = {L"Select All", L"Expand Selection", L"Shrink Selection", L"Select Line"};
@@ -1285,7 +1250,8 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
 
 void ShowSubmenuDropdown(HWND hwnd, const std::vector<std::wstring> &items, D2D1_POINT_2F position, int baseId)
 {
-    g_subDropdown.menuIndex = -2;
+    // Match context submenu styling when invoked from context menus (baseId 9000..9099).
+    g_subDropdown.menuIndex = (baseId >= 9000 && baseId < 9100) ? -1 : -2;
     g_subDropdown.visible = true;
     g_subDropdown.hoveredItem = -1;
     g_subDropdown.items = items;

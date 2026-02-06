@@ -65,6 +65,31 @@ namespace Orion::Rendering
         int vFirst = renderCtx.firstVisibleLine;
         int vLast = renderCtx.lastVisibleLine - 1;
 
+        auto firstNonWhitespaceVisualCol = [this](const std::wstring& line, bool& whitespaceOnly) -> int {
+            int vc = 0;
+            whitespaceOnly = true;
+            for (wchar_t ch : line)
+            {
+                if (ch == L' ')
+                {
+                    vc += 1;
+                }
+                else if (ch == L'\t')
+                {
+                    int nextStop = ((vc / tabSize_) + 1) * tabSize_;
+                    vc = nextStop;
+                }
+                else
+                {
+                    whitespaceOnly = false;
+                    break;
+                }
+            }
+            if (line.empty())
+                whitespaceOnly = true;
+            return vc;
+        };
+
         for (const auto& g : guides)
         {
             int start = (std::max)(g.startLine, vFirst);
@@ -74,6 +99,57 @@ namespace Orion::Rendering
             // Center guides within the indentation column, not on the left edge.
             float x = renderCtx.contentLeft + (g.visualCol * cw) - renderCtx.scrollOffsetX + (cw * 0.5f);
             x = std::floor(x) + 0.5f;
+
+            // If line info is available, avoid drawing over text by breaking
+            // the guide into per-line segments.
+            if (renderCtx.lines && !renderCtx.lines->empty())
+            {
+                int segmentStart = -1;
+                int lineCount = (int)renderCtx.lines->size();
+                for (int line = start; line <= end; ++line)
+                {
+                    bool drawLine = true;
+                    if (line >= 0 && line < lineCount)
+                    {
+                        bool whitespaceOnly = true;
+                        int firstCol = firstNonWhitespaceVisualCol((*renderCtx.lines)[line], whitespaceOnly);
+                        if (!whitespaceOnly && firstCol <= g.visualCol)
+                        {
+                            drawLine = false;
+                        }
+                    }
+
+                    if (drawLine)
+                    {
+                        if (segmentStart < 0)
+                            segmentStart = line;
+                    }
+                    else if (segmentStart >= 0)
+                    {
+                        float topY = renderCtx.topEdge + (segmentStart * renderCtx.lineHeight) - renderCtx.scrollOffsetY
+                                   + (renderCtx.lineHeight * style_.topMargin);
+                        float bottomY = renderCtx.topEdge + ((line) * renderCtx.lineHeight) - renderCtx.scrollOffsetY
+                                      - (renderCtx.lineHeight * style_.bottomMargin);
+                        topY = std::floor(topY) + 0.5f;
+                        bottomY = std::floor(bottomY) + 0.5f;
+                        DrawGuideSegment(ctx, x, topY, bottomY, g.active);
+                        segmentStart = -1;
+                    }
+                }
+
+                if (segmentStart >= 0)
+                {
+                    float topY = renderCtx.topEdge + (segmentStart * renderCtx.lineHeight) - renderCtx.scrollOffsetY
+                               + (renderCtx.lineHeight * style_.topMargin);
+                    float bottomY = renderCtx.topEdge + ((end + 1) * renderCtx.lineHeight) - renderCtx.scrollOffsetY
+                                  - (renderCtx.lineHeight * style_.bottomMargin);
+                    topY = std::floor(topY) + 0.5f;
+                    bottomY = std::floor(bottomY) + 0.5f;
+                    DrawGuideSegment(ctx, x, topY, bottomY, g.active);
+                }
+                continue;
+            }
+
             float topY = renderCtx.topEdge + (start * renderCtx.lineHeight) - renderCtx.scrollOffsetY
                        + (renderCtx.lineHeight * style_.topMargin);
             float bottomY = renderCtx.topEdge + ((end + 1) * renderCtx.lineHeight) - renderCtx.scrollOffsetY

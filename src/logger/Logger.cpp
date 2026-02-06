@@ -2,6 +2,8 @@
 #include <chrono>
 #include <iomanip>
 #include <sstream>
+#include <string>
+#include <mutex>
 
 Logger::Logger() : hFile_(INVALID_HANDLE_VALUE) {}
 Logger::~Logger() { Close(); }

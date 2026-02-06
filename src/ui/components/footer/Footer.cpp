@@ -9,6 +9,8 @@
 // Globals for footer hover handling
 static std::vector<D2D1_RECT_F> g_footer_segment_rects;
 static int g_footer_hovered_index = -1;
+static std::wstring g_footer_hint;
+static ULONGLONG g_footer_hint_until = 0;
 
 static std::wstring DetectLanguageFromPath(const std::wstring &path)
 {
@@ -42,6 +44,16 @@ static std::wstring DetectLanguageFromPath(const std::wstring &path)
 void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, const std::wstring &filePath, int line, int column, const std::wstring &encoding)
 {
     if (!ctx) return;
+
+    if (!g_footer_hint.empty())
+    {
+        ULONGLONG now = GetTickCount64();
+        if (g_footer_hint_until != 0 && now > g_footer_hint_until)
+        {
+            g_footer_hint.clear();
+            g_footer_hint_until = 0;
+        }
+    }
 
     RECT client;
     GetClientRect(hwnd, &client);
@@ -240,6 +252,94 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
     if (segmentHoverBrush)
         segmentHoverBrush->Release();
 
+    // Optional centered hint (e.g., shortcut prompts)
+    if (!g_footer_hint.empty() && dwrite)
+    {
+        IDWriteTextFormat *hintFmt = nullptr;
+        dwrite->CreateTextFormat(L"JetBrains Mono", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                                 DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"en-us", &hintFmt);
+        if (hintFmt)
+        {
+            hintFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            hintFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        }
+
+        if (hintFmt && textBrush)
+        {
+            float hintLeft = left + 180.0f;
+            float hintRight = right - 200.0f;
+            if (hintRight > hintLeft + 40.0f)
+            {
+                D2D1_RECT_F hintRect = D2D1::RectF(hintLeft, top, hintRight, bottom);
+
+                IDWriteTextLayout *measureLayout = nullptr;
+                if (SUCCEEDED(dwrite->CreateTextLayout(g_footer_hint.c_str(), (UINT32)g_footer_hint.size(), hintFmt,
+                                                     1000.0f, hintRect.bottom - hintRect.top, &measureLayout)) && measureLayout)
+                {
+                    measureLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                    measureLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+
+                    DWRITE_TEXT_METRICS metrics;
+                    measureLayout->GetMetrics(&metrics);
+                    float padX = 10.0f;
+                    float pillW = metrics.widthIncludingTrailingWhitespace + padX * 2.0f;
+                    float maxW = hintRect.right - hintRect.left;
+                    float hardMax = 360.0f;
+                    if (pillW > maxW) pillW = maxW;
+                    if (pillW > hardMax) pillW = hardMax;
+
+                    float centerX = (left + right) * 0.5f;
+                    float pillLeft = centerX - pillW * 0.5f;
+                    float pillRight = pillLeft + pillW;
+                    if (pillLeft < hintRect.left)
+                    {
+                        pillLeft = hintRect.left;
+                        pillRight = pillLeft + pillW;
+                    }
+                    if (pillRight > hintRect.right)
+                    {
+                        pillRight = hintRect.right;
+                        pillLeft = pillRight - pillW;
+                    }
+
+                    IDWriteTextLayout *hintLayout = nullptr;
+                    if (SUCCEEDED(dwrite->CreateTextLayout(g_footer_hint.c_str(), (UINT32)g_footer_hint.size(), hintFmt,
+                                                         pillW, hintRect.bottom - hintRect.top, &hintLayout)) && hintLayout)
+                    {
+                        hintLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                        hintLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                        DWRITE_TRIMMING trimming = {};
+                        trimming.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
+                        IDWriteInlineObject *ellipsis = nullptr;
+                        if (SUCCEEDED(dwrite->CreateEllipsisTrimmingSign(hintFmt, &ellipsis)))
+                        {
+                            hintLayout->SetTrimming(&trimming, ellipsis);
+                            ellipsis->Release();
+                        }
+
+                        ID2D1SolidColorBrush *hintBg = nullptr;
+                        ctx->CreateSolidColorBrush(D2D1::ColorF(0x2a2d2e, 0.6f), &hintBg);
+                        if (hintBg)
+                        {
+                            D2D1_RECT_F pillRect = D2D1::RectF(pillLeft, top + 4.0f, pillRight, bottom - 4.0f);
+                            D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(pillRect, 6.0f, 6.0f);
+                            ctx->FillRoundedRectangle(rr, hintBg);
+                            hintBg->Release();
+                        }
+
+                        ctx->DrawTextLayout(D2D1::Point2F(pillLeft, top), hintLayout, textBrush);
+                        hintLayout->Release();
+                    }
+
+                    measureLayout->Release();
+                }
+            }
+        }
+
+        if (hintFmt)
+            hintFmt->Release();
+    }
+
     // Draw the right-side status text
     if (statusFmt && textBrush)
     {
@@ -253,6 +353,25 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
     if (bgBrush) bgBrush->Release();
     if (borderBrush) borderBrush->Release();
     if (textBrush) textBrush->Release();
+}
+
+void Footer_SetHint(HWND hwnd, const std::wstring &text, unsigned int durationMs)
+{
+    g_footer_hint = text;
+    g_footer_hint_until = (durationMs > 0) ? (GetTickCount64() + durationMs) : 0;
+    if (hwnd)
+        InvalidateRect(hwnd, NULL, FALSE);
+}
+
+void Footer_ClearHint(HWND hwnd)
+{
+    if (!g_footer_hint.empty())
+    {
+        g_footer_hint.clear();
+        g_footer_hint_until = 0;
+        if (hwnd)
+            InvalidateRect(hwnd, NULL, FALSE);
+    }
 }
 
 // Mouse handling: update hovered segment based on mouse position and invalidate when changed

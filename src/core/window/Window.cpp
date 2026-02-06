@@ -18,6 +18,7 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <thread>
 #include <unordered_map>
 #include <ctime>
@@ -94,6 +95,86 @@ static void SetDwmBorderColor(HWND hwnd, bool focused)
 }
 
 static const wchar_t *WINDOW_CLASS_NAME = L"NebulaTextWindowClass";
+static std::wstring g_tamponText;
+static bool g_tamponLoaded = false;
+
+static std::filesystem::path GetTamponStorePath()
+{
+    PWSTR appDataPath = nullptr;
+    std::filesystem::path out;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appDataPath)) && appDataPath)
+    {
+        std::filesystem::path base(appDataPath);
+        CoTaskMemFree(appDataPath);
+        out = base / L"Nebula";
+        std::error_code ec;
+        std::filesystem::create_directories(out, ec);
+        out /= L"tampon.txt";
+    }
+    return out;
+}
+
+static std::string WideToUtf8(const std::wstring &text)
+{
+    if (text.empty())
+        return {};
+    int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(), nullptr, 0, nullptr, nullptr);
+    if (sizeNeeded <= 0)
+        return {};
+    std::string out(sizeNeeded, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(), out.data(), sizeNeeded, nullptr, nullptr);
+    return out;
+}
+
+static std::wstring Utf8ToWide(const std::string &text)
+{
+    if (text.empty())
+        return {};
+    int sizeNeeded = MultiByteToWideChar(CP_UTF8, 0, text.data(), (int)text.size(), nullptr, 0);
+    if (sizeNeeded <= 0)
+        return {};
+    std::wstring out(sizeNeeded, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.data(), (int)text.size(), out.data(), sizeNeeded);
+    return out;
+}
+
+static void LoadTamponFromDisk()
+{
+    if (g_tamponLoaded)
+        return;
+    g_tamponLoaded = true;
+
+    std::filesystem::path store = GetTamponStorePath();
+    if (store.empty())
+        return;
+
+    std::ifstream ifs(store, std::ios::binary);
+    if (!ifs)
+        return;
+
+    std::string raw((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    if (raw.size() >= 3 &&
+        (unsigned char)raw[0] == 0xEF &&
+        (unsigned char)raw[1] == 0xBB &&
+        (unsigned char)raw[2] == 0xBF)
+    {
+        raw.erase(0, 3);
+    }
+    g_tamponText = Utf8ToWide(raw);
+}
+
+static void SaveTamponToDisk()
+{
+    std::filesystem::path store = GetTamponStorePath();
+    if (store.empty())
+        return;
+    std::ofstream ofs(store, std::ios::binary | std::ios::trunc);
+    if (!ofs)
+        return;
+    std::string raw = WideToUtf8(g_tamponText);
+    if (!raw.empty())
+        ofs.write(raw.data(), (std::streamsize)raw.size());
+}
 
 // Throttled invalidate to avoid excessive redraws on high-frequency events
 static DWORD g_lastInvalidateTime = 0;
@@ -332,6 +413,32 @@ Window *GetWindowFromHwnd(HWND hwnd)
     return reinterpret_cast<Window *>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
 }
 
+const std::wstring &GetTamponText()
+{
+    LoadTamponFromDisk();
+    return g_tamponText;
+}
+
+bool HasTamponText()
+{
+    LoadTamponFromDisk();
+    return !g_tamponText.empty();
+}
+
+void SetTamponText(const std::wstring &text)
+{
+    LoadTamponFromDisk();
+    g_tamponText = text;
+    SaveTamponToDisk();
+}
+
+void ClearTamponText()
+{
+    LoadTamponFromDisk();
+    g_tamponText.clear();
+    SaveTamponToDisk();
+}
+
 HWND Window::GetHwnd() const
 {
     return hwnd_;
@@ -467,8 +574,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         RECT title_bar_rect = win32_titlebar_rect(hwnd_);
         // Clear hovered state when window activation changes
         hoveredButton_ = Hovered_None;
-        for (int i = 0; i < 8; ++i)
-            SetMenuItemHovered(i, false);
+        for (size_t i = 0; i < GetMenuItems().size(); ++i)
+            SetMenuItemHovered((int)i, false);
         HideMenuDropdown(hwnd_);
         InvalidateRect(hwnd_, &title_bar_rect, FALSE);
         return DefWindowProc(hwnd_, uMsg, wParam, lParam);
@@ -710,6 +817,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 
                     Lsp::LspManager::Instance().UpdateFile(ed->GetFilePath(), ed->GetLinesSnapshot());
                     Lsp::LspManager::Instance().RequestDiagnosticsAsync(ed->GetFilePath(), ed->GetLinesSnapshot(), hwnd_, res->tabIndex);
+                }
+                if (pendingMarkdownPreview_.find(res->tabIndex) != pendingMarkdownPreview_.end())
+                {
+                    ed->SetMarkdownPreviewEnabled(true);
+                    tabBar_.SetTabMarkdownPreview(res->tabIndex, true);
+                    pendingMarkdownPreview_.erase(res->tabIndex);
                 }
                 InvalidateRect(hwnd_, nullptr, FALSE);
                 applied = true;
@@ -962,8 +1075,22 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
-        // Check if click is in terminal area (tabs/plus/resize/panel)
         TerminalPanel &terminal = GetTerminalPanel();
+
+        // Explorer click has priority over terminal routing.
+        if (GetExplorerManager().IsVisible() && GetExplorerManager().IsPointInExplorer(pt))
+        {
+            // If terminal still owns capture from a previous interaction, release it first
+            // so explorer drag/scroll receives a clean mouse sequence.
+            if (terminal.IsVisible() && terminal.HasMouseCapture() && GetCapture() == hwnd_)
+            {
+                terminal.OnLeftButtonUp(hwnd_);
+            }
+            GetExplorerManager().OnLeftButtonDown(hwnd_, pt);
+            return 0;
+        }
+
+        // Check if click is in terminal area (tabs/plus/resize/panel)
         bool hitTerminal = false;
         if (terminal.IsVisible())
         {
@@ -983,13 +1110,6 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 InvalidateRect(hwnd_, nullptr, FALSE);
                 return 0;
             }
-        }
-
-        // If click is inside Explorer, forward it first (only when not hitting terminal)
-        if (GetExplorerManager().IsVisible() && GetExplorerManager().IsPointInExplorer(pt))
-        {
-            GetExplorerManager().OnLeftButtonDown(hwnd_, pt);
-            return 0;
         }
 
         // Sidebar icon clicks (toggle explorer)
@@ -1013,6 +1133,22 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                     editor->CancelInteraction();
 
                 // Handle close request separately so Window decides (UI only from TabBar)
+                if (r == TabBar::TAB_CLICKED_TOGGLE_PREVIEW)
+                {
+                    int idx = tabBar_.GetLastPreviewToggleIndex();
+                    if (idx >= 0)
+                    {
+                        Orion::Editor *ed = GetEditorForTab(idx);
+                        if (ed)
+                        {
+                            bool enable = !ed->IsMarkdownPreviewEnabled();
+                            ed->SetMarkdownPreviewEnabled(enable);
+                            tabBar_.SetTabMarkdownPreview(idx, enable);
+                        }
+                        InvalidateRect(hwnd_, nullptr, FALSE);
+                        return 0;
+                    }
+                }
                 if (r == TabBar::TAB_CLICKED_CLOSE)
                 {
                     int idx = tabBar_.GetLastCloseRequestIndex();
@@ -1233,6 +1369,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 }
                 newEditor->CreateEmpty();
                 editors_[tabIndex] = newEditor;
+                newEditor->onDocumentChanged = [this, tabIndex]()
+                {
+                    tabBar_.SetTabDirty(tabIndex, true);
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                };
+
+                if (HasTamponText())
+                    newEditor->SetTextContent(GetTamponText(), true);
             }
             InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
@@ -1246,6 +1390,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             HandleNewProjectChar(static_cast<wchar_t>(wParam));
             InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
+        }
+        if (IsSettingsTabActive() && settingsTab_)
+        {
+            if (settingsTab_->OnChar(static_cast<wchar_t>(wParam)))
+            {
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
         }
         if (keyboard_.OnChar(wParam))
             return 0;
@@ -1263,6 +1415,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
         // ✅ Toute la logique est dans KeyboardManager
+        if (IsSettingsTabActive() && settingsTab_)
+        {
+            if (settingsTab_->OnKeyDown(wParam))
+            {
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+        }
         if (keyboard_.OnKeyDown(wParam))
             return 0;
 
@@ -1427,6 +1587,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         // Rest: normal routing
         // ============================================================
         bool needsRedraw = false;
+        bool pointInExplorer = GetExplorerManager().IsVisible() && GetExplorerManager().IsPointInExplorer(pt);
 
         // Check if active panel is resizing
         Panel* activePanel = GetPanelManager().GetActivePanel();
@@ -1451,11 +1612,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 
         // ===== TERMINAL HANDLING - Optimized =====
         TerminalPanel& terminal = GetTerminalPanel();
-        bool terminalHasCapture = (GetCapture() == hwnd_);
+        bool terminalHasCapture = terminal.HasMouseCapture() && (GetCapture() == hwnd_);
         bool inTerminalArea = terminal.IsVisible() &&
+            !pointInExplorer &&
             (terminal.IsPointInPanel(pt) || terminal.IsPointInResizeZone(pt) ||
-             terminal.IsPointInTabsBarArea(pt) || terminal.IsPointInPlusButton(pt));
-        if (terminal.IsVisible() && (inTerminalArea || terminalHasCapture))
+              terminal.IsPointInTabsBarArea(pt) || terminal.IsPointInPlusButton(pt));
+        bool terminalCaptureDrag = terminalHasCapture && lmbDown && !pointInExplorer;
+        if (terminal.IsVisible() && (inTerminalArea || terminalCaptureDrag))
         {
             // Priority 1: resizing
             if (terminal.IsResizing())
@@ -1503,6 +1666,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 ThrottledInvalidateRect(hwnd_, &tr, FALSE);
             }
         }
+
+        // When terminal owns the pointer region (or capture), stop routing hover
+        // to unrelated UI (editor/explorer/panels) to avoid hover flicker/state conflicts.
+        if (terminal.IsVisible() && (inTerminalArea || terminalCaptureDrag))
+            return 0;
 
         // GGWave button hover
         GetGGWavePanel().OnMouseMove(hwnd_, pt);
@@ -1564,8 +1732,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                     D2D1_RECT_F itemRect = D2D1::RectF(r.left, r.top + hoveredItem * itemHeight, r.right, r.top + (hoveredItem + 1) * itemHeight);
                     ShowSubmenuDropdown(hwnd_, items, D2D1::Point2F(itemRect.right - 1.0f, itemRect.top), 9000);
                 }
-                else if (IsSubmenuDropdownVisible())
+                else if (IsSubmenuDropdownVisible() && !IsPointInSubmenu(pt))
                 {
+                    // Only hide if mouse is NOT in submenu
                     HideSubmenuDropdown(hwnd_);
                 }
             }
@@ -1601,7 +1770,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                     dd.enabled.resize(items.size(), false);
                 }
             }
-            else if (IsSubmenuDropdownVisible())
+            else if (originMenu >= 0 && IsSubmenuDropdownVisible())
             {
                 HideSubmenuDropdown(hwnd_);
             }
@@ -1622,8 +1791,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             static int lastHoveredMenu = -1;
             if (hoveredMenu != lastHoveredMenu)
             {
-                for (int i = 0; i < 8; ++i)
-                    SetMenuItemHovered(i, i == hoveredMenu);
+                for (size_t i = 0; i < GetMenuItems().size(); ++i)
+                    SetMenuItemHovered((int)i, (int)i == hoveredMenu);
                 needsRedraw = true;
                 lastHoveredMenu = hoveredMenu;
             }
@@ -1660,10 +1829,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 
                 // Explorer hover (ignore terminal panel area)
                 TerminalPanel &terminalHoverGuard = GetTerminalPanel();
-                bool inTerminalPanel = terminalHoverGuard.IsVisible() && terminalHoverGuard.IsPointInPanel(pt);
-                bool inExplorer = !inTerminalPanel &&
-                                  GetExplorerManager().IsVisible() &&
-                                  GetExplorerManager().IsPointInExplorer(pt);
+                bool inExplorer = GetExplorerManager().IsVisible() && GetExplorerManager().IsPointInExplorer(pt);
+                bool inTerminalPanel = !inExplorer && terminalHoverGuard.IsVisible() && terminalHoverGuard.IsPointInPanel(pt);
 
                 if (!inExplorer)
                     ClearAllHoverStates();
@@ -1738,7 +1905,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         // If terminal had captured the mouse (selection/drag), ensure it gets the mouse-up
         // This ends selection properly; otherwise selection_.selecting can remain true
         // and cause continuous redraws on mouse move.
-        if (terminalUp.IsVisible() && GetCapture() == hwnd_)
+        if (terminalUp.IsVisible() && terminalUp.HasMouseCapture() && GetCapture() == hwnd_)
         {
             terminalUp.OnLeftButtonUp(hwnd_);
             InvalidateRect(hwnd_, nullptr, FALSE);
@@ -1992,6 +2159,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                         editor->CreateEmpty();
 
                         editors_[tabIndex] = editor;
+                        editor->onDocumentChanged = [this, tabIndex]()
+                        {
+                            tabBar_.SetTabDirty(tabIndex, true);
+                            InvalidateRect(hwnd_, nullptr, FALSE);
+                        };
+
+                        if (HasTamponText())
+                            editor->SetTextContent(GetTamponText(), true);
                     }
 
                     InvalidateRect(hwnd_, nullptr, FALSE);
@@ -2100,72 +2275,33 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 }
             }
 
-            // Dynamic Edit menu wired to Orion::Editor where possible
+            // Tampon menu
             if (menu == 1)
             {
-                Orion::Editor *editor = GetEditor();
-                if (!editor)
-                {
-                    MessageBoxW(hwnd_, L"No active editor", L"Edit", MB_OK);
-                    return 0;
-                }
-
                 switch (index)
                 {
-                case 0: // Undo
-                    editor->Undo();
-                    InvalidateRect(hwnd_, nullptr, FALSE);
+                case 0: // Definir Tampon...
+                    keyboard_.BeginTamponEdit();
                     return 0;
-                case 1: // Redo (not implemented)
-                    MessageBoxW(hwnd_, L"Redo not implemented", L"Edit", MB_OK);
+                case 1: // Effacer Tampon
+                    ClearTamponText();
+                    Footer_SetHint(hwnd_, L"Tampon efface", 1500);
                     return 0;
-                case 2: // Cut
-                    editor->CutSelectionToClipboard();
-                    InvalidateRect(hwnd_, nullptr, FALSE);
-                    return 0;
-                case 3: // Copy
-                    editor->CopySelectionToClipboard();
-                    return 0;
-                case 4: // Paste
-                    editor->PasteFromClipboard();
-                    InvalidateRect(hwnd_, nullptr, FALSE);
-                    return 0;
-                case 5: // Paste Without Formatting -> fallback to Paste
-                    editor->PasteFromClipboard();
-                    InvalidateRect(hwnd_, nullptr, FALSE);
-                    return 0;
-                case 6: // Delete
-                    editor->DeleteSelectionPublic();
-                    InvalidateRect(hwnd_, nullptr, FALSE);
-                    return 0;
-                case 7: // Select All
-                    editor->SelectAll();
-                    InvalidateRect(hwnd_, nullptr, FALSE);
-                    return 0;
-                case 8: // Find
-                    editor->ShowSearch();
-                    InvalidateRect(hwnd_, nullptr, FALSE);
-                    return 0;
-                case 9: // Replace
-                    MessageBoxW(hwnd_, L"Replace not implemented", L"Edit", MB_OK);
-                    return 0;
-                case 10: // Find in Files
-                    MessageBoxW(hwnd_, L"Find in Files not implemented", L"Edit", MB_OK);
-                    return 0;
-                case 11: // Replace in Files
-                    MessageBoxW(hwnd_, L"Replace in Files not implemented", L"Edit", MB_OK);
-                    return 0;
-                case 12: // Toggle Comment
-                    MessageBoxW(hwnd_, L"Toggle Comment not implemented", L"Edit", MB_OK);
-                    return 0;
-                case 13: // Format Document
+                case 2: // Voir Tampon
                 {
-                    Orion::Editor *editor = GetEditor();
-                    if (editor)
+                    if (HasTamponText())
                     {
-                        editor->FormatDocument();
-                        InvalidateRect(hwnd_, nullptr, FALSE);
-                        GetPanelManager().UpdateLayout(hwnd_);
+                        std::wstring preview = GetTamponText();
+                        if (preview.size() > 140)
+                        {
+                            preview = preview.substr(0, 140);
+                            preview += L"...";
+                        }
+                        Footer_SetHint(hwnd_, L"Tampon: " + preview, 2000);
+                    }
+                    else
+                    {
+                        Footer_SetHint(hwnd_, L"Tampon vide", 1500);
                     }
                     return 0;
                 }
@@ -2368,11 +2504,28 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 }
             }
 
+            // Explorer keeps cursor priority over terminal when both are visible.
+            if (GetExplorerManager().IsVisible() && GetExplorerManager().IsPointInExplorer(pt))
+            {
+                SetCursor(LoadCursor(NULL, IDC_ARROW));
+                return TRUE;
+            }
+
             // Terminal resize zone (vertical)
             TerminalPanel &terminal = GetTerminalPanel();
             if (terminal.IsVisible() && terminal.IsPointInResizeZone(pt))
             {
                 SetCursor(LoadCursor(NULL, IDC_SIZENS));
+                return TRUE;
+            }
+            if (terminal.IsVisible() && terminal.IsPointInPanel(pt))
+            {
+                if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0 && terminal.HasHoveredOutputLink())
+                {
+                    SetCursor(LoadCursor(NULL, IDC_HAND));
+                    return TRUE;
+                }
+                SetCursor(LoadCursor(NULL, IDC_ARROW));
                 return TRUE;
             }
 
@@ -2529,8 +2682,8 @@ void Window::ScheduleDiagnosticsForTab(int tabIndex)
 void Window::ClearAllHoverStates()
 {
     hoveredButton_ = Hovered_None;
-    for (int i = 0; i < 8; ++i)
-        SetMenuItemHovered(i, false);
+    for (size_t i = 0; i < GetMenuItems().size(); ++i)
+        SetMenuItemHovered((int)i, false);
     HideMenuDropdown(hwnd_);
 
     POINT pt;

@@ -392,7 +392,7 @@ void TerminalSession::OnChar(wchar_t ch)
             return;
     }
 
-    if (ch == L'\r' || ch == L'\n' || ch == L'\b' || ch == 0x1B || ch == L'\t')
+    if (ch == L'\r' || ch == L'\n' || ch == L'\b' || ch == 0x1B || ch == L'\t' || ch == 0x7F)
         return;
 
     std::string u8 = WideToUtf8Char(ch);

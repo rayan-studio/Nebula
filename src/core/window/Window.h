@@ -7,6 +7,7 @@
 #include <vector>
 #include <ctime>
 #include <optional>
+#include <unordered_set>
 #include "lsp/LspManager.h"
 #include "ui/components/input/TextInput.h"
 #include "ui/screens/NewProjectOverlay.h"
@@ -51,6 +52,7 @@ private:
     KeyboardManager keyboard_;
     std::unique_ptr<SettingsTabView> settingsTab_;
     std::map<int, std::pair<int, int>> pendingGoToLocation_;
+    std::unordered_set<int> pendingMarkdownPreview_;
     std::optional<Lsp::Location> pendingContextGoto_;
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -101,6 +103,7 @@ public:
     // Gestion multi-éditeurs
     Orion::Editor *GetEditorForTab(int tabIndex);
     void OpenFileInNewTab(const std::wstring &filePath, int lineNumber = -1, int column = -1);
+    void OpenFileInNewTabWithMarkdownPreview(const std::wstring &filePath);
     void OpenSettingsTab();
     bool IsSettingsTabIndex(int tabIndex) const;
     bool IsSettingsTabActive() const;
@@ -194,4 +197,10 @@ private:
 
 // Fonctions globales pour récupérer Window depuis HWND
 Window *GetWindowFromHwnd(HWND hwnd);
+
+// Tampon (template) applied to new files
+const std::wstring &GetTamponText();
+bool HasTamponText();
+void SetTamponText(const std::wstring &text);
+void ClearTamponText();
 Orion::Editor *GetOrionEditor(HWND hwnd);

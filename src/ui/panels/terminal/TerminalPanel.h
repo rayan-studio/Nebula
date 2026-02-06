@@ -76,6 +76,8 @@ public:
     bool IsPointInTabsBarArea(POINT pt) const;
     bool IsPointInPlusButton(POINT pt) const;
     bool IsShowingOutputOrProblems() const { return showOutput_ || showProblems_; }
+    bool HasHoveredOutputLink() const { return hoveredOutputLink_.active; }
+    bool HasMouseCapture() const { return mouseCaptureOwned_; }
 
     // Mouse
     void OnLeftButtonDown(HWND hwnd, POINT pt);
@@ -124,6 +126,7 @@ private:
     float TabsBarRightEdge() const;
 
     void SyncTabBar();
+    void UpdateHoveredOutputLink(POINT pt);
 
     // Active session helpers
     TerminalSession* ActiveSession();
@@ -144,6 +147,7 @@ private:
 
     bool resizing_ = false;
     bool resizeHover_ = false;
+    bool mouseCaptureOwned_ = false;
 
     float left_ = 0, top_ = 0, right_ = 0, bottom_ = 0;
     float resizeZoneH_ = 6.0f;
@@ -188,6 +192,17 @@ private:
     D2D1_RECT_F outputCopyRect_ = D2D1::RectF(0, 0, 0, 0);
     bool outputCopyFeedback_ = false;
     DWORD outputCopyFeedbackUntil_ = 0;
+    D2D1_RECT_F outputBodyRect_ = D2D1::RectF(0, 0, 0, 0);
+    float outputBodyStartY_ = 0.0f;
+    float outputLineHeight_ = 0.0f;
+    struct HoveredOutputLink
+    {
+        bool active = false;
+        std::wstring filePath;
+        int line = -1;
+        int column = -1;
+        int lineIndex = -1;
+    } hoveredOutputLink_;
 
     D2D1_RECT_F problemsListRect_ = D2D1::RectF(0, 0, 0, 0);
     float problemsRowHeight_ = 0.0f;

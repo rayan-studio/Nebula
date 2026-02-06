@@ -4,6 +4,7 @@
 #include <dwrite.h>
 #include <string>
 #include <functional>
+#include <vector>
 
 // ============================================================================
 // TextInput - Reusable text input component with selection support
@@ -57,34 +58,35 @@ public:
         bool useSearchBoxStyle = false;
         float outerPadding = 8.0f;
         float outerVerticalPadding = 6.0f;
-        D2D1_COLOR_F outerBoxColor = D2D1::ColorF(0.15f, 0.15f, 0.15f);
-        D2D1_COLOR_F outerBorderColor = D2D1::ColorF(0.3f, 0.3f, 0.3f);
+        D2D1_COLOR_F outerBoxColor = D2D1::ColorF(0.13f, 0.13f, 0.13f);
+        D2D1_COLOR_F outerBorderColor = D2D1::ColorF(0.26f, 0.26f, 0.26f);
         D2D1_COLOR_F shadowColor = D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.2f);
         float shadowOffset = 2.0f;
         float outerCornerRadius = 4.0f;
-        D2D1_COLOR_F backgroundColor = D2D1::ColorF(0.22f, 0.22f, 0.22f);
-        D2D1_COLOR_F borderColor = D2D1::ColorF(0.35f, 0.35f, 0.35f);
-        D2D1_COLOR_F focusBorderColor = D2D1::ColorF(0.29f, 0.62f, 0.92f);
-        D2D1_COLOR_F textColor = D2D1::ColorF(0.9f, 0.9f, 0.9f);
-        D2D1_COLOR_F placeholderColor = D2D1::ColorF(0.5f, 0.5f, 0.5f);
+        D2D1_COLOR_F backgroundColor = D2D1::ColorF(0.10f, 0.10f, 0.10f);
+        D2D1_COLOR_F borderColor = D2D1::ColorF(0.28f, 0.28f, 0.28f);
+        D2D1_COLOR_F focusBorderColor = D2D1::ColorF(0.24f, 0.57f, 0.92f);
+        D2D1_COLOR_F textColor = D2D1::ColorF(0.95f, 0.95f, 0.95f);
+        D2D1_COLOR_F placeholderColor = D2D1::ColorF(0.58f, 0.58f, 0.58f);
         // editor.selectionBackground -> #3392ff44
         D2D1_COLOR_F selectionColor = D2D1::ColorF(0.2f, 0.572549f, 1.0f, 0.266667f);
-        D2D1_COLOR_F cursorColor = D2D1::ColorF(1.0f, 1.0f, 1.0f);
-        D2D1_COLOR_F iconColor = D2D1::ColorF(0.5f, 0.5f, 0.5f);
-        const wchar_t *fontFamily = L"Segoe UI";
+        D2D1_COLOR_F cursorColor = D2D1::ColorF(0.95f, 0.95f, 0.95f);
+        D2D1_COLOR_F iconColor = D2D1::ColorF(0.62f, 0.62f, 0.62f);
+        const wchar_t *fontFamily = L"Segoe UI Variable Text";
         IDWriteFontCollection *fontCollection = nullptr; // non-owning
-        float cornerRadius = 4.0f;
-        float fontSize = 13.0f;
+        float cornerRadius = 6.0f;
+        float fontSize = 13.5f;
         float iconSize = 14.0f;
-        float padding = 8.0f;
+        float padding = 10.0f;
         float iconPadding = 28.0f; // Space for icon on left
+        bool multiline = false;
     };
 
     Style &GetStyle() { return style_; }
 
 private:
     // Text layout helpers
-    int GetCharIndexAtPosition(IDWriteFactory *dwrite, float x);
+    int GetCharIndexAtPosition(IDWriteFactory *dwrite, float x, float y = 10.0f);
     float GetCharPosition(IDWriteFactory *dwrite, int index);
     void UpdateTextLayout(IDWriteFactory *dwrite);
     void DeleteSelection();

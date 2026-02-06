@@ -1,5 +1,6 @@
 #include "TextInput.h"
 #include <algorithm>
+#include <cmath>
 
 TextInput::TextInput()
 {
@@ -43,7 +44,9 @@ void TextInput::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite)
     lastDWrite_ = dwrite;
     // Use per-primitive AA to keep rounded corners clean
     D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
+    D2D1_TEXT_ANTIALIAS_MODE oldTextAA = ctx->GetTextAntialiasMode();
     ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    ctx->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
 
     if (style_.useSearchBoxStyle) {
         DrawSearchBoxStyle(ctx, dwrite);
@@ -53,6 +56,7 @@ void TextInput::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite)
 
     // Restore previous antialiasing mode
     ctx->SetAntialiasMode(oldAA);
+    ctx->SetTextAntialiasMode(oldTextAA);
 }
 
 void TextInput::DrawSearchBoxStyle(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite)
@@ -64,7 +68,6 @@ void TextInput::DrawSearchBoxStyle(ID2D1RenderTarget* ctx, IDWriteFactory* dwrit
 
 void TextInput::DrawStandardStyle(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite)
 {
-    // Create brushes
     ID2D1SolidColorBrush* bgBrush = nullptr;
     ID2D1SolidColorBrush* borderBrush = nullptr;
     ID2D1SolidColorBrush* textBrush = nullptr;
@@ -72,7 +75,7 @@ void TextInput::DrawStandardStyle(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite
     ID2D1SolidColorBrush* selectionBrush = nullptr;
     ID2D1SolidColorBrush* cursorBrush = nullptr;
     ID2D1SolidColorBrush* iconBrush = nullptr;
-    
+
     ctx->CreateSolidColorBrush(style_.backgroundColor, &bgBrush);
     ctx->CreateSolidColorBrush(focused_ ? style_.focusBorderColor : style_.borderColor, &borderBrush);
     ctx->CreateSolidColorBrush(style_.textColor, &textBrush);
@@ -80,20 +83,20 @@ void TextInput::DrawStandardStyle(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite
     ctx->CreateSolidColorBrush(style_.selectionColor, &selectionBrush);
     ctx->CreateSolidColorBrush(style_.cursorColor, &cursorBrush);
     ctx->CreateSolidColorBrush(style_.iconColor, &iconBrush);
-    
-    // Draw background
+
     D2D1_ROUNDED_RECT roundedRect = D2D1::RoundedRect(rect_, style_.cornerRadius, style_.cornerRadius);
     ctx->FillRoundedRectangle(roundedRect, bgBrush);
     ctx->DrawRoundedRectangle(roundedRect, borderBrush, 1.0f);
-    
-    // Calculate text area
+
     float iconWidth = icon_.empty() ? 0.0f : style_.iconPadding;
     float textLeft = rect_.left + style_.padding + iconWidth;
     float textRight = rect_.right - style_.padding;
-    float textTop = rect_.top;
-    float textBottom = rect_.bottom;
-    
-    // Draw icon if present
+    float topInset = style_.multiline ? style_.padding * 0.55f : 0.0f;
+    float bottomInset = style_.multiline ? style_.padding * 0.45f : 0.0f;
+    D2D1_RECT_F textClip = D2D1::RectF(textLeft, rect_.top + topInset, textRight, rect_.bottom - bottomInset);
+    if (textClip.bottom < textClip.top)
+        textClip.bottom = textClip.top;
+
     if (!icon_.empty()) {
         IDWriteTextFormat* iconFormat = nullptr;
         dwrite->CreateTextFormat(iconFont_.c_str(), NULL, DWRITE_FONT_WEIGHT_NORMAL,
@@ -102,84 +105,109 @@ void TextInput::DrawStandardStyle(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite
         if (iconFormat) {
             iconFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
             iconFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            
-            D2D1_RECT_F iconRect = D2D1::RectF(
-                rect_.left + 4.0f,
-                rect_.top,
-                rect_.left + style_.iconPadding,
-                rect_.bottom);
+            D2D1_RECT_F iconRect = D2D1::RectF(rect_.left + 4.0f, rect_.top, rect_.left + style_.iconPadding, rect_.bottom);
             ctx->DrawTextW(icon_.c_str(), (UINT32)icon_.length(), iconFormat, iconRect, iconBrush);
             iconFormat->Release();
         }
     }
-    
-    // Create text format
+
     IDWriteTextFormat* textFormat = nullptr;
     dwrite->CreateTextFormat(style_.fontFamily, style_.fontCollection, DWRITE_FONT_WEIGHT_NORMAL,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
                              style_.fontSize, L"en-us", &textFormat);
     if (textFormat) {
-        textFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         textFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        textFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        textFormat->SetParagraphAlignment(style_.multiline ? DWRITE_PARAGRAPH_ALIGNMENT_NEAR
+                                                           : DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        textFormat->SetWordWrapping(style_.multiline ? DWRITE_WORD_WRAPPING_WRAP
+                                                     : DWRITE_WORD_WRAPPING_NO_WRAP);
     }
-    
-    // Clip text area
-    D2D1_RECT_F textClip = D2D1::RectF(textLeft, textTop, textRight, textBottom);
+
     ctx->PushAxisAlignedClip(textClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    
-    D2D1_RECT_F textRect = D2D1::RectF(textLeft - textOffsetX_, textTop, textRight + 500.0f, textBottom);
-    
+
+    DWORD now = GetTickCount();
+    if (now - lastBlinkTime_ > 500) {
+        cursorVisible_ = !cursorVisible_;
+        lastBlinkTime_ = now;
+    }
+
+    bool drawCaret = focused_ && (cursorVisible_ || HasSelection());
+    float layoutWidth = (std::max)(1.0f, textClip.right - textClip.left);
+    float layoutHeight = (std::max)(1.0f, textClip.bottom - textClip.top);
+
     if (text_.empty()) {
-        // Draw placeholder
         if (textFormat) {
-            ctx->DrawTextW(placeholder_.c_str(), (UINT32)placeholder_.length(), 
-                          textFormat, textRect, placeholderBrush);
+            D2D1_RECT_F placeholderRect = D2D1::RectF(
+                textClip.left,
+                textClip.top,
+                style_.multiline ? textClip.right : (textClip.right + 500.0f),
+                textClip.bottom);
+            ctx->DrawTextW(placeholder_.c_str(), (UINT32)placeholder_.length(), textFormat, placeholderRect, placeholderBrush);
         }
-    } else {
-        // Draw selection background
-        if (focused_ && HasSelection() && textFormat) {
-            int selStart = (std::min)(selectionStart_, selectionEnd_);
-            int selEnd = (std::max)(selectionStart_, selectionEnd_);
-            
-            float startX = GetCharPosition(dwrite, selStart);
-            float endX = GetCharPosition(dwrite, selEnd);
-            
-            D2D1_RECT_F selRect = D2D1::RectF(
-                textLeft + startX - textOffsetX_,
-                rect_.top + 4.0f,
-                textLeft + endX - textOffsetX_,
-                rect_.bottom - 4.0f);
-            ctx->FillRectangle(selRect, selectionBrush);
+
+        if (drawCaret) {
+            float caretX = std::floor(textClip.left) + 0.5f;
+            float caretTop = style_.multiline ? (textClip.top + 1.0f) : (rect_.top + 6.0f);
+            float caretBottom = style_.multiline ? ((std::min)(textClip.bottom, textClip.top + style_.fontSize + 5.0f))
+                                                 : (rect_.bottom - 6.0f);
+            ctx->DrawLine(D2D1::Point2F(caretX, caretTop), D2D1::Point2F(caretX, caretBottom), cursorBrush, 1.0f);
         }
-        
-        // Draw text
-        if (textFormat) {
-            ctx->DrawTextW(text_.c_str(), (UINT32)text_.length(), textFormat, textRect, textBrush);
+    } else if (textFormat) {
+        IDWriteTextLayout* layout = nullptr;
+        dwrite->CreateTextLayout(text_.c_str(), (UINT32)text_.length(), textFormat,
+                                 style_.multiline ? layoutWidth : 10000.0f,
+                                 style_.multiline ? layoutHeight : 100.0f, &layout);
+
+        if (layout) {
+            float originX = textClip.left - textOffsetX_;
+            float originY = style_.multiline ? textClip.top : rect_.top;
+
+            if (focused_ && HasSelection()) {
+                int selStart = (std::min)(selectionStart_, selectionEnd_);
+                int selEnd = (std::max)(selectionStart_, selectionEnd_);
+                UINT32 selLen = (UINT32)(selEnd - selStart);
+                if (selLen > 0) {
+                    UINT32 hitCount = 0;
+                    layout->HitTestTextRange((UINT32)selStart, selLen, originX, originY, nullptr, 0, &hitCount);
+                    if (hitCount > 0) {
+                        std::vector<DWRITE_HIT_TEST_METRICS> hits(hitCount);
+                        if (SUCCEEDED(layout->HitTestTextRange((UINT32)selStart, selLen, originX, originY,
+                                                               hits.data(), hitCount, &hitCount))) {
+                            for (UINT32 i = 0; i < hitCount; ++i) {
+                                const auto &h = hits[i];
+                                D2D1_RECT_F selRect = D2D1::RectF(
+                                    h.left,
+                                    h.top,
+                                    h.left + h.width,
+                                    h.top + h.height);
+                                ctx->FillRectangle(selRect, selectionBrush);
+                            }
+                        }
+                    }
+                }
+            }
+
+            ctx->DrawTextLayout(D2D1::Point2F(originX, originY), layout, textBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+            if (drawCaret) {
+                FLOAT cx = 0.0f, cy = 0.0f;
+                DWRITE_HIT_TEST_METRICS hm = {};
+                UINT32 textPos = (UINT32)(std::max)(0, (std::min)(cursorPos_, (int)text_.length()));
+                if (SUCCEEDED(layout->HitTestTextPosition(textPos, FALSE, &cx, &cy, &hm))) {
+                    float caretX = std::floor(originX + cx) + 0.5f;
+                    float caretTop = style_.multiline ? (originY + cy) : (rect_.top + 6.0f);
+                    float caretBottom = style_.multiline ? (caretTop + (std::max)(hm.height, style_.fontSize + 2.0f))
+                                                         : (rect_.bottom - 6.0f);
+                    ctx->DrawLine(D2D1::Point2F(caretX, caretTop), D2D1::Point2F(caretX, caretBottom), cursorBrush, 1.0f);
+                }
+            }
+
+            layout->Release();
         }
     }
-    
-    // Draw cursor
-    if (focused_ && textFormat) {
-        // Update blink
-        DWORD now = GetTickCount();
-        if (now - lastBlinkTime_ > 500) {
-            cursorVisible_ = !cursorVisible_;
-            lastBlinkTime_ = now;
-        }
-        
-        if (cursorVisible_ || HasSelection()) {
-            float cursorX = textLeft + GetCharPosition(dwrite, cursorPos_) - textOffsetX_;
-            ctx->DrawLine(
-                D2D1::Point2F(cursorX, rect_.top + 6.0f),
-                D2D1::Point2F(cursorX, rect_.bottom - 6.0f),
-                cursorBrush, 1.5f);
-        }
-    }
-    
+
     ctx->PopAxisAlignedClip();
-    
-    // Cleanup
+
     if (textFormat) textFormat->Release();
     if (bgBrush) bgBrush->Release();
     if (borderBrush) borderBrush->Release();
@@ -217,7 +245,7 @@ float TextInput::GetCharPosition(IDWriteFactory* dwrite, int index)
     return result;
 }
 
-int TextInput::GetCharIndexAtPosition(IDWriteFactory* dwrite, float x)
+int TextInput::GetCharIndexAtPosition(IDWriteFactory* dwrite, float x, float y)
 {
     if (text_.empty()) return 0;
     
@@ -226,17 +254,34 @@ int TextInput::GetCharIndexAtPosition(IDWriteFactory* dwrite, float x)
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
                              style_.fontSize, L"en-us", &tf);
     if (!tf) return 0;
+
+    tf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+    tf->SetParagraphAlignment(style_.multiline ? DWRITE_PARAGRAPH_ALIGNMENT_NEAR
+                                               : DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    tf->SetWordWrapping(style_.multiline ? DWRITE_WORD_WRAPPING_WRAP
+                                         : DWRITE_WORD_WRAPPING_NO_WRAP);
     
     IDWriteTextLayout* layout = nullptr;
-    dwrite->CreateTextLayout(text_.c_str(), (UINT32)text_.length(), tf, 10000.0f, 100.0f, &layout);
+    float iconWidth = icon_.empty() ? 0.0f : style_.iconPadding;
+    float width = (std::max)(1.0f, (rect_.right - rect_.left) - (style_.padding * 2.0f) - iconWidth);
+    float height = (std::max)(1.0f, (rect_.bottom - rect_.top) - (style_.multiline ? style_.padding : 0.0f));
+    dwrite->CreateTextLayout(text_.c_str(), (UINT32)text_.length(), tf,
+                             style_.multiline ? width : 10000.0f,
+                             style_.multiline ? height : 100.0f, &layout);
     
     int result = 0;
     if (layout) {
         BOOL isTrailingHit = FALSE;
         BOOL isInside = FALSE;
-        DWRITE_HIT_TEST_METRICS hitMetrics;
-        layout->HitTestPoint(x, 10.0f, &isTrailingHit, &isInside, &hitMetrics);
-        result = hitMetrics.textPosition + (isTrailingHit ? 1 : 0);
+        DWRITE_HIT_TEST_METRICS hitMetrics = {};
+        layout->HitTestPoint(x, style_.multiline ? y : 10.0f, &isTrailingHit, &isInside, &hitMetrics);
+        result = (int)hitMetrics.textPosition + (isTrailingHit ? 1 : 0);
+        if (!isInside) {
+            if (x <= 0.0f || y <= 0.0f)
+                result = 0;
+            else
+                result = (int)text_.length();
+        }
         layout->Release();
     }
     
@@ -246,7 +291,25 @@ int TextInput::GetCharIndexAtPosition(IDWriteFactory* dwrite, float x)
 
 bool TextInput::OnMouseMove(HWND hwnd, POINT pt)
 {
-    if (!selecting_) return false;
+    if (!selecting_)
+        return false;
+
+    float iconWidth = icon_.empty() ? 0.0f : style_.iconPadding;
+    float textLeft = rect_.left + style_.padding + iconWidth;
+    float textTop = rect_.top + (style_.multiline ? style_.padding * 0.55f : 0.0f);
+    float x = pt.x - textLeft + textOffsetX_;
+    float y = pt.y - textTop;
+
+    int idx = 0;
+    if (lastDWrite_)
+        idx = GetCharIndexAtPosition(lastDWrite_, x, y);
+    idx = (std::max)(0, (std::min)(idx, (int)text_.length()));
+
+    bool changed = (idx != cursorPos_) || (idx != selectionEnd_);
+    cursorPos_ = idx;
+    selectionEnd_ = idx;
+    if (changed)
+        InvalidateRect(hwnd, nullptr, FALSE);
     return true;
 }
 
@@ -266,12 +329,14 @@ bool TextInput::OnLeftButtonDown(HWND hwnd, POINT pt)
     
     float iconWidth = icon_.empty() ? 0.0f : style_.iconPadding;
     float textLeft = rect_.left + style_.padding + iconWidth;
+    float textTop = rect_.top + (style_.multiline ? style_.padding * 0.55f : 0.0f);
     float clickX = pt.x - textLeft + textOffsetX_;
+    float clickY = pt.y - textTop;
 
     bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
     int clickIndex = 0;
     if (lastDWrite_)
-        clickIndex = GetCharIndexAtPosition(lastDWrite_, clickX);
+        clickIndex = GetCharIndexAtPosition(lastDWrite_, clickX, clickY);
     if (clickIndex < 0) clickIndex = 0;
     if (clickIndex > (int)text_.length()) clickIndex = (int)text_.length();
 
@@ -341,6 +406,18 @@ bool TextInput::OnChar(wchar_t ch)
     }
     else if (ch == 24) {
         CutToClipboard();
+        if (onTextChanged) onTextChanged(text_);
+        return true;
+    }
+    else if (ch == 13 || ch == 10) {
+        if (!style_.multiline)
+            return false;
+        if (HasSelection()) {
+            DeleteSelection();
+        }
+        text_.insert(cursorPos_, 1, L'\n');
+        cursorPos_++;
+        selectionStart_ = selectionEnd_ = cursorPos_;
         if (onTextChanged) onTextChanged(text_);
         return true;
     }
@@ -425,6 +502,8 @@ bool TextInput::OnKeyDown(WPARAM key)
         return true;
     }
     else if (key == VK_RETURN) {
+        if (style_.multiline)
+            return true;
         if (onSubmit) onSubmit();
         return true;
     }
@@ -490,8 +569,31 @@ void TextInput::PasteFromClipboard()
                 DeleteSelection();
             }
             std::wstring paste = pText;
-            paste.erase(std::remove(paste.begin(), paste.end(), L'\n'), paste.end());
-            paste.erase(std::remove(paste.begin(), paste.end(), L'\r'), paste.end());
+            if (style_.multiline)
+            {
+                std::wstring normalized;
+                normalized.reserve(paste.size());
+                for (size_t i = 0; i < paste.size(); ++i)
+                {
+                    wchar_t c = paste[i];
+                    if (c == L'\r')
+                    {
+                        if (i + 1 < paste.size() && paste[i + 1] == L'\n')
+                            i++;
+                        normalized.push_back(L'\n');
+                    }
+                    else
+                    {
+                        normalized.push_back(c);
+                    }
+                }
+                paste.swap(normalized);
+            }
+            else
+            {
+                paste.erase(std::remove(paste.begin(), paste.end(), L'\n'), paste.end());
+                paste.erase(std::remove(paste.begin(), paste.end(), L'\r'), paste.end());
+            }
             
             text_.insert(cursorPos_, paste);
             cursorPos_ += (int)paste.length();

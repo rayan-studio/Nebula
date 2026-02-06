@@ -26,6 +26,12 @@ static bool ShouldOpenAsPreview(const std::wstring &filePath)
            ext == L".ico" || ext == L".pdf";
 }
 
+static bool IsMarkdownFile(const std::wstring &filePath)
+{
+    std::wstring ext = ToLower(std::filesystem::path(filePath).extension().wstring());
+    return ext == L".md";
+}
+
 void Window::CloseEditorForTabIndex(int index)
 {
     // Remove and delete the editor for the given tab index, then reindex editors_ to match TabBar
@@ -119,6 +125,8 @@ void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber, int 
         display = filePath;
 
     int tabIndex = tabBar_.AddTab(filePath, display);
+    if (!filePath.empty())
+        tabBar_.SetTabMarkdown(tabIndex, IsMarkdownFile(filePath));
     if (editors_.count(tabIndex) == 0)
     {
         Orion::Editor *editor = new Orion::Editor();
@@ -126,6 +134,7 @@ void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber, int 
         if (!customFontPath_.empty() && skia_)
             editor->LoadCustomFont(skia_->GetDWriteFactory(), customFontPath_);
 
+        bool applyTampon = false;
         if (!filePath.empty())
         {
             if (GetExplorerManager().IsVisible())
@@ -142,7 +151,10 @@ void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber, int 
             }
         }
         else
+        {
             editor->CreateEmpty();
+            applyTampon = HasTamponText();
+        }
 
         editors_[tabIndex] = editor;
         // Wire document-changed callback so TabBar is updated when editor becomes dirty
@@ -159,6 +171,9 @@ void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber, int 
                 return;
             ScheduleDiagnosticsForTab(tabIndex);
         };
+
+        if (applyTampon)
+            editor->SetTextContent(GetTamponText(), true);
     }
     else if (lineNumber >= 0)
     {
@@ -175,6 +190,31 @@ void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber, int 
 
     if (!filePath.empty() && GetExplorerManager().IsVisible())
         GetExplorerManager().SetActivePath(filePath);
+}
+
+void Window::OpenFileInNewTabWithMarkdownPreview(const std::wstring &filePath)
+{
+    if (filePath.empty())
+        return;
+
+    OpenFileInNewTab(filePath, -1, -1);
+
+    int idx = tabBar_.FindTabIndexByFilePath(filePath);
+    if (idx >= 0)
+    {
+        pendingMarkdownPreview_.insert(idx);
+        tabBar_.SetTabMarkdown(idx, true);
+        tabBar_.SetTabMarkdownPreview(idx, true);
+
+        Orion::Editor *ed = GetEditorForTab(idx);
+        if (ed && ed->HasFile())
+        {
+            ed->SetMarkdownPreviewEnabled(true);
+            pendingMarkdownPreview_.erase(idx);
+        }
+        tabBar_.SetActiveTab(idx);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
 }
 
 void Window::OpenSettingsTab()

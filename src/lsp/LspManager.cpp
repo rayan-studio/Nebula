@@ -10,6 +10,153 @@
 
 namespace Lsp
 {
+    // Standard Library completions database
+    static const std::vector<CompletionItem> GetStdCompletions()
+    {
+        return {
+            // Containers
+            {L"std::vector", L"Dynamic array", L"std_container"},
+            {L"std::array", L"Fixed-size array", L"std_container"},
+            {L"std::deque", L"Double-ended queue", L"std_container"},
+            {L"std::list", L"Doubly-linked list", L"std_container"},
+            {L"std::forward_list", L"Singly-linked list", L"std_container"},
+            {L"std::set", L"Unique ordered elements", L"std_container"},
+            {L"std::multiset", L"Multiple ordered elements", L"std_container"},
+            {L"std::map", L"Key-value pairs (ordered)", L"std_container"},
+            {L"std::multimap", L"Multiple key-value pairs", L"std_container"},
+            {L"std::unordered_set", L"Unique unordered elements", L"std_container"},
+            {L"std::unordered_map", L"Key-value pairs (unordered)", L"std_container"},
+            {L"std::stack", L"LIFO container adapter", L"std_container"},
+            {L"std::queue", L"FIFO container adapter", L"std_container"},
+            {L"std::priority_queue", L"Priority queue adapter", L"std_container"},
+            {L"std::string", L"Character sequence", L"std_string"},
+            {L"std::wstring", L"Wide character sequence", L"std_string"},
+            
+            // Algorithms
+            {L"std::sort", L"Sort elements", L"std_algorithm"},
+            {L"std::find", L"Find element", L"std_algorithm"},
+            {L"std::find_if", L"Find with condition", L"std_algorithm"},
+            {L"std::count", L"Count occurrences", L"std_algorithm"},
+            {L"std::copy", L"Copy elements", L"std_algorithm"},
+            {L"std::transform", L"Apply function to range", L"std_algorithm"},
+            {L"std::for_each", L"Apply function to each element", L"std_algorithm"},
+            {L"std::reverse", L"Reverse elements", L"std_algorithm"},
+            {L"std::unique", L"Remove duplicates", L"std_algorithm"},
+            {L"std::binary_search", L"Binary search", L"std_algorithm"},
+            {L"std::lower_bound", L"Find lower bound", L"std_algorithm"},
+            {L"std::upper_bound", L"Find upper bound", L"std_algorithm"},
+            
+            // Utilities
+            {L"std::pair", L"Two-element tuple", L"std_utility"},
+            {L"std::tuple", L"Multiple-element tuple", L"std_utility"},
+            {L"std::optional", L"Value that may not exist", L"std_utility"},
+            {L"std::variant", L"Type-safe union", L"std_utility"},
+            {L"std::unique_ptr", L"Unique ownership pointer", L"std_memory"},
+            {L"std::shared_ptr", L"Shared ownership pointer", L"std_memory"},
+            {L"std::make_unique", L"Create unique_ptr", L"std_memory"},
+            {L"std::make_shared", L"Create shared_ptr", L"std_memory"},
+            
+            // I/O
+            {L"std::cout", L"Standard output stream", L"std_io"},
+            {L"std::cin", L"Standard input stream", L"std_io"},
+            {L"std::cerr", L"Standard error stream", L"std_io"},
+            {L"std::endl", L"Newline and flush", L"std_io"},
+            {L"std::ifstream", L"Input file stream", L"std_io"},
+            {L"std::ofstream", L"Output file stream", L"std_io"},
+            {L"std::stringstream", L"String stream", L"std_io"},
+            
+            // Threading
+            {L"std::thread", L"Thread of execution", L"std_threading"},
+            {L"std::mutex", L"Mutual exclusion lock", L"std_threading"},
+            {L"std::lock_guard", L"Automatic lock holder", L"std_threading"},
+            {L"std::unique_lock", L"Exclusive lock holder", L"std_threading"},
+            {L"std::condition_variable", L"Condition variable", L"std_threading"},
+            
+            // Other common
+            {L"std::function", L"Function wrapper", L"std_utility"},
+            {L"std::chrono", L"Time utilities", L"std_chrono"},
+            {L"std::random", L"Random number generation", L"std_random"},
+            {L"std::exception", L"Exception base class", L"std_exception"},
+        };
+    }
+
+    static std::vector<std::wstring> ReadFileLinesUtf8(const std::filesystem::path &path);
+
+    // Map std:: symbols to their required headers
+    static std::wstring GetStdHeaderFor(const std::wstring &symbol)
+    {
+        static const std::unordered_map<std::wstring, std::wstring> map = {
+            // Containers
+            {L"std::vector", L"<vector>"},
+            {L"std::array", L"<array>"},
+            {L"std::deque", L"<deque>"},
+            {L"std::list", L"<list>"},
+            {L"std::forward_list", L"<forward_list>"},
+            {L"std::set", L"<set>"},
+            {L"std::multiset", L"<set>"},
+            {L"std::map", L"<map>"},
+            {L"std::multimap", L"<map>"},
+            {L"std::unordered_set", L"<unordered_set>"},
+            {L"std::unordered_map", L"<unordered_map>"},
+            {L"std::stack", L"<stack>"},
+            {L"std::queue", L"<queue>"},
+            {L"std::priority_queue", L"<queue>"},
+            {L"std::string", L"<string>"},
+            {L"std::wstring", L"<string>"},
+            
+            // Algorithms
+            {L"std::sort", L"<algorithm>"},
+            {L"std::find", L"<algorithm>"},
+            {L"std::find_if", L"<algorithm>"},
+            {L"std::count", L"<algorithm>"},
+            {L"std::copy", L"<algorithm>"},
+            {L"std::transform", L"<algorithm>"},
+            {L"std::for_each", L"<algorithm>"},
+            {L"std::reverse", L"<algorithm>"},
+            {L"std::unique", L"<algorithm>"},
+            {L"std::binary_search", L"<algorithm>"},
+            {L"std::lower_bound", L"<algorithm>"},
+            {L"std::upper_bound", L"<algorithm>"},
+            
+            // Utilities
+            {L"std::pair", L"<utility>"},
+            {L"std::tuple", L"<tuple>"},
+            {L"std::optional", L"<optional>"},
+            {L"std::variant", L"<variant>"},
+            {L"std::unique_ptr", L"<memory>"},
+            {L"std::shared_ptr", L"<memory>"},
+            {L"std::make_unique", L"<memory>"},
+            {L"std::make_shared", L"<memory>"},
+            
+            // I/O
+            {L"std::cout", L"<iostream>"},
+            {L"std::cin", L"<iostream>"},
+            {L"std::cerr", L"<iostream>"},
+            {L"std::endl", L"<iostream>"},
+            {L"std::ifstream", L"<fstream>"},
+            {L"std::ofstream", L"<fstream>"},
+            {L"std::stringstream", L"<sstream>"},
+            
+            // Threading
+            {L"std::thread", L"<thread>"},
+            {L"std::mutex", L"<mutex>"},
+            {L"std::lock_guard", L"<mutex>"},
+            {L"std::unique_lock", L"<mutex>"},
+            {L"std::condition_variable", L"<condition_variable>"},
+            
+            // Other
+            {L"std::function", L"<functional>"},
+            {L"std::chrono", L"<chrono>"},
+            {L"std::random", L"<random>"},
+            {L"std::exception", L"<exception>"},
+        };
+        
+        auto it = map.find(symbol);
+        if (it != map.end())
+            return it->second;
+        return L"";
+    }
+
     static std::vector<std::wstring> ReadFileLinesUtf8(const std::filesystem::path &path);
 
     static std::wstring ToLower(std::wstring v)
@@ -418,12 +565,47 @@ namespace Lsp
                                 indexing_ = false;
                                 return;
                             }
-                            for (auto &entry : std::filesystem::recursive_directory_iterator(base))
+
+                            const std::unordered_set<std::wstring> skipDirs = {
+                                L".git", L".idea", L".vs", L".vscode",
+                                L"build", L"build-ninja", L"dist", L"external",
+                                L"logs", L"out", L"bin", L"obj"
+                            };
+                            const uintmax_t maxIndexBytes = 2 * 1024 * 1024; // skip huge files
+
+                            auto lower = [](std::wstring s)
                             {
+                                for (auto &ch : s)
+                                    ch = (wchar_t)towlower(ch);
+                                return s;
+                            };
+
+                            std::filesystem::recursive_directory_iterator it(
+                                base,
+                                std::filesystem::directory_options::skip_permission_denied);
+                            std::filesystem::recursive_directory_iterator end;
+                            for (; it != end; ++it)
+                            {
+                                const auto &entry = *it;
+                                if (entry.is_directory())
+                                {
+                                    std::wstring name = lower(entry.path().filename().wstring());
+                                    if (skipDirs.find(name) != skipDirs.end())
+                                    {
+                                        it.disable_recursion_pending();
+                                        continue;
+                                    }
+                                    continue;
+                                }
                                 if (!entry.is_regular_file())
                                     continue;
                                 if (!IsCppFile(entry.path()))
                                     continue;
+                                std::error_code ec;
+                                uintmax_t fsize = entry.file_size(ec);
+                                if (!ec && fsize > maxIndexBytes)
+                                    continue;
+
                                 auto lines = ReadFileLinesUtf8(entry.path());
                                 if (!lines.empty())
                                     UpdateFile(entry.path().wstring(), lines);
@@ -710,8 +892,10 @@ namespace Lsp
             return false;
         };
 
+        int parenDepth = 0;
         for (int line = 0; line < (int)lines.size(); ++line)
         {
+            int parenDepthAtLineStart = parenDepth;
             const std::wstring &ln = lines[line];
             for (int col = 0; col < (int)ln.size(); ++col)
             {
@@ -825,9 +1009,18 @@ namespace Lsp
                 }
 
                 if (c == L'(' || c == L'{' || c == L'[')
+                {
+                    if (c == L'(' || c == L'[')
+                        parenDepth++;
                     push(c, line, col);
+                }
                 else if (c == L')' || c == L'}' || c == L']')
                 {
+                    if (c == L')' || c == L']')
+                    {
+                        if (parenDepth > 0)
+                            parenDepth--;
+                    }
                     if (!popMatch(c))
                     {
                         Diagnostic d;
@@ -952,49 +1145,125 @@ namespace Lsp
             {
                 if (t[0] != L'#')
                 {
-                    wchar_t last = t.back();
-                    bool endsOk = (last == L';' || last == L'{' || last == L'}' || last == L':' || last == L',');
-
-                    auto startsWithWord = [&](const std::wstring &kw)
+                    auto isOpChar = [](wchar_t c)
                     {
-                        if (t.size() < kw.size())
-                            return false;
-                        if (ToLower(t.substr(0, kw.size())) != kw)
-                            return false;
-                        if (t.size() == kw.size())
+                        switch (c)
+                        {
+                        case L'+':
+                        case L'-':
+                        case L'*':
+                        case L'/':
+                        case L'%':
+                        case L'|':
+                        case L'&':
+                        case L'^':
+                        case L'=':
+                        case L'<':
+                        case L'>':
+                        case L'?':
+                        case L':':
+                        case L',':
+                        case L'.':
+                        case L'(':
+                        case L'[':
                             return true;
-                        wchar_t c = t[kw.size()];
-                        return iswspace(c) || c == L'(';
+                        default:
+                            return false;
+                        }
+                    };
+                    auto startsWithOp = [&](const std::wstring &s)
+                    {
+                        if (s.size() >= 2)
+                        {
+                            std::wstring p2 = s.substr(0, 2);
+                            if (p2 == L"||" || p2 == L"&&" || p2 == L"<<" || p2 == L">>" || p2 == L"->" || p2 == L"::")
+                                return true;
+                        }
+                        return !s.empty() && isOpChar(s[0]);
+                    };
+                    auto endsWithOp = [&](const std::wstring &s)
+                    {
+                        if (s.empty())
+                            return false;
+                        if (s.size() >= 2)
+                        {
+                            std::wstring t2 = s.substr(s.size() - 2);
+                            if (t2 == L"||" || t2 == L"&&" || t2 == L"<<" || t2 == L">>" || t2 == L"->" || t2 == L"::")
+                                return true;
+                        }
+                        wchar_t last = s.back();
+                        if (last == L'\\')
+                            return true;
+                        return isOpChar(last);
                     };
 
-                    bool isControl = startsWithWord(L"if") ||
-                                     startsWithWord(L"for") ||
-                                     startsWithWord(L"while") ||
-                                     startsWithWord(L"switch") ||
-                                     startsWithWord(L"catch") ||
-                                     startsWithWord(L"else") ||
-                                     startsWithWord(L"do");
-
-                    if (!endsOk && !isControl)
+                    bool continuedFromPrev = (parenDepthAtLineStart > 0);
+                    bool startsWithOperator = startsWithOp(t);
+                    bool endsWithOperator = endsWithOp(t);
+                    bool nextStartsWithOperator = false;
+                    if (!continuedFromPrev && !startsWithOperator)
                     {
-                        bool looksLikeStmt = (t.find(L"=") != std::wstring::npos) ||
-                                             (t.find(L"(") != std::wstring::npos) ||
-                                             (t.find(L")") != std::wstring::npos);
-                        bool looksLikeCall = (t.find(L"(") != std::wstring::npos);
-                        bool looksLikeDecl = (t.find(L"(") != std::wstring::npos && last == L')');
-                        bool looksLikeScope = (t.find(L"{") != std::wstring::npos || t.find(L"}") != std::wstring::npos);
-                        if (looksLikeStmt)
+                        for (int n = line + 1; n < (int)lines.size(); ++n)
                         {
-                            if (!looksLikeDecl && !looksLikeScope && !looksLikeCall)
+                            size_t nextStart = 0;
+                            std::wstring nextClean = stripComments(lines[n]);
+                            std::wstring nextTrim = trim(nextClean, nextStart);
+                            if (nextTrim.empty())
+                                continue;
+                            if (nextTrim[0] == L'#')
+                                break;
+                            if (startsWithOp(nextTrim))
+                                nextStartsWithOperator = true;
+                            break;
+                        }
+                    }
+                    bool skipSemicolonCheck = (continuedFromPrev || startsWithOperator || endsWithOperator || nextStartsWithOperator);
+                    if (!skipSemicolonCheck)
+                    {
+                        wchar_t last = t.back();
+                        bool endsOk = (last == L';' || last == L'{' || last == L'}' || last == L':' || last == L',');
+
+                        auto startsWithWord = [&](const std::wstring &kw)
+                        {
+                            if (t.size() < kw.size())
+                                return false;
+                            if (ToLower(t.substr(0, kw.size())) != kw)
+                                return false;
+                            if (t.size() == kw.size())
+                                return true;
+                            wchar_t c = t[kw.size()];
+                            return iswspace(c) || c == L'(';
+                        };
+
+                        bool isControl = startsWithWord(L"if") ||
+                                         startsWithWord(L"for") ||
+                                         startsWithWord(L"while") ||
+                                         startsWithWord(L"switch") ||
+                                         startsWithWord(L"catch") ||
+                                         startsWithWord(L"else") ||
+                                         startsWithWord(L"do");
+
+                        if (!endsOk && !isControl)
+                        {
+                            bool looksLikeStmt = (t.find(L"=") != std::wstring::npos) ||
+                                                 (t.find(L"(") != std::wstring::npos) ||
+                                                 (t.find(L")") != std::wstring::npos);
+                            bool looksLikeCall = (t.find(L"(") != std::wstring::npos);
+                            bool looksLikeDecl = (t.find(L"(") != std::wstring::npos && last == L')');
+                            bool looksLikeScope = (t.find(L"{") != std::wstring::npos || t.find(L"}") != std::wstring::npos);
+                            if (looksLikeStmt)
                             {
-                                Diagnostic d;
-                                d.line = line;
-                                d.startCol = (int)startCol;
-                                d.endCol = (int)ln.size();
-                                d.severity = DiagnosticSeverity::Warning;
-                                d.message = L"Possible missing semicolon";
-                                d.suggestion = L"Add ';' at end of line";
-                                out.push_back(d);
+                                if (!looksLikeDecl && !looksLikeScope && !looksLikeCall)
+                                {
+                                    Diagnostic d;
+                                    d.line = line;
+                                    d.startCol = (int)startCol;
+                                    d.endCol = (int)ln.size();
+                                    d.severity = DiagnosticSeverity::Warning;
+                                    d.message = L"Possible missing semicolon";
+                                    d.suggestion = L"Add ';' at end of line";
+                                    out.push_back(d);
+                                }
                             }
                         }
                     }
@@ -1198,6 +1467,75 @@ namespace Lsp
             out.push_back(d);
         }
 
+        // Check for std:: symbols and verify they are included
+        {
+            std::unordered_set<std::wstring> includedHeaders;
+            // Collect all includes from the file
+            for (const auto &line : lines)
+            {
+                std::wstring lower = ToLower(line);
+                size_t inclPos = lower.find(L"#include");
+                if (inclPos != std::wstring::npos)
+                {
+                    size_t ltPos = line.find(L'<', inclPos);
+                    size_t rtPos = line.find(L'>', ltPos);
+                    if (ltPos != std::wstring::npos && rtPos != std::wstring::npos)
+                    {
+                        std::wstring header = line.substr(ltPos, rtPos - ltPos + 1);
+                        includedHeaders.insert(header);
+                    }
+                }
+            }
+            
+            // Check for std:: usage in code
+            for (int lineIdx = 0; lineIdx < (int)lines.size(); ++lineIdx)
+            {
+                const std::wstring &ln = lines[lineIdx];
+                
+                // Skip if line is a comment
+                size_t commentPos = ln.find(L"//");
+                
+                size_t pos = 0;
+                while ((pos = ln.find(L"std::", pos)) != std::wstring::npos)
+                {
+                    // Skip if this occurrence is after // comment
+                    if (commentPos != std::wstring::npos && pos > commentPos)
+                    {
+                        break;
+                    }
+                    
+                    // Extract the full std:: symbol
+                    size_t symStart = pos + 5; // after "std::"
+                    size_t symEnd = symStart;
+                    auto isIdentChar = [](wchar_t c) { return (iswalnum(c) != 0) || (c == L'_'); };
+                    
+                    while (symEnd < ln.size() && isIdentChar(ln[symEnd]))
+                        symEnd++;
+                    
+                    if (symEnd > symStart)
+                    {
+                        std::wstring symbol = L"std::" + ln.substr(symStart, symEnd - symStart);
+                        std::wstring requiredHeader = GetStdHeaderFor(symbol);
+                        
+                        // Only check if we have a mapping for this symbol
+                        if (!requiredHeader.empty() && includedHeaders.find(requiredHeader) == includedHeaders.end())
+                        {
+                            Diagnostic d;
+                            d.line = lineIdx;
+                            d.startCol = (int)pos;
+                            d.endCol = (int)symEnd;
+                            d.severity = DiagnosticSeverity::Error;
+                            d.message = symbol + L" requires " + requiredHeader;
+                            d.suggestion = L"Add #include " + requiredHeader + L" at the top";
+                            out.push_back(d);
+                        }
+                    }
+                    
+                    pos++;
+                }
+            }
+        }
+
         return out;
     }
 
@@ -1211,11 +1549,46 @@ namespace Lsp
         if (!hwnd)
             return;
 
+        // Check if an #include line was just added/modified
+        bool hasIncludeChange = false;
+        {
+            std::lock_guard<std::mutex> lk(mutex_);
+            auto it = fileIncludes_.find(filePath);
+            std::unordered_set<std::wstring> oldIncludes;
+            if (it != fileIncludes_.end())
+            {
+                oldIncludes.insert(it->second.begin(), it->second.end());
+            }
+            
+            // Check current includes
+            std::unordered_set<std::wstring> newIncludes;
+            for (const auto& line : lines)
+            {
+                if (line.find(L"#include") != std::wstring::npos)
+                {
+                    size_t lt = line.find(L'<');
+                    size_t rt = line.find(L'>');
+                    if (lt != std::wstring::npos && rt != std::wstring::npos)
+                    {
+                        newIncludes.insert(line.substr(lt, rt - lt + 1));
+                    }
+                }
+            }
+            
+            // If includes changed, force immediate re-analysis
+            if (oldIncludes != newIncludes)
+            {
+                hasIncludeChange = true;
+                fileIncludes_[filePath].assign(newIncludes.begin(), newIncludes.end());
+            }
+        }
+
         DWORD now = GetTickCount();
         {
             std::lock_guard<std::mutex> lk(mutex_);
             DWORD &last = lastDiagTick_[filePath];
-            if (now - last < 200)
+            // Skip throttle if includes changed (force immediate update)
+            if (!hasIncludeChange && now - last < 200)
                 return;
             last = now;
         }
@@ -1427,6 +1800,116 @@ namespace Lsp
         if (it != diagnostics_.end())
             return it->second;
         return {};
+    }
+
+    std::vector<CompletionItem> LspManager::GetCompletions(const std::wstring &filePath,
+                                                            const std::wstring &lineText,
+                                                            int column) const
+    {
+        std::vector<CompletionItem> result;
+        
+        // Extract the word being typed before cursor
+        std::wstring prefix;
+        int pos = column - 1;
+        
+        while (pos >= 0 && (iswalnum(lineText[pos]) || lineText[pos] == L'_' || lineText[pos] == L':'))
+        {
+            prefix = lineText[pos] + prefix;
+            pos--;
+        }
+
+        // Check if we're in a context where std:: is relevant
+        bool inStdContext = false;
+        
+        // Check if user typed "std::" prefix
+        if (prefix.find(L"std::") != std::wstring::npos)
+        {
+            inStdContext = true;
+        }
+        // Also offer std:: completions if we're in a typical C++ context
+        // (after keywords like 'using', 'new', 'auto', '=', etc.)
+        else if (pos >= 0)
+        {
+            // Look backwards for context keywords
+            std::wstring context = lineText.substr(0, column);
+            std::wstring contextLower = ToLower(context);
+            
+            if (contextLower.find(L"using") != std::wstring::npos ||
+                contextLower.find(L"auto") != std::wstring::npos ||
+                contextLower.find(L"new") != std::wstring::npos ||
+                context.find(L"=") != std::wstring::npos ||
+                context.find(L"<") != std::wstring::npos ||
+                context.find(L"(") != std::wstring::npos ||
+                context.find(L":") != std::wstring::npos)
+            {
+                inStdContext = true;
+            }
+        }
+
+        if (inStdContext)
+        {
+            auto allCompletions = GetStdCompletions();
+            
+            // Collect included headers from the file
+            std::unordered_set<std::wstring> includedHeaders;
+            {
+                std::lock_guard<std::mutex> lk(mutex_);
+                auto it = fileIncludes_.find(filePath);
+                if (it != fileIncludes_.end())
+                {
+                    for (const auto &inc : it->second)
+                        includedHeaders.insert(inc);
+                }
+            }
+            
+            // Filter by current prefix
+            std::wstring lowerPrefix = ToLower(prefix);
+            
+            for (const auto &item : allCompletions)
+            {
+                std::wstring lowerLabel = ToLower(item.label);
+                
+                // Match prefix
+                if (lowerLabel.find(lowerPrefix) == 0 || 
+                    lowerPrefix.empty() ||
+                    lowerLabel.find(lowerPrefix) != std::wstring::npos)
+                {
+                    // Enhance description with required header info
+                    CompletionItem enhanced = item;
+                    std::wstring header = GetStdHeaderFor(item.label);
+                    if (!header.empty())
+                    {
+                        bool isIncluded = includedHeaders.find(header) != includedHeaders.end();
+                        if (!isIncluded)
+                        {
+                            enhanced.description += L" [Requires: " + header + L"]";
+                        }
+                    }
+                    result.push_back(enhanced);
+                }
+            }
+            
+            // Sort: exact prefix matches first, then by alphabetical order
+            std::sort(result.begin(), result.end(),
+                [lowerPrefix](const CompletionItem &a, const CompletionItem &b)
+                {
+                    std::wstring aLower = ToLower(a.label);
+                    std::wstring bLower = ToLower(b.label);
+                    
+                    bool aStartsWith = aLower.find(lowerPrefix) == 0;
+                    bool bStartsWith = bLower.find(lowerPrefix) == 0;
+                    
+                    if (aStartsWith != bStartsWith)
+                        return aStartsWith;
+                    return aLower < bLower;
+                });
+            
+            // Limit results
+            if (result.size() > 20)
+                result.resize(20);
+        }
+        
+        return result;
     }
 
     std::wstring LspManager::GetProjectRoot() const

@@ -335,7 +335,14 @@ namespace Orion
     {
         (void)hwnd;
         if (isPreview_)
+        {
+            if (previewMode_ == PreviewMode::Markdown)
+            {
+                if (scrollbar_.OnLeftButtonDown(pt))
+                    SetCapture(hwnd);
+            }
             return;
+        }
 
         dragStartPos_ = pt;
         dragSelecting_ = false;
@@ -621,7 +628,17 @@ namespace Orion
     void Editor::OnMouseMove(HWND hwnd, POINT pt)
     {
         if (isPreview_)
+        {
+            if (previewMode_ == PreviewMode::Markdown)
+            {
+                if (scrollbar_.OnMouseMove(pt))
+                {
+                    state_.scrollOffsetY = scrollbar_.GetScrollOffset();
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+            }
             return;
+        }
         (void)hwnd;
         (void)hwnd;
 
@@ -892,7 +909,14 @@ namespace Orion
     void Editor::OnLeftButtonUp(HWND hwnd, POINT pt)
     {
         if (isPreview_)
+        {
+            if (previewMode_ == PreviewMode::Markdown)
+            {
+                if (scrollbar_.OnLeftButtonUp())
+                    ReleaseCapture();
+            }
             return;
+        }
         (void)hwnd;
         (void)pt;
 
@@ -920,7 +944,18 @@ namespace Orion
     void Editor::OnMouseWheel(HWND hwnd, int delta, bool ctrlPressed)
     {
         if (isPreview_)
+        {
+            if (previewMode_ == PreviewMode::Markdown)
+            {
+                if (scrollbar_.OnMouseWheel(delta))
+                {
+                    state_.scrollOffsetY = scrollbar_.GetScrollOffset();
+                    if (hwnd)
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                }
+            }
             return;
+        }
         (void)hwnd;
 
         bool shiftPressed = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;

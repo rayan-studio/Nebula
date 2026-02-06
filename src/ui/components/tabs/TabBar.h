@@ -12,6 +12,8 @@ struct Tab
     std::wstring displayName;
     bool isDirty = false;
     bool isActive = false;
+    bool isMarkdown = false;
+    bool markdownPreview = false;
 };
 
 class TabBar
@@ -31,6 +33,8 @@ public:
     const Tab *GetTab(int index) const;
     void SetTabDirty(int index, bool dirty);
     bool IsTabDirty(int index) const;
+    void SetTabMarkdown(int index, bool isMarkdown);
+    void SetTabMarkdownPreview(int index, bool enabled);
 
     int GetTabCount() const { return (int)tabs_.size(); }
     float GetHeight() const { return tabHeight_ + 1.0f; }
@@ -49,7 +53,9 @@ public:
     bool ClearHover();
 
     static const int TAB_CLICKED_CLOSE = -3;
+    static const int TAB_CLICKED_TOGGLE_PREVIEW = -4;
     int GetLastCloseRequestIndex() const { return lastCloseRequestIndex_; }
+    int GetLastPreviewToggleIndex() const { return lastPreviewToggleIndex_; }
 
 private:
     std::vector<std::wstring> mruHistory_; // most-recently-used file paths, front is most recent
@@ -59,6 +65,7 @@ private:
     int activeTabIndex_ = -1;
     int hoveredTabIndex_ = -1;
     int hoveredCloseIndex_ = -1;
+    int hoveredPreviewIndex_ = -1;
 
     float leftEdge_ = 0.0f;
     float topEdge_ = 0.0f;
@@ -70,7 +77,10 @@ private:
     D2D1_RECT_F CloseRectForTab(int index) const;
     bool IsPointInCloseRect(int index, POINT pt) const;
     void DrawCloseButton(ID2D1RenderTarget *ctx, const D2D1_RECT_F &rect, bool hovered) const;
+    D2D1_RECT_F PreviewRectForTab(int index) const;
+    bool IsPointInPreviewRect(int index, POINT pt) const;
 
     // Last requested close index (UI only) - set when close button clicked
     int lastCloseRequestIndex_ = -1;
+    int lastPreviewToggleIndex_ = -1;
 };

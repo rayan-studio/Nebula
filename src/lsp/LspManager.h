@@ -25,6 +25,13 @@ namespace Lsp
         std::wstring suggestion;
     };
 
+    struct CompletionItem
+    {
+        std::wstring label;           // The text to insert
+        std::wstring description;     // Short description
+        std::wstring category;        // e.g. "std_container", "std_algorithm"
+    };
+
     struct Location
     {
         std::wstring filePath;
@@ -51,6 +58,9 @@ namespace Lsp
                                                const std::wstring &word);
 
         std::vector<Diagnostic> GetDiagnostics(const std::wstring &filePath) const;
+        std::vector<CompletionItem> GetCompletions(const std::wstring &filePath,
+                                                    const std::wstring &lineText,
+                                                    int column) const;
         std::wstring GetProjectRoot() const;
 
     private:

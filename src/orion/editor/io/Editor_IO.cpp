@@ -199,6 +199,48 @@ namespace Orion
         state_.scrollOffsetY = 0.0f;
     }
 
+    void Editor::SetTextContent(const std::wstring &text, bool markDirty)
+    {
+        ResetPreview();
+        state_.lines.clear();
+
+        size_t start = 0;
+        size_t i = 0;
+        const size_t n = text.size();
+        while (i < n)
+        {
+            wchar_t c = text[i];
+            if (c == L'\r' || c == L'\n')
+            {
+                state_.lines.emplace_back(text.substr(start, i - start));
+                if (c == L'\r' && (i + 1) < n && text[i + 1] == L'\n')
+                    i++;
+                i++;
+                start = i;
+            }
+            else
+            {
+                i++;
+            }
+        }
+
+        state_.lines.emplace_back(text.substr(start));
+        if (state_.lines.empty())
+            state_.lines.push_back(L"");
+
+        int lastLine = (int)state_.lines.size() - 1;
+        int lastCol = lastLine >= 0 ? (int)state_.lines[lastLine].size() : 0;
+        state_.caret = {lastLine, lastCol};
+        state_.scrollOffsetX = 0.0f;
+        state_.scrollOffsetY = 0.0f;
+        state_.encoding = L"UTF-8";
+
+        if (markDirty)
+            MarkDirty();
+        else
+            ClearDirty();
+    }
+
     bool Editor::SaveToFile(const std::wstring &filePath)
     {
         int needed = WideCharToMultiByte(CP_UTF8, 0, filePath.c_str(), (int)filePath.size(), NULL, 0, NULL, NULL);

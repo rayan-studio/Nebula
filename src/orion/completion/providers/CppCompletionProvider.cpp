@@ -341,21 +341,41 @@ namespace Orion::Completion
     {
         if (ctx.line < 0 || ctx.line >= (int)ctx.lines.size())
             return {};
+        
         const std::wstring& line = ctx.lines[ctx.line];
-        size_t posInclude = line.rfind(L"#include", ctx.column);
-        if (posInclude == std::wstring::npos)
-            return {};
-        size_t lt = line.find_last_of(L"<\"", ctx.column - 1);
-        if (lt == std::wstring::npos || lt <= posInclude)
-            return {};
-        size_t start = lt + 1;
-        size_t end = ctx.column;
-        if (end < start) end = start;
-        std::wstring prefix = line.substr(start, end - start);
-        auto suggestions = GetIncludeSuggestions(prefix);
         std::vector<CompletionItem> items;
-        for (const auto& s : suggestions)
-            items.push_back({ s, s, false });
+        
+        // First, check for #include completions
+        size_t posInclude = line.rfind(L"#include", ctx.column);
+        if (posInclude != std::wstring::npos)
+        {
+            size_t lt = line.find_last_of(L"<\"", ctx.column - 1);
+            if (lt != std::wstring::npos && lt > posInclude)
+            {
+                size_t start = lt + 1;
+                size_t end = ctx.column;
+                if (end < start) end = start;
+                std::wstring prefix = line.substr(start, end - start);
+                auto suggestions = GetIncludeSuggestions(prefix);
+                for (const auto& s : suggestions)
+                    items.push_back({ s, s, false });
+                return items;
+            }
+        }
+        
+        // Otherwise, get std:: completions from LSP
+        auto& lspMgr = Lsp::LspManager::Instance();
+        auto lspItems = lspMgr.GetCompletions(ctx.filePath, line, ctx.column);
+        
+        for (const auto& item : lspItems)
+        {
+            items.push_back({
+                item.label,
+                item.description,
+                false  // not a snippet
+            });
+        }
+        
         return items;
     }
 
@@ -366,6 +386,42 @@ namespace Orion::Completion
         AppendIncludeRoots(roots);
 
         std::vector<std::wstring> out;
+        
+        // First, add standard C++ headers that match the prefix
+        static const std::vector<std::wstring> stdHeaders = {
+            L"algorithm", L"array", L"atomic", L"bitset", L"chrono", 
+            L"codecvt", L"complex", L"condition_variable", L"deque",
+            L"exception", L"filesystem", L"fstream", L"functional",
+            L"future", L"initializer_list", L"iomanip", L"ios",
+            L"iosfwd", L"iostream", L"istream", L"iterator", L"limits",
+            L"list", L"locale", L"map", L"memory", L"mutex", L"new",
+            L"numeric", L"optional", L"ostream", L"queue", L"random",
+            L"regex", L"set", L"shared_mutex", L"sstream", L"stack",
+            L"stdexcept", L"streambuf", L"string", L"string_view",
+            L"thread", L"tuple", L"type_traits", L"typeinfo", L"unordered_map",
+            L"unordered_set", L"utility", L"valarray", L"variant", L"vector"
+        };
+        
+        // Helper to lowercase a string
+        auto toLower = [](std::wstring s) {
+            for (auto& c : s) c = towlower(c);
+            return s;
+        };
+        
+        std::wstring lowerPrefix = toLower(prefix);
+        
+        // Add matching std headers
+        for (const auto& header : stdHeaders)
+        {
+            std::wstring lowerHeader = toLower(header);
+            // Match if starts with prefix or contains prefix
+            if (lowerHeader.find(lowerPrefix) == 0 || lowerPrefix.empty())
+            {
+                out.push_back(header);
+            }
+        }
+        
+        // Then add project headers
         AddDirectSuggestions(roots, prefix, out);
 
         if (!g_headerReady.load())
