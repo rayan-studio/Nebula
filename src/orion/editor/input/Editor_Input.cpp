@@ -286,6 +286,40 @@ namespace Orion
         return true;
     }
 
+    std::optional<Lsp::Location> Editor::TryGoToDefinitionAtCaret()
+    {
+        if (isPreview_ || state_.lines.empty())
+            return std::nullopt;
+
+        CaretPosition caretPos = state_.caret;
+        if (caretPos.line < 0 || caretPos.line >= (int)state_.lines.size())
+            return std::nullopt;
+        if (caretPos.column < 0)
+            caretPos.column = 0;
+        if (caretPos.column > (int)state_.lines[caretPos.line].size())
+            caretPos.column = (int)state_.lines[caretPos.line].size();
+
+        const std::wstring &ln = state_.lines[caretPos.line];
+
+        int incStart = -1;
+        int incEnd = -1;
+        if (GetIncludePathRange(ln, caretPos.column, incStart, incEnd))
+            return Lsp::LspManager::Instance().GoToDefinition(state_.filePath, ln, caretPos.line, caretPos.column, L"");
+
+        std::wstring word;
+        int startCol = -1;
+        int endCol = -1;
+        if (!GetWordAtColumn(ln, caretPos.column, word, startCol, endCol))
+            return std::nullopt;
+
+        int defLine = -1;
+        int defCol = -1;
+        if (FindLocalDefinition(word, caretPos.line, defLine, defCol))
+            return Lsp::Location{state_.filePath, defLine, defCol};
+
+        return Lsp::LspManager::Instance().GoToDefinition(state_.filePath, ln, caretPos.line, caretPos.column, word);
+    }
+
     std::optional<Lsp::Location> Editor::TryGoToDefinitionAtPoint(POINT pt)
     {
         if (isPreview_)
@@ -400,7 +434,7 @@ namespace Orion
             bool inside = searchBox_.IsPointInSearchBox(pt);
             if (inside)
             {
-                searchBox_.OnLeftButtonDown(pt);
+                searchBox_.OnLeftButtonDown(hwnd, pt);
                 if (searchBox_.ConsumeReplaceRequest())
                 {
                     ReplaceCurrentMatch();
@@ -455,8 +489,9 @@ namespace Orion
             }
         }
 
-        // ✅ click must be inside editor content area (after gutter + left padding)
-        if (pt.x < state_.leftEdge + metrics_.gutterWidth + metrics_.leftPadding)
+        float contentLeft = state_.leftEdge + metrics_.gutterWidth + metrics_.leftPadding;
+        bool isInEditorArea = !(pt.x < contentLeft || pt.x > state_.rightEdge || pt.y < state_.topEdge || pt.y > state_.bottomEdge);
+        if (!isInEditorArea)
             return;
 
         // safety
@@ -478,7 +513,31 @@ namespace Orion
         if (clickedPos.line >= 0 && clickedPos.line < (int)state_.lines.size())
             clickedPos.column = (std::min)(clickedPos.column, (int)state_.lines[clickedPos.line].size());
 
+        bool altPressed = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
         bool ctrlPressed = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        if (altPressed && !ctrlPressed)
+        {
+            state_.hasSelection = false;
+
+            // Move current primary caret to secondary list, then set new primary at clicked position.
+            if (!(state_.caret.line == clickedPos.line && state_.caret.column == clickedPos.column))
+            {
+                secondaryCarets_.push_back(state_.caret);
+                state_.caret = clickedPos;
+            }
+
+            NormalizeSecondaryCarets();
+            state_.caretVisible = true;
+            state_.lastBlinkTime = GetTickCount();
+            Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
+            if (hwnd)
+                InvalidateRect(hwnd, nullptr, FALSE);
+            return;
+        }
+
+        // Any non-Alt click exits multi-caret mode.
+        secondaryCarets_.clear();
+
         if (ctrlPressed && clickedPos.line >= 0 && clickedPos.line < (int)state_.lines.size())
         {
             const std::wstring &ln = state_.lines[clickedPos.line];
@@ -1031,6 +1090,7 @@ namespace Orion
         state_.caretVisible = true;
         state_.lastBlinkTime = GetTickCount();
         dragSelecting_ = false;
+        secondaryCarets_.clear();
 
         if (scrollbar_.IsDragging())
         {

@@ -5,6 +5,7 @@
 #include <vector>
 #include <thread>
 #include <fstream>
+#include <cwctype>
 // For EditorFileLoadResult and WM_EDITOR_FILE_LOADED
 #include "core/window/Window.h"
 
@@ -18,6 +19,20 @@
 
 namespace Orion
 {
+    namespace
+    {
+        static bool IsWordChar(wchar_t ch)
+        {
+            return std::iswalnum(ch) != 0 || ch == L'_';
+        }
+
+        static void NormalizeRange(CaretPosition &a, CaretPosition &b)
+        {
+            if (a.line > b.line || (a.line == b.line && a.column > b.column))
+                std::swap(a, b);
+        }
+    }
+
     std::wstring Editor::GetSelectionText() const
     {
         if (!state_.hasSelection)
@@ -192,6 +207,9 @@ namespace Orion
                                         std::vector<std::wstring> lines)
     {
         ResetPreview();
+        collapsedFolds_.clear();
+        foldLineMapsDirty_ = true;
+        gutterHoverLine_ = -1;
         state_.filePath = std::move(filePath);
         state_.encoding = std::move(encoding);
 
@@ -199,22 +217,45 @@ namespace Orion
         if (state_.lines.empty())
             state_.lines.push_back(L"");
 
-        state_.caret = {0, 0};
-        state_.scrollOffsetX = 0.0f;
-        state_.scrollOffsetY = 0.0f;
+        if (restoreViewAfterNextFileLoad_)
+        {
+            int maxLine = (int)state_.lines.size() - 1;
+            int line = (std::max)(0, (std::min)(restoreCaretAfterNextFileLoad_.line, maxLine));
+            int maxCol = (int)state_.lines[(size_t)line].size();
+            int col = (std::max)(0, (std::min)(restoreCaretAfterNextFileLoad_.column, maxCol));
+            state_.caret = {line, col};
+            state_.hasSelection = false;
+
+            state_.scrollOffsetX = (std::max)(0.0f, restoreScrollXAfterNextFileLoad_);
+            scrollbar_.SetScrollOffset((std::max)(0.0f, restoreScrollYAfterNextFileLoad_));
+            state_.scrollOffsetY = scrollbar_.GetScrollOffset();
+
+            restoreViewAfterNextFileLoad_ = false;
+        }
+        else
+        {
+            state_.caret = {0, 0};
+            state_.scrollOffsetX = 0.0f;
+            state_.scrollOffsetY = 0.0f;
+        }
+        UpdateKnownFileWriteTime(state_.filePath);
 
     }
-    void Orion::Editor::LoadFileAsync(HWND hwnd, const std::wstring &filePath, int tabIndex)
+    void Orion::Editor::LoadFileAsync(HWND hwnd, const std::wstring &filePath, int tabIndex, bool preserveView)
     {
-        ResetPreview();
-        // UI : afficher un "loading" instantan?? (optionnel)
-        state_.filePath = filePath;
-        state_.lines.clear();
-        state_.lines.push_back(L"// Loading...");
-        state_.encoding = L"";
-        state_.caret = {0, 0};
-        state_.scrollOffsetX = 0.0f;
-        state_.scrollOffsetY = 0.0f;
+        if (!preserveView)
+        {
+            restoreViewAfterNextFileLoad_ = false;
+            ResetPreview();
+            // UI : afficher un "loading" instantan?? (optionnel)
+            state_.filePath = filePath;
+            state_.lines.clear();
+            state_.lines.push_back(L"// Loading...");
+            state_.encoding = L"";
+            state_.caret = {0, 0};
+            state_.scrollOffsetX = 0.0f;
+            state_.scrollOffsetY = 0.0f;
+        }
 
         // Lancer le travail lourd en background
         std::wstring filePathCopy = filePath;
@@ -443,6 +484,7 @@ namespace Orion
 
         state_.caret = start;
         state_.hasSelection = false;
+        selectionExpandHistory_.clear();
         // Mark document dirty after deletion
         MarkDirty();
     }
@@ -473,6 +515,9 @@ namespace Orion
         state_ = prev;
         state_.caretVisible = true;
         state_.lastBlinkTime = GetTickCount();
+        collapsedFolds_.clear();
+        foldLineMapsDirty_ = true;
+        gutterHoverLine_ = -1;
 
         return true;
     }
@@ -488,6 +533,161 @@ namespace Orion
         state_.caret.line = lastLine;
         state_.caret.column = lastCol;
         state_.hasSelection = true;
+        selectionExpandHistory_.clear();
         Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
+    }
+
+    void Editor::SelectCurrentLine()
+    {
+        if (state_.lines.empty())
+            return;
+
+        int line = (std::min)((std::max)(state_.caret.line, 0), (int)state_.lines.size() - 1);
+        int len = (int)state_.lines[line].size();
+        state_.selectionStart = {line, 0};
+        state_.caret = {line, len};
+        state_.hasSelection = true;
+        selectionExpandHistory_.clear();
+        Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
+    }
+
+    void Editor::ExpandSelection()
+    {
+        if (state_.lines.empty())
+            return;
+
+        auto clampPos = [this](CaretPosition p) -> CaretPosition
+        {
+            int line = (std::min)((std::max)(p.line, 0), (int)state_.lines.size() - 1);
+            int col = (std::min)((std::max)(p.column, 0), (int)state_.lines[line].size());
+            return {line, col};
+        };
+
+        CaretPosition curStart = state_.hasSelection ? state_.selectionStart : state_.caret;
+        CaretPosition curEnd = state_.hasSelection ? state_.caret : state_.caret;
+        curStart = clampPos(curStart);
+        curEnd = clampPos(curEnd);
+        NormalizeRange(curStart, curEnd);
+
+        CaretPosition nextStart = curStart;
+        CaretPosition nextEnd = curEnd;
+        bool hasNonEmptySelection = !(curStart.line == curEnd.line && curStart.column == curEnd.column);
+
+        if (!hasNonEmptySelection)
+        {
+            int line = curStart.line;
+            const std::wstring &text = state_.lines[line];
+            int len = (int)text.size();
+            int anchorCol = (std::min)((std::max)(curStart.column, 0), len);
+
+            if (len > 0)
+            {
+                int probe = anchorCol;
+                if (probe >= len)
+                    probe = len - 1;
+
+                if (!IsWordChar(text[probe]) && probe > 0 && IsWordChar(text[probe - 1]))
+                    probe -= 1;
+
+                if (IsWordChar(text[probe]))
+                {
+                    int left = probe;
+                    int right = probe + 1;
+                    while (left > 0 && IsWordChar(text[left - 1]))
+                        --left;
+                    while (right < len && IsWordChar(text[right]))
+                        ++right;
+                    nextStart = {line, left};
+                    nextEnd = {line, right};
+                }
+                else if (anchorCol < len)
+                {
+                    nextStart = {line, anchorCol};
+                    nextEnd = {line, anchorCol + 1};
+                }
+                else
+                {
+                    nextStart = {line, 0};
+                    nextEnd = {line, len};
+                }
+            }
+        }
+        else
+        {
+            bool isSingleLine = curStart.line == curEnd.line;
+            bool isFullLine = false;
+            if (isSingleLine)
+            {
+                int len = (int)state_.lines[curStart.line].size();
+                isFullLine = (curStart.column == 0 && curEnd.column == len);
+            }
+
+            int lastLine = (int)state_.lines.size() - 1;
+            int lastCol = (int)state_.lines[lastLine].size();
+            bool isWholeDocument = (curStart.line == 0 && curStart.column == 0 &&
+                                    curEnd.line == lastLine && curEnd.column == lastCol);
+
+            if (!isFullLine && isSingleLine)
+            {
+                int len = (int)state_.lines[curStart.line].size();
+                nextStart = {curStart.line, 0};
+                nextEnd = {curStart.line, len};
+            }
+            else if (!isWholeDocument)
+            {
+                nextStart = {0, 0};
+                nextEnd = {lastLine, lastCol};
+            }
+        }
+
+        NormalizeRange(nextStart, nextEnd);
+        if (nextStart.line == curStart.line && nextStart.column == curStart.column &&
+            nextEnd.line == curEnd.line && nextEnd.column == curEnd.column)
+        {
+            return;
+        }
+
+        selectionExpandHistory_.push_back({curStart, curEnd});
+        state_.selectionStart = nextStart;
+        state_.caret = nextEnd;
+        state_.hasSelection = !(nextStart.line == nextEnd.line && nextStart.column == nextEnd.column);
+        Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
+    }
+
+    void Editor::ShrinkSelection()
+    {
+        if (!selectionExpandHistory_.empty())
+        {
+            auto clampPos = [this](CaretPosition p) -> CaretPosition
+            {
+                if (state_.lines.empty())
+                    return {0, 0};
+                int line = (std::min)((std::max)(p.line, 0), (int)state_.lines.size() - 1);
+                int col = (std::min)((std::max)(p.column, 0), (int)state_.lines[line].size());
+                return {line, col};
+            };
+
+            auto prev = selectionExpandHistory_.back();
+            selectionExpandHistory_.pop_back();
+
+            CaretPosition a = clampPos(prev.first);
+            CaretPosition b = clampPos(prev.second);
+            NormalizeRange(a, b);
+            state_.selectionStart = a;
+            state_.caret = b;
+            state_.hasSelection = !(a.line == b.line && a.column == b.column);
+            Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
+            return;
+        }
+
+        if (state_.hasSelection)
+        {
+            CaretPosition a = state_.selectionStart;
+            CaretPosition b = state_.caret;
+            NormalizeRange(a, b);
+            state_.caret = a;
+            state_.hasSelection = false;
+            Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
+        }
     }
 }

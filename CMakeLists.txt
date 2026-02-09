@@ -85,6 +85,32 @@ message(STATUS "Using ggwave from: ${GGWAVE_DIR}")
 add_subdirectory(${GGWAVE_DIR} EXCLUDE_FROM_ALL)
 
 # ========================================
+# Configuration libgit2
+# ========================================
+
+set(LIBGIT2_DIR ${CMAKE_SOURCE_DIR}/external/libgit2)
+
+if(NOT EXISTS ${LIBGIT2_DIR}/include/git2.h)
+  message(FATAL_ERROR "libgit2 not found in ${LIBGIT2_DIR}. Clone it with: git clone https://github.com/libgit2/libgit2.git external/libgit2")
+endif()
+
+message(STATUS "Using libgit2 from: ${LIBGIT2_DIR}")
+
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(BUILD_CLI OFF CACHE BOOL "" FORCE)
+set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+set(BUILD_FUZZERS OFF CACHE BOOL "" FORCE)
+set(USE_SSH OFF CACHE STRING "" FORCE)
+set(USE_HTTPS WinHTTP CACHE STRING "" FORCE)
+if(MSVC)
+  set(STATIC_CRT OFF CACHE BOOL "" FORCE)
+endif()
+
+add_subdirectory(${LIBGIT2_DIR} EXCLUDE_FROM_ALL)
+
+# ========================================
 # Lier toutes les bibliothèques
 # ========================================
 
@@ -93,6 +119,11 @@ target_link_libraries(Nebula PRIVATE libvterm)
 
 # Lier ggwave
 target_link_libraries(Nebula PRIVATE ggwave)
+
+# Lier libgit2
+target_link_libraries(Nebula PRIVATE libgit2package)
+target_include_directories(Nebula PRIVATE ${LIBGIT2_DIR}/include)
+target_include_directories(Nebula PRIVATE ${CMAKE_BINARY_DIR}/external/libgit2/include)
 
 # Bibliothèques Windows
 target_link_libraries(Nebula PRIVATE 

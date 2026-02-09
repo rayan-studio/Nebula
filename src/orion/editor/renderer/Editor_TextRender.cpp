@@ -118,11 +118,13 @@ namespace Orion
 
     void Editor::DrawWhitespaceIndicators(ID2D1RenderTarget *ctx)
     {
+        EnsureFoldLineMaps();
+        int visibleCount = GetVisibleLineCount();
         int firstVisibleLine = (int)(state_.scrollOffsetY / metrics_.lineHeight);
         int lastVisibleLine = (int)((state_.scrollOffsetY + (state_.bottomEdge - state_.topEdge)) / metrics_.lineHeight) + 1;
 
         firstVisibleLine = (std::max)(0, firstVisibleLine);
-        lastVisibleLine = (std::min)((int)state_.lines.size(), lastVisibleLine);
+        lastVisibleLine = (std::min)(visibleCount, lastVisibleLine);
 
         float contentLeft = state_.leftEdge + metrics_.gutterWidth + metrics_.leftPadding;
 
@@ -157,9 +159,10 @@ namespace Orion
             return;
         }
 
-        for (int i = firstVisibleLine; i < lastVisibleLine; ++i)
+        for (int v = firstVisibleLine; v < lastVisibleLine; ++v)
         {
-            float lineY = state_.topEdge + (i * metrics_.lineHeight) - state_.scrollOffsetY;
+            int i = VisibleLineToActualLine(v);
+            float lineY = state_.topEdge + (v * metrics_.lineHeight) - state_.scrollOffsetY;
             const std::wstring &line = state_.lines[i];
             if (line.empty())
                 continue;
@@ -208,6 +211,7 @@ namespace Orion
 
     void Editor::DrawTextContent(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
     {
+        EnsureFoldLineMaps();
         const wchar_t *editorFont = L"JetBrains Mono";
         const float editorFontSize = 14.0f;
 
@@ -235,11 +239,12 @@ namespace Orion
             format->SetIncrementalTabStop(tabStop);
         }
 
+        int visibleCount = GetVisibleLineCount();
         int firstVisibleLine = (int)(state_.scrollOffsetY / metrics_.lineHeight);
         int lastVisibleLine = (int)((state_.scrollOffsetY + (state_.bottomEdge - state_.topEdge)) / metrics_.lineHeight) + 1;
 
         firstVisibleLine = (std::max)(0, firstVisibleLine);
-        lastVisibleLine = (std::min)((int)state_.lines.size(), lastVisibleLine);
+        lastVisibleLine = (std::min)(visibleCount, lastVisibleLine);
 
         float contentLeft = state_.leftEdge + metrics_.gutterWidth + metrics_.leftPadding;
 
@@ -257,7 +262,8 @@ namespace Orion
         if (ext == L".md" && highlighter_)
         {
             // Recompute fence state up to the first visible line so scrolling doesn't break markdown
-            int scanEnd = (std::min)(firstVisibleLine, (int)state_.lines.size());
+            int firstActualLine = VisibleLineToActualLine(firstVisibleLine);
+            int scanEnd = (std::min)(firstActualLine, (int)state_.lines.size());
             for (int li = 0; li < scanEnd; ++li)
             {
                 highlighter_->AdvanceMarkdownState(state_.lines[li], mdInCodeBlock, mdFenceLang);
@@ -265,7 +271,10 @@ namespace Orion
         }
 
         // Guides
+        if (collapsedFolds_.empty())
         {
+            int firstActualLine = VisibleLineToActualLine(firstVisibleLine);
+            int lastActualLine = VisibleLineToActualLine((std::max)(firstVisibleLine, lastVisibleLine - 1));
             Geometry::IndentConfig indentConfig = GetIndentConfig();
             indentHelper_ = std::make_unique<Geometry::IndentationHelper>(indentConfig);
 
@@ -294,8 +303,8 @@ namespace Orion
             renderCtx.lineHeight = metrics_.lineHeight;
             renderCtx.charWidth = metrics_.characterWidth;
             renderCtx.lines = &state_.lines;
-            renderCtx.firstVisibleLine = firstVisibleLine;
-            renderCtx.lastVisibleLine = lastVisibleLine;
+            renderCtx.firstVisibleLine = firstActualLine;
+            renderCtx.lastVisibleLine = lastActualLine + 1;
             renderCtx.dwriteFactory = pDWriteFactory_;
             renderCtx.textFormat = format;
 
@@ -303,8 +312,8 @@ namespace Orion
             {
                 // Scan slightly beyond the visible window to capture opening braces
                 const int margin = 200;
-                int scanFirst = (std::max)(0, firstVisibleLine - margin);
-                int scanLast = (std::min)((int)state_.lines.size(), lastVisibleLine + margin);
+                int scanFirst = (std::max)(0, firstActualLine - margin);
+                int scanLast = (std::min)((int)state_.lines.size(), lastActualLine + 1 + margin);
 
                 (void)scanFirst;
                 (void)scanLast;
@@ -326,11 +335,18 @@ namespace Orion
         ctx->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.25f, 0.25f, 1.0f), &errorBrush);
         ctx->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.65f, 0.25f, 1.0f), &warningBrush);
 
-        for (int i = firstVisibleLine; i < lastVisibleLine; ++i)
+        for (int v = firstVisibleLine; v < lastVisibleLine; ++v)
         {
-            float lineY = state_.topEdge + (i * metrics_.lineHeight) - state_.scrollOffsetY;
+            int i = VisibleLineToActualLine(v);
+            float lineY = state_.topEdge + (v * metrics_.lineHeight) - state_.scrollOffsetY;
             const std::wstring &line = state_.lines[i];
-            if (line.empty())
+            int collapsedEnd = -1;
+            bool isCollapsedLine = IsCollapsedFoldStart(i, &collapsedEnd);
+            std::wstring displayLine = line;
+            if (isCollapsedLine)
+                displayLine += L"  ...";
+
+            if (displayLine.empty())
                 continue;
 
             IDWriteTextLayout *layout = nullptr;
@@ -338,8 +354,8 @@ namespace Orion
             if (pDWriteFactory_ && format)
             {
                 HRESULT hr = pDWriteFactory_->CreateTextLayout(
-                    line.c_str(),
-                    (UINT32)line.size(),
+                    displayLine.c_str(),
+                    (UINT32)displayLine.size(),
                     format,
                     10000.0f,
                     metrics_.lineHeight,
@@ -362,7 +378,7 @@ namespace Orion
                         for (auto &f : features)
                             typography->AddFontFeature(f);
 
-                        DWRITE_TEXT_RANGE fullRange = {0, (UINT32)line.size()};
+                        DWRITE_TEXT_RANGE fullRange = {0, (UINT32)displayLine.size()};
                         layout->SetTypography(typography, fullRange);
                         typography->Release();
                     }
@@ -380,7 +396,7 @@ namespace Orion
                 }
 
                 // Apply syntax highlighting: set drawing effects per token on the layout
-                if (highlighter_)
+                if (highlighter_ && !isCollapsedLine)
                 {
                     std::vector<::Orion::Syntax::Token> tokens;
 

@@ -121,6 +121,85 @@ namespace Orion
         if (ch < 32 && ch != L'\t' && ch != L'\r' && ch != L'\n')
             return;
 
+        // Minimal multi-caret editing: typed characters are applied to all carets.
+        if (!secondaryCarets_.empty() && !state_.hasSelection)
+        {
+            if (undoStack_.empty() || undoStack_.back().lines != state_.lines ||
+                undoStack_.back().caret.line != state_.caret.line ||
+                undoStack_.back().caret.column != state_.caret.column)
+            {
+                undoStack_.push_back(state_);
+                if (undoStack_.size() > maxUndoEntries_)
+                    undoStack_.erase(undoStack_.begin());
+            }
+
+            NormalizeSecondaryCarets();
+
+            std::vector<CaretPosition> allCarets;
+            allCarets.reserve(1 + secondaryCarets_.size());
+            allCarets.push_back(state_.caret); // primary = index 0
+            for (const auto &c : secondaryCarets_)
+                allCarets.push_back(c);
+
+            struct OrderedCaret
+            {
+                CaretPosition pos;
+                int originalIndex = 0;
+            };
+
+            std::vector<OrderedCaret> ordered;
+            ordered.reserve(allCarets.size());
+            for (int i = 0; i < (int)allCarets.size(); ++i)
+                ordered.push_back({allCarets[(size_t)i], i});
+
+            std::sort(ordered.begin(), ordered.end(),
+                      [](const OrderedCaret &a, const OrderedCaret &b)
+                      {
+                          if (a.pos.line != b.pos.line)
+                              return a.pos.line > b.pos.line;
+                          return a.pos.column > b.pos.column;
+                      });
+
+            std::vector<CaretPosition> updated(allCarets.size());
+            wchar_t writeCh = (ch == L'\r') ? L'\n' : ch;
+
+            for (const auto &entry : ordered)
+            {
+                int line = entry.pos.line;
+                int col = entry.pos.column;
+                line = (std::max)(0, (std::min)(line, (int)state_.lines.size() - 1));
+                int maxCol = (int)state_.lines[(size_t)line].size();
+                col = (std::max)(0, (std::min)(col, maxCol));
+
+                if (writeCh == L'\n')
+                {
+                    std::wstring current = state_.lines[(size_t)line];
+                    std::wstring before = current.substr(0, (size_t)col);
+                    std::wstring after = current.substr((size_t)col);
+                    state_.lines[(size_t)line] = before;
+                    state_.lines.insert(state_.lines.begin() + line + 1, after);
+                    updated[(size_t)entry.originalIndex] = {line + 1, 0};
+                }
+                else
+                {
+                    state_.lines[(size_t)line].insert((size_t)col, 1, writeCh);
+                    updated[(size_t)entry.originalIndex] = {line, col + 1};
+                }
+            }
+
+            state_.caret = updated[0];
+            secondaryCarets_.clear();
+            for (size_t i = 1; i < updated.size(); ++i)
+                secondaryCarets_.push_back(updated[i]);
+            NormalizeSecondaryCarets();
+
+            state_.caretVisible = true;
+            Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
+            state_.lastBlinkTime = GetTickCount();
+            MarkDirty();
+            return;
+        }
+
         // Push undo snapshot before any mutation
         if (undoStack_.empty() || undoStack_.back().lines != state_.lines ||
             undoStack_.back().caret.line != state_.caret.line ||
@@ -1420,6 +1499,23 @@ namespace Orion
             break;
         }
 
+        // Keep caret on visible rows when blocks are folded.
+        if (!collapsedFolds_.empty() && IsLineHiddenByFold(state_.caret.line))
+        {
+            for (const auto &kv : collapsedFolds_)
+            {
+                if (state_.caret.line > kv.first && state_.caret.line <= kv.second)
+                {
+                    int targetLine = kv.first;
+                    if (key == VK_DOWN || key == VK_RIGHT || key == VK_END)
+                        targetLine = (std::min)(kv.second + 1, (int)state_.lines.size() - 1);
+                    state_.caret.line = targetLine;
+                    state_.caret.column = (std::min)(state_.caret.column, (int)state_.lines[state_.caret.line].size());
+                    break;
+                }
+            }
+        }
+
         // Keep include completion open while typing inside #include <...> or #include "..."
         // Only refresh if the popup is already visible (manual trigger via Ctrl+Space).
         if (completionService_ && completionPopup_ && IsCppLikeExt(ext))
@@ -1464,7 +1560,11 @@ namespace Orion
             }
         }
 
-        if (prevCaret.line != state_.caret.line || prevCaret.column != state_.caret.column)
+        bool caretMoved = (prevCaret.line != state_.caret.line || prevCaret.column != state_.caret.column);
+        if (!secondaryCarets_.empty() && (contentChanged || caretMoved))
+            secondaryCarets_.clear();
+
+        if (caretMoved)
         {
             Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
         }

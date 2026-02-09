@@ -2,6 +2,7 @@
 #include "ui/panels/PanelManager.h"
 #include "helpers/window_helpers.h"
 #include "core/explorer/Explorer.h"
+#include "ui/components/input/InputTheme.h"
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -35,30 +36,19 @@ SearchPanel::SearchPanel()
     searchInput_.SetIcon(L"\uE721");
     
     // Use the same visual style as `Orion::SearchBox` (outer box + inner input)
-    auto& style = searchInput_.GetStyle();
-    style.useSearchBoxStyle = true;  // Afficher la boîte externe comme dans SearchBox
-
-    // Match SearchBox main box
-    style.outerBoxColor = D2D1::ColorF(0.15f, 0.15f, 0.15f);
-    style.outerBorderColor = D2D1::ColorF(0.3f, 0.3f, 0.3f);
-    style.outerCornerRadius = 4.0f;
-    style.outerPadding = 8.0f;
-    style.outerVerticalPadding = 4.0f;
-    style.shadowColor = D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.2f);
-    style.shadowOffset = 2.0f;
-
-    // Inner input field (matches SearchBox inputRect)
-    style.backgroundColor = D2D1::ColorF(0.1f, 0.1f, 0.1f);
-    style.borderColor = D2D1::ColorF(0.25f, 0.25f, 0.25f);
-    style.focusBorderColor = D2D1::ColorF(0.2f, 0.4f, 0.8f);
-    style.cornerRadius = 2.0f;
-
-    // Text and other accents
-    style.textColor = D2D1::ColorF(0.9f, 0.9f, 0.9f);
-    style.placeholderColor = D2D1::ColorF(0.4f, 0.4f, 0.4f);
-    // editor.selectionHighlightBackground -> #17e5e633
-    style.selectionColor = D2D1::ColorF(0.0901961f, 0.898039f, 0.901961f, 0.2f);
-    style.cursorColor = D2D1::ColorF(0.9f, 0.9f, 0.9f);
+    auto &style = searchInput_.GetStyle();
+    style.useSearchBoxStyle = false;
+    style.backgroundColor = UI::InputTheme::Background();
+    style.borderColor = UI::InputTheme::Border();
+    style.focusBorderColor = UI::InputTheme::FocusBorder();
+    style.textColor = UI::InputTheme::Text();
+    style.placeholderColor = UI::InputTheme::Placeholder();
+    style.selectionColor = UI::InputTheme::Selection();
+    style.cursorColor = UI::InputTheme::Caret();
+    style.cornerRadius = UI::InputTheme::kCornerRadius;
+    style.fontFamily = UI::InputTheme::kFontFamily;
+    style.fontSize = UI::InputTheme::kFontSize;
+    style.padding = UI::InputTheme::kHorizontalPadding;
     
     searchInput_.onTextChanged = [this](const std::wstring &text) {
         UpdateSearchResults();
@@ -479,7 +469,7 @@ void SearchPanel::UpdateLayout(HWND hwnd)
     searchInput_.SetRect(D2D1::RectF(inputLeft, inputTop, inputRight, inputTop + inputH));
 
     // La zone de résultats commence après l'input + ses paddings externes
-    resultsTop_ = inputTop + inputH + searchInput_.GetStyle().outerVerticalPadding * 2 + 12.0f;
+    resultsTop_ = inputTop + inputH + 12.0f;
 
     // Update scrollbar
     float contentHeight = searchResults_.size() * resultItemHeight_;
@@ -535,9 +525,7 @@ void SearchPanel::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
     }
 
     // Check input click
-    D2D1_RECT_F inputRect = searchInput_.GetRect();
-    if (clientPoint.x >= inputRect.left && clientPoint.x <= inputRect.right &&
-        clientPoint.y >= inputRect.top && clientPoint.y <= inputRect.bottom)
+    if (searchInput_.HitTest(clientPoint))
     {
         searchInput_.OnLeftButtonDown(hwnd, clientPoint);
         InvalidateRect(hwnd, NULL, FALSE);

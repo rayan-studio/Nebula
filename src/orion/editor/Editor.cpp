@@ -22,6 +22,18 @@
 
 namespace Orion
 {
+    static bool CaretPosLess(const CaretPosition &a, const CaretPosition &b)
+    {
+        if (a.line != b.line)
+            return a.line < b.line;
+        return a.column < b.column;
+    }
+
+    static bool CaretPosEqual(const CaretPosition &a, const CaretPosition &b)
+    {
+        return a.line == b.line && a.column == b.column;
+    }
+
     Editor::Editor()
     {
         state_.lastBlinkTime = GetTickCount();
@@ -56,6 +68,35 @@ namespace Orion
         bool wasVisible = state_.caretVisible;
         Caret::UpdateCaretBlink(state_);
         return wasVisible != state_.caretVisible;
+    }
+
+    void Editor::NormalizeSecondaryCarets()
+    {
+        if (state_.lines.empty())
+        {
+            secondaryCarets_.clear();
+            return;
+        }
+
+        for (auto &c : secondaryCarets_)
+        {
+            c.line = (std::max)(0, (std::min)(c.line, (int)state_.lines.size() - 1));
+            int maxCol = (int)state_.lines[(size_t)c.line].size();
+            c.column = (std::max)(0, (std::min)(c.column, maxCol));
+        }
+
+        std::sort(secondaryCarets_.begin(), secondaryCarets_.end(), CaretPosLess);
+        secondaryCarets_.erase(std::unique(secondaryCarets_.begin(), secondaryCarets_.end(), CaretPosEqual), secondaryCarets_.end());
+
+        secondaryCarets_.erase(
+            std::remove_if(
+                secondaryCarets_.begin(),
+                secondaryCarets_.end(),
+                [this](const CaretPosition &c)
+                {
+                    return c.line == state_.caret.line && c.column == state_.caret.column;
+                }),
+            secondaryCarets_.end());
     }
 
     Editor::~Editor()

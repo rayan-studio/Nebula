@@ -61,18 +61,22 @@ namespace Orion
         ctx->CreateSolidColorBrush(theme.lineNumberText, &textBrush);
         ctx->CreateSolidColorBrush(theme.text, &activeTextBrush);
 
+        int visibleCount = state.actualLineByVisual.empty()
+            ? (int)state.lines.size()
+            : (int)state.actualLineByVisual.size();
         int firstVisibleLine = (int)(state.scrollOffsetY / metrics.lineHeight);
         int lastVisibleLine = (int)((state.scrollOffsetY + (state.bottomEdge - state.topEdge)) / metrics.lineHeight) + 1;
 
         firstVisibleLine = (std::max)(0, firstVisibleLine);
-        lastVisibleLine = (std::min)((int)state.lines.size(), lastVisibleLine);
+        lastVisibleLine = (std::min)(visibleCount, lastVisibleLine);
 
         for (int i = firstVisibleLine; i < lastVisibleLine; ++i)
         {
+            int actualLine = state.actualLineByVisual.empty() ? i : state.actualLineByVisual[(size_t)i];
             float lineY = state.topEdge + (i * metrics.lineHeight) - state.scrollOffsetY;
 
             wchar_t lineNum[16];
-            swprintf_s(lineNum, 16, L"%d", i + 1);
+            swprintf_s(lineNum, 16, L"%d", actualLine + 1);
 
             D2D1_RECT_F rect = D2D1::RectF(
                 state.leftEdge,
@@ -80,7 +84,7 @@ namespace Orion
                 state.leftEdge + metrics.gutterWidth,
                 lineY + metrics.lineHeight);
 
-            ID2D1SolidColorBrush *brushToUse = (i == state.caret.line) ? activeTextBrush : textBrush;
+            ID2D1SolidColorBrush *brushToUse = (actualLine == state.caret.line) ? activeTextBrush : textBrush;
             ctx->DrawTextW(
                 lineNum,
                 (UINT32)wcslen(lineNum),

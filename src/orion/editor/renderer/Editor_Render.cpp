@@ -10,6 +10,8 @@
 #include "orion/geometry/IndentationHelper.h"
 #include "orion/selection/Selection.h"
 #include "orion/caret/Caret.h"
+#include "core/explorer/Explorer.h"
+#include "ui/panels/git/GitDiffDecorations.h"
 
 // Ensure Windows min/max macros don't interfere with std::min/std::max
 #ifdef max
@@ -21,6 +23,266 @@
 
 namespace Orion
 {
+    void Editor::EnsureFoldLineMaps()
+    {
+        if (!foldLineMapsDirty_)
+            return;
+        RebuildFoldLineMaps();
+    }
+
+    void Editor::RebuildFoldLineMaps()
+    {
+        const int lineCount = (int)state_.lines.size();
+
+        // Drop invalid or overlapping folds to keep mapping deterministic.
+        for (auto it = collapsedFolds_.begin(); it != collapsedFolds_.end();)
+        {
+            if (it->first < 0 || it->first >= lineCount || it->second <= it->first || it->second >= lineCount)
+                it = collapsedFolds_.erase(it);
+            else
+                ++it;
+        }
+        int prevEnd = -1;
+        for (auto it = collapsedFolds_.begin(); it != collapsedFolds_.end();)
+        {
+            if (it->first <= prevEnd)
+            {
+                it = collapsedFolds_.erase(it);
+                continue;
+            }
+            prevEnd = it->second;
+            ++it;
+        }
+
+        state_.visualLineByActual.assign((size_t)(std::max)(0, lineCount), 0);
+        state_.actualLineByVisual.clear();
+        if (lineCount <= 0)
+        {
+            foldLineMapsDirty_ = false;
+            return;
+        }
+
+        int visible = 0;
+        int line = 0;
+        while (line < lineCount)
+        {
+            state_.actualLineByVisual.push_back(line);
+            state_.visualLineByActual[(size_t)line] = visible;
+
+            auto f = collapsedFolds_.find(line);
+            if (f != collapsedFolds_.end())
+            {
+                int end = f->second;
+                if (end > line)
+                {
+                    for (int h = line + 1; h <= end && h < lineCount; ++h)
+                        state_.visualLineByActual[(size_t)h] = visible;
+                    line = end + 1;
+                }
+                else
+                {
+                    ++line;
+                }
+            }
+            else
+            {
+                ++line;
+            }
+            ++visible;
+        }
+
+        foldLineMapsDirty_ = false;
+    }
+
+    int Editor::GetVisibleLineCount()
+    {
+        EnsureFoldLineMaps();
+        if (state_.actualLineByVisual.empty())
+            return 1;
+        return (int)state_.actualLineByVisual.size();
+    }
+
+    int Editor::VisibleLineToActualLine(int visibleLine)
+    {
+        EnsureFoldLineMaps();
+        if (state_.lines.empty())
+            return 0;
+        if (state_.actualLineByVisual.empty())
+            return (std::max)(0, (std::min)(visibleLine, (int)state_.lines.size() - 1));
+        int clamped = (std::max)(0, (std::min)(visibleLine, (int)state_.actualLineByVisual.size() - 1));
+        return state_.actualLineByVisual[(size_t)clamped];
+    }
+
+    int Editor::ActualLineToVisibleLine(int actualLine)
+    {
+        EnsureFoldLineMaps();
+        if (state_.lines.empty())
+            return 0;
+        int clamped = (std::max)(0, (std::min)(actualLine, (int)state_.lines.size() - 1));
+        if (state_.visualLineByActual.empty())
+            return clamped;
+        return state_.visualLineByActual[(size_t)clamped];
+    }
+
+    bool Editor::IsLineHiddenByFold(int actualLine)
+    {
+        for (const auto &kv : collapsedFolds_)
+        {
+            if (actualLine <= kv.first)
+                break;
+            if (actualLine <= kv.second)
+                return true;
+        }
+        return false;
+    }
+
+    bool Editor::IsCollapsedFoldStart(int line, int *outEnd)
+    {
+        auto it = collapsedFolds_.find(line);
+        if (it == collapsedFolds_.end())
+            return false;
+        if (outEnd)
+            *outEnd = it->second;
+        return true;
+    }
+
+    int Editor::FindFoldEndLineForStart(int startLine) const
+    {
+        const int lineCount = (int)state_.lines.size();
+        if (startLine < 0 || startLine >= lineCount)
+            return -1;
+
+        bool inBlockComment = false;
+        bool foundOpen = false;
+        bool openedOnStart = false;
+        int depth = 0;
+
+        for (int li = startLine; li < lineCount; ++li)
+        {
+            const std::wstring &ln = state_.lines[(size_t)li];
+            bool inString = false;
+            bool inChar = false;
+            bool escaped = false;
+
+            for (size_t ci = 0; ci < ln.size(); ++ci)
+            {
+                wchar_t c = ln[ci];
+                wchar_t n = (ci + 1 < ln.size()) ? ln[ci + 1] : 0;
+
+                if (inBlockComment)
+                {
+                    if (c == L'*' && n == L'/')
+                    {
+                        inBlockComment = false;
+                        ++ci;
+                    }
+                    continue;
+                }
+                if (inString)
+                {
+                    if (escaped)
+                    {
+                        escaped = false;
+                        continue;
+                    }
+                    if (c == L'\\')
+                    {
+                        escaped = true;
+                        continue;
+                    }
+                    if (c == L'"')
+                        inString = false;
+                    continue;
+                }
+                if (inChar)
+                {
+                    if (escaped)
+                    {
+                        escaped = false;
+                        continue;
+                    }
+                    if (c == L'\\')
+                    {
+                        escaped = true;
+                        continue;
+                    }
+                    if (c == L'\'')
+                        inChar = false;
+                    continue;
+                }
+
+                if (c == L'/' && n == L'/')
+                    break;
+                if (c == L'/' && n == L'*')
+                {
+                    inBlockComment = true;
+                    ++ci;
+                    continue;
+                }
+                if (c == L'"')
+                {
+                    inString = true;
+                    continue;
+                }
+                if (c == L'\'')
+                {
+                    inChar = true;
+                    continue;
+                }
+
+                if (c == L'{')
+                {
+                    ++depth;
+                    foundOpen = true;
+                    if (li == startLine)
+                        openedOnStart = true;
+                    continue;
+                }
+                if (c == L'}' && foundOpen && depth > 0)
+                {
+                    --depth;
+                    if (depth == 0 && openedOnStart)
+                        return li;
+                }
+            }
+        }
+
+        return -1;
+    }
+
+    bool Editor::ToggleFoldAtLine(int startLine)
+    {
+        if (state_.lines.empty())
+            return false;
+
+        auto existing = collapsedFolds_.find(startLine);
+        if (existing != collapsedFolds_.end())
+        {
+            collapsedFolds_.erase(existing);
+            foldLineMapsDirty_ = true;
+            EnsureFoldLineMaps();
+            return true;
+        }
+
+        int endLine = FindFoldEndLineForStart(startLine);
+        if (endLine <= startLine)
+            return false;
+
+        collapsedFolds_[startLine] = endLine;
+        foldLineMapsDirty_ = true;
+        EnsureFoldLineMaps();
+
+        if (state_.caret.line > startLine && state_.caret.line <= endLine)
+        {
+            state_.caret.line = startLine;
+            int maxCol = (int)state_.lines[(size_t)startLine].size();
+            state_.caret.column = (std::min)(state_.caret.column, maxCol);
+            state_.hasSelection = false;
+        }
+
+        return true;
+    }
+
     void Editor::UpdateLayout(HWND hwnd, float left, float top, float right, float bottom)
     {
         (void)hwnd;
@@ -32,7 +294,11 @@ namespace Orion
         float width = state_.rightEdge - state_.leftEdge;
         float height = state_.bottomEdge - state_.topEdge;
 
-        float baseContentHeight = (float)state_.lines.size() * metrics_.lineHeight;
+        if ((int)state_.visualLineByActual.size() != (int)state_.lines.size())
+            foldLineMapsDirty_ = true;
+        EnsureFoldLineMaps();
+
+        float baseContentHeight = (float)GetVisibleLineCount() * metrics_.lineHeight;
 
         float extra = height - metrics_.lineHeight;
         if (extra < 0.0f)
@@ -46,7 +312,7 @@ namespace Orion
         if (pendingRevealCaret_)
         {
             // Reveal with a small top margin so the caret isn't glued to the bottom.
-            float caretTop = state_.caret.line * metrics_.lineHeight;
+            float caretTop = ActualLineToVisibleLine(state_.caret.line) * metrics_.lineHeight;
             float margin = metrics_.lineHeight * 2.0f;
             float desired = caretTop - margin;
             if (desired < 0.0f)
@@ -184,10 +450,12 @@ namespace Orion
             return;
         }
 
+        EnsureFoldLineMaps();
         Orion::Gutter gutter;
         metrics_.gutterWidth = gutter.CalculateGutterWidth(state_, metrics_);
         gutter.DrawGutter(ctx, state_, theme_, metrics_);
         gutter.DrawLineNumbers(ctx, dwrite, state_, theme_, metrics_, customFontCollection_);
+        DrawFoldMarkers(ctx, dwrite);
 
         float contentLeft = state_.leftEdge + metrics_.gutterWidth + metrics_.leftPadding;
         float contentRight = state_.rightEdge - (scrollbar_.IsVisible() ? 14.0f : 0.0f);
@@ -196,6 +464,7 @@ namespace Orion
         ctx->PushAxisAlignedClip(contentClip, D2D1_ANTIALIAS_MODE_ALIASED);
 
         DrawActiveLine(ctx);
+        DrawGitDiffDecorations(ctx);
         DrawSelection(ctx);
         DrawTextContent(ctx, dwrite);
         DrawSearchMatches(ctx);
@@ -332,6 +601,61 @@ namespace Orion
         ctx->SetTextAntialiasMode(oldTextAA);
     }
 
+    void Editor::DrawFoldMarkers(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
+    {
+        if (!ctx || !dwrite || state_.lines.empty())
+            return;
+
+        EnsureFoldLineMaps();
+
+        int visibleCount = GetVisibleLineCount();
+        if (visibleCount <= 0)
+            return;
+
+        int firstVisible = (int)(state_.scrollOffsetY / metrics_.lineHeight);
+        int lastVisible = (int)((state_.scrollOffsetY + (state_.bottomEdge - state_.topEdge)) / metrics_.lineHeight) + 1;
+        firstVisible = (std::max)(0, firstVisible);
+        lastVisible = (std::min)(visibleCount, lastVisible);
+
+        FLOAT dpiX = 96.0f, dpiY = 96.0f;
+        ctx->GetDpi(&dpiX, &dpiY);
+        const UINT dpi = (UINT)std::round(dpiX);
+        const float arrowSize = (12.0f * dpiX) / 96.0f;
+        const float iconRightPad = 3.0f;
+
+        for (int v = firstVisible; v < lastVisible; ++v)
+        {
+            int line = VisibleLineToActualLine(v);
+            int collapsedEnd = -1;
+            bool isCollapsed = IsCollapsedFoldStart(line, &collapsedEnd);
+
+            int foldEnd = isCollapsed ? collapsedEnd : -1;
+            bool isHoverLine = (line == gutterHoverLine_);
+            if (!isCollapsed && isHoverLine)
+            {
+                foldEnd = FindFoldEndLineForStart(line);
+            }
+
+            if (foldEnd <= line)
+                continue;
+
+            float lineY = state_.topEdge + (v * metrics_.lineHeight) - state_.scrollOffsetY;
+            std::string iconPath = isCollapsed
+                ? "assets\\ressource\\icons\\chevron-right.svg"
+                : "assets\\ressource\\icons\\chevron-up.svg";
+            ID2D1Bitmap *bmp = GetExplorerManager().LoadSvgIconPublic(ctx, iconPath, (int)std::round(arrowSize), dpi);
+            if (!bmp)
+                continue;
+
+            float centerX = std::round(state_.leftEdge + metrics_.gutterWidth - arrowSize * 0.5f - iconRightPad);
+            float centerY = std::round(lineY + metrics_.lineHeight * 0.5f);
+            float left = centerX - arrowSize * 0.5f;
+            float top = centerY - arrowSize * 0.5f;
+            D2D1_RECT_F dst = D2D1::RectF(left, top, left + arrowSize, top + arrowSize);
+            ctx->DrawBitmap(bmp, dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+        }
+    }
+
     void Editor::DrawActiveLine(ID2D1RenderTarget *ctx)
     {
         if (state_.hasSelection)
@@ -341,7 +665,7 @@ namespace Orion
         ctx->CreateSolidColorBrush(theme_.activeLineBackground, &brush);
 
         float contentLeft = state_.leftEdge + metrics_.gutterWidth + metrics_.leftPadding;
-        float lineY = state_.topEdge + (state_.caret.line * metrics_.lineHeight) - state_.scrollOffsetY;
+        float lineY = state_.topEdge + (ActualLineToVisibleLine(state_.caret.line) * metrics_.lineHeight) - state_.scrollOffsetY;
 
         D2D1_RECT_F rect = D2D1::RectF(
             contentLeft - metrics_.leftPadding,
@@ -355,6 +679,48 @@ namespace Orion
             brush->Release();
     }
 
+    void Editor::DrawGitDiffDecorations(ID2D1RenderTarget *ctx)
+    {
+        if (!ctx || state_.filePath.empty() || state_.lines.empty())
+            return;
+
+        GitDiffDecorations::LineSets lines;
+        if (!GitDiffDecorations::GetForFile(state_.filePath, lines))
+            return;
+
+        ID2D1SolidColorBrush *addedBrush = nullptr;
+        ID2D1SolidColorBrush *deletedBrush = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.58f, 0.30f, 0.22f), &addedBrush);
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.70f, 0.24f, 0.24f, 0.20f), &deletedBrush);
+
+        const float contentLeft = state_.leftEdge + metrics_.gutterWidth;
+        const float contentRight = state_.rightEdge - (scrollbar_.IsVisible() ? 14.0f : 0.0f);
+        const float lineHeight = metrics_.lineHeight;
+        const int lineCount = (int)state_.lines.size();
+
+        auto drawLineBg = [&](int actualLine, ID2D1SolidColorBrush *brush)
+        {
+            if (!brush || actualLine < 0 || actualLine >= lineCount)
+                return;
+            int visibleLine = ActualLineToVisibleLine(actualLine);
+            float y = state_.topEdge + (visibleLine * lineHeight) - state_.scrollOffsetY;
+            if (y + lineHeight < state_.topEdge || y > state_.bottomEdge)
+                return;
+            D2D1_RECT_F rect = D2D1::RectF(contentLeft, y, contentRight, y + lineHeight);
+            ctx->FillRectangle(rect, brush);
+        };
+
+        for (int line : lines.deletedLines)
+            drawLineBg(line, deletedBrush);
+        for (int line : lines.addedLines)
+            drawLineBg(line, addedBrush);
+
+        if (addedBrush)
+            addedBrush->Release();
+        if (deletedBrush)
+            deletedBrush->Release();
+    }
+
     void Editor::DrawSelection(ID2D1RenderTarget *ctx)
     {
         if (!state_.hasSelection)
@@ -366,11 +732,26 @@ namespace Orion
 
         Orion::CaretPosition start = {state_.selectionStart.line, state_.selectionStart.column};
         Orion::CaretPosition end = {state_.caret.line, state_.caret.column};
+        const std::vector<std::wstring> *linesForSelection = &state_.lines;
+        std::vector<std::wstring> visibleLines;
+        if (!collapsedFolds_.empty())
+        {
+            EnsureFoldLineMaps();
+            visibleLines.reserve(state_.actualLineByVisual.size());
+            for (int actual : state_.actualLineByVisual)
+            {
+                if (actual >= 0 && actual < (int)state_.lines.size())
+                    visibleLines.push_back(state_.lines[(size_t)actual]);
+            }
+            start.line = ActualLineToVisibleLine(start.line);
+            end.line = ActualLineToVisibleLine(end.line);
+            linesForSelection = &visibleLines;
+        }
 
         auto regions = Rendering::Selection::CalculateRegions(
             start,
             end,
-            state_.lines,
+            *linesForSelection,
             contentLeft,
             state_.topEdge,
             state_.scrollOffsetX,
@@ -420,6 +801,16 @@ namespace Orion
         D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
         ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
         ctx->FillRectangle(rect, brush);
+
+        for (const auto &extraCaret : secondaryCarets_)
+        {
+            D2D1_POINT_2F p = TextToScreenPosition(extraCaret);
+            float ex = std::round(p.x);
+            float ey = std::round(p.y + (metrics_.lineHeight - caretHeight) * 0.5f);
+            D2D1_RECT_F eRect = D2D1::RectF(ex, ey, ex + w, ey + h);
+            ctx->FillRectangle(eRect, brush);
+        }
+
         ctx->SetAntialiasMode(oldAA);
 
         if (brush)
@@ -472,7 +863,9 @@ namespace Orion
         {
             const auto &match = matches[i];
 
-            float lineY = state_.topEdge + (match.line * metrics_.lineHeight) - state_.scrollOffsetY;
+            if (IsLineHiddenByFold(match.line))
+                continue;
+            float lineY = state_.topEdge + (ActualLineToVisibleLine(match.line) * metrics_.lineHeight) - state_.scrollOffsetY;
             if (lineY + metrics_.lineHeight < state_.topEdge || lineY > state_.bottomEdge)
                 continue;
 

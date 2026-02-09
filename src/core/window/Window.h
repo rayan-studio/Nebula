@@ -146,6 +146,7 @@ public:
     DWORD titlebarHoverLastTick_ = 0;
     std::map<int, DWORD> pendingDiagTick_;
     bool diagTimerActive_ = false;
+    DWORD lastExternalFileCheckTick_ = 0;
 
 public:
     float GetTitlebarHoverAlpha(CustomTitleBarHoveredButton btn) const;

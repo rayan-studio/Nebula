@@ -240,6 +240,315 @@ namespace
         return s.substr(a, b - a + 1);
     }
 
+    size_t FindNoCase(const std::wstring &haystack, const std::wstring &needle, size_t start = 0)
+    {
+        if (needle.empty() || haystack.empty() || start >= haystack.size())
+            return std::wstring::npos;
+
+        std::wstring lowerHay = ToLower(haystack);
+        std::wstring lowerNeedle = ToLower(needle);
+        return lowerHay.find(lowerNeedle, start);
+    }
+
+    std::wstring DecodePercentEscapes(const std::wstring &text)
+    {
+        if (text.empty())
+            return text;
+
+        auto hexVal = [](wchar_t c) -> int
+        {
+            if (c >= L'0' && c <= L'9')
+                return (int)(c - L'0');
+            if (c >= L'a' && c <= L'f')
+                return 10 + (int)(c - L'a');
+            if (c >= L'A' && c <= L'F')
+                return 10 + (int)(c - L'A');
+            return -1;
+        };
+
+        std::wstring out;
+        out.reserve(text.size());
+        for (size_t i = 0; i < text.size(); ++i)
+        {
+            if (text[i] == L'%' && i + 2 < text.size())
+            {
+                int hi = hexVal(text[i + 1]);
+                int lo = hexVal(text[i + 2]);
+                if (hi >= 0 && lo >= 0)
+                {
+                    out.push_back((wchar_t)((hi << 4) | lo));
+                    i += 2;
+                    continue;
+                }
+            }
+            out.push_back(text[i]);
+        }
+        return out;
+    }
+
+    bool IsLikelyExternalUrl(const std::wstring &path)
+    {
+        std::wstring p = ToLower(Trim(path));
+        return p.rfind(L"http://", 0) == 0 || p.rfind(L"https://", 0) == 0 || p.rfind(L"data:", 0) == 0;
+    }
+
+    std::wstring NormalizeImageRef(std::wstring path)
+    {
+        path = Trim(path);
+        if (path.size() >= 2)
+        {
+            wchar_t first = path.front();
+            wchar_t last = path.back();
+            if ((first == L'"' && last == L'"') || (first == L'\'' && last == L'\'') ||
+                (first == L'<' && last == L'>'))
+            {
+                path = path.substr(1, path.size() - 2);
+            }
+        }
+
+        size_t ampPos = 0;
+        while ((ampPos = path.find(L"&amp;", ampPos)) != std::wstring::npos)
+        {
+            path.replace(ampPos, 5, L"&");
+            ampPos += 1;
+        }
+
+        path = DecodePercentEscapes(path);
+        return Trim(path);
+    }
+
+    size_t FindMatchingParen(const std::wstring &s, size_t openPos)
+    {
+        if (openPos == std::wstring::npos || openPos >= s.size() || s[openPos] != L'(')
+            return std::wstring::npos;
+
+        int depth = 0;
+        bool escaped = false;
+        for (size_t i = openPos; i < s.size(); ++i)
+        {
+            wchar_t ch = s[i];
+            if (escaped)
+            {
+                escaped = false;
+                continue;
+            }
+            if (ch == L'\\')
+            {
+                escaped = true;
+                continue;
+            }
+            if (ch == L'(')
+            {
+                depth++;
+            }
+            else if (ch == L')')
+            {
+                depth--;
+                if (depth == 0)
+                    return i;
+                if (depth < 0)
+                    return std::wstring::npos;
+            }
+        }
+        return std::wstring::npos;
+    }
+
+    std::wstring ParseMarkdownDestination(const std::wstring &insideParens)
+    {
+        std::wstring s = Trim(insideParens);
+        if (s.empty())
+            return L"";
+
+        if (s.front() == L'<')
+        {
+            size_t end = s.find(L'>', 1);
+            if (end != std::wstring::npos)
+                return NormalizeImageRef(s.substr(1, end - 1));
+        }
+
+        size_t end = 0;
+        while (end < s.size())
+        {
+            if (s[end] == L'\\' && end + 1 < s.size())
+            {
+                end += 2;
+                continue;
+            }
+            if (iswspace(s[end]))
+                break;
+            end++;
+        }
+
+        std::wstring token = s.substr(0, end);
+        std::wstring unescaped;
+        unescaped.reserve(token.size());
+        for (size_t i = 0; i < token.size(); ++i)
+        {
+            if (token[i] == L'\\' && i + 1 < token.size())
+            {
+                unescaped.push_back(token[i + 1]);
+                i++;
+            }
+            else
+            {
+                unescaped.push_back(token[i]);
+            }
+        }
+
+        return NormalizeImageRef(unescaped);
+    }
+
+    bool ParseFloatValue(const std::wstring &raw, float &out)
+    {
+        std::wstring s = Trim(raw);
+        if (s.empty())
+            return false;
+        wchar_t *end = nullptr;
+        double v = wcstod(s.c_str(), &end);
+        if (end == s.c_str())
+            return false;
+        out = (float)v;
+        return out > 0.0f;
+    }
+
+    bool TryParseHtmlImgTag(const std::wstring &line,
+                            size_t searchFrom,
+                            size_t &outTagStart,
+                            size_t &outTagEnd,
+                            std::wstring &outPath,
+                            float &outW,
+                            float &outH,
+                            MarkdownImageAlign &outAlign)
+    {
+        outTagStart = std::wstring::npos;
+        outTagEnd = std::wstring::npos;
+        outPath.clear();
+        outW = 0.0f;
+        outH = 0.0f;
+        outAlign = MarkdownImageAlign::Left;
+
+        size_t start = FindNoCase(line, L"<img", searchFrom);
+        if (start == std::wstring::npos)
+            return false;
+        size_t end = line.find(L'>', start + 4);
+        if (end == std::wstring::npos)
+            return false;
+
+        std::wstring tag = line.substr(start, end - start + 1);
+        std::unordered_map<std::wstring, std::wstring> attrs;
+
+        size_t i = 4;
+        while (i < tag.size())
+        {
+            while (i < tag.size() && (iswspace(tag[i]) || tag[i] == L'/' || tag[i] == L'>'))
+                i++;
+            size_t nameStart = i;
+            while (i < tag.size() && (iswalnum(tag[i]) || tag[i] == L'-' || tag[i] == L':' || tag[i] == L'_'))
+                i++;
+            if (i <= nameStart)
+                break;
+
+            std::wstring name = ToLower(tag.substr(nameStart, i - nameStart));
+            while (i < tag.size() && iswspace(tag[i]))
+                i++;
+            if (i >= tag.size() || tag[i] != L'=')
+            {
+                attrs[name] = L"";
+                continue;
+            }
+            i++;
+            while (i < tag.size() && iswspace(tag[i]))
+                i++;
+            if (i >= tag.size())
+                break;
+
+            std::wstring value;
+            if (tag[i] == L'"' || tag[i] == L'\'')
+            {
+                wchar_t quote = tag[i++];
+                size_t valueStart = i;
+                size_t valueEnd = tag.find(quote, valueStart);
+                if (valueEnd == std::wstring::npos)
+                    break;
+                value = tag.substr(valueStart, valueEnd - valueStart);
+                i = valueEnd + 1;
+            }
+            else
+            {
+                size_t valueStart = i;
+                while (i < tag.size() && !iswspace(tag[i]) && tag[i] != L'>')
+                    i++;
+                value = tag.substr(valueStart, i - valueStart);
+            }
+            attrs[name] = value;
+        }
+
+        auto attr = [&](const wchar_t *name) -> std::wstring
+        {
+            auto it = attrs.find(std::wstring(name));
+            return (it == attrs.end()) ? L"" : it->second;
+        };
+
+        outPath = NormalizeImageRef(attr(L"src"));
+        if (outPath.empty())
+            return false;
+
+        std::wstring align = ToLower(attr(L"align"));
+        if (align == L"right")
+            outAlign = MarkdownImageAlign::Right;
+        else if (align == L"center" || align == L"middle")
+            outAlign = MarkdownImageAlign::Center;
+        else if (align == L"left")
+            outAlign = MarkdownImageAlign::Left;
+
+        float parsed = 0.0f;
+        if (ParseFloatValue(attr(L"width"), parsed))
+            outW = parsed;
+        if (ParseFloatValue(attr(L"height"), parsed))
+            outH = parsed;
+
+        std::wstring style = ToLower(attr(L"style"));
+        if (!style.empty())
+        {
+            size_t pos = 0;
+            while (pos < style.size())
+            {
+                size_t sep = style.find(L';', pos);
+                std::wstring chunk = Trim(style.substr(pos, (sep == std::wstring::npos) ? std::wstring::npos : sep - pos));
+                size_t colon = chunk.find(L':');
+                if (colon != std::wstring::npos)
+                {
+                    std::wstring key = Trim(chunk.substr(0, colon));
+                    std::wstring val = Trim(chunk.substr(colon + 1));
+                    if (key == L"float")
+                    {
+                        if (val == L"right")
+                            outAlign = MarkdownImageAlign::Right;
+                        else if (val == L"left")
+                            outAlign = MarkdownImageAlign::Left;
+                    }
+                    else if (key == L"width")
+                    {
+                        if (ParseFloatValue(val, parsed))
+                            outW = parsed;
+                    }
+                    else if (key == L"height")
+                    {
+                        if (ParseFloatValue(val, parsed))
+                            outH = parsed;
+                    }
+                }
+                if (sep == std::wstring::npos)
+                    break;
+                pos = sep + 1;
+            }
+        }
+
+        outTagStart = start;
+        outTagEnd = end;
+        return true;
+    }
+
 
     std::wstring StripMarkdownLinks(const std::wstring &line)
     {
@@ -294,59 +603,22 @@ namespace
         if (t.rfind(L"![", 0) == 0)
         {
             size_t open = t.find(L"](");
-            size_t close = t.find(L")", open == std::wstring::npos ? 0 : open + 2);
+            size_t parenOpen = (open == std::wstring::npos) ? std::wstring::npos : t.find(L'(', open + 1);
+            size_t close = FindMatchingParen(t, parenOpen);
             if (open != std::wstring::npos && close != std::wstring::npos && close > open + 2)
             {
-                outPath = t.substr(open + 2, close - (open + 2));
+                outPath = ParseMarkdownDestination(t.substr(open + 2, close - (open + 2)));
                 return !outPath.empty();
             }
         }
 
-        if (t.find(L"<img") != std::wstring::npos)
+        size_t imgStart = std::wstring::npos;
+        size_t imgEnd = std::wstring::npos;
+        if (TryParseHtmlImgTag(t, 0, imgStart, imgEnd, outPath, outW, outH, outAlign))
         {
-            auto findAttr = [&](const std::wstring &name) -> std::wstring
-            {
-                size_t pos = t.find(name);
-                if (pos == std::wstring::npos)
-                    return L"";
-                pos = t.find(L'=', pos + name.size());
-                if (pos == std::wstring::npos)
-                    return L"";
-                pos++;
-                while (pos < t.size() && iswspace(t[pos]))
-                    pos++;
-                if (pos >= t.size())
-                    return L"";
-                wchar_t quote = t[pos];
-                if (quote == L'"' || quote == L'\'')
-                {
-                    size_t end = t.find(quote, pos + 1);
-                    if (end != std::wstring::npos)
-                        return t.substr(pos + 1, end - pos - 1);
-                }
-                else
-                {
-                    size_t end = t.find_first_of(L" \t\r\n>", pos);
-                    return t.substr(pos, end == std::wstring::npos ? t.size() - pos : end - pos);
-                }
-                return L"";
-            };
-
-            outPath = findAttr(L"src");
-            std::wstring w = findAttr(L"width");
-            std::wstring h = findAttr(L"height");
-            std::wstring align = ToLower(findAttr(L"align"));
-            if (align == L"right")
-                outAlign = MarkdownImageAlign::Right;
-            else if (align == L"center")
-                outAlign = MarkdownImageAlign::Center;
-            else if (align == L"left")
-                outAlign = MarkdownImageAlign::Left;
-            if (!w.empty())
-                outW = (float)_wtoi(w.c_str());
-            if (!h.empty())
-                outH = (float)_wtoi(h.c_str());
-            return !outPath.empty();
+            std::wstring before = Trim(t.substr(0, imgStart));
+            std::wstring after = Trim(t.substr(imgEnd + 1));
+            return before.empty() && after.empty() && !outPath.empty();
         }
 
         return false;
@@ -360,15 +632,12 @@ namespace
         outH = 0.0f;
         outAlign = MarkdownImageAlign::Left;
 
-        size_t htmlPos = line.find(L"<img");
-        if (htmlPos != std::wstring::npos)
+        size_t htmlStart = std::wstring::npos;
+        size_t htmlEnd = std::wstring::npos;
+        if (TryParseHtmlImgTag(line, 0, htmlStart, htmlEnd, outPath, outW, outH, outAlign))
         {
-            std::wstring chunk = line.substr(htmlPos);
-            if (ParseMarkdownImageLine(chunk, outPath, outW, outH, outAlign))
-            {
-                line.erase(htmlPos, line.size() - htmlPos);
-                return !outPath.empty();
-            }
+            line.erase(htmlStart, htmlEnd - htmlStart + 1);
+            return !outPath.empty();
         }
 
         size_t imgPos = line.find(L"![");
@@ -383,20 +652,21 @@ namespace
             return false;
 
         size_t open = line.find(L"](", imgPos);
-        size_t close = (open == std::wstring::npos) ? std::wstring::npos : line.find(L")", open + 2);
+        size_t parenOpen = (open == std::wstring::npos) ? std::wstring::npos : line.find(L'(', open + 1);
+        size_t close = FindMatchingParen(line, parenOpen);
         if (open == std::wstring::npos || close == std::wstring::npos || close <= open + 2)
             return false;
 
-        outPath = line.substr(open + 2, close - (open + 2));
+        outPath = ParseMarkdownDestination(line.substr(open + 2, close - (open + 2)));
 
         size_t removeStart = imgPos;
         size_t removeEnd = close + 1;
         if (imgPos > 0 && line[imgPos - 1] == L'[')
         {
             size_t bracketClose = line.find(L']', close + 1);
-            size_t parenOpen = (bracketClose == std::wstring::npos) ? std::wstring::npos : line.find(L'(', bracketClose + 1);
-            size_t parenClose = (parenOpen == std::wstring::npos) ? std::wstring::npos : line.find(L')', parenOpen + 1);
-            if (bracketClose != std::wstring::npos && parenOpen == bracketClose + 1 && parenClose != std::wstring::npos)
+            size_t outerParenOpen = (bracketClose == std::wstring::npos) ? std::wstring::npos : line.find(L'(', bracketClose + 1);
+            size_t parenClose = (outerParenOpen == std::wstring::npos) ? std::wstring::npos : line.find(L')', outerParenOpen + 1);
+            if (bracketClose != std::wstring::npos && outerParenOpen == bracketClose + 1 && parenClose != std::wstring::npos)
             {
                 removeStart = imgPos - 1;
                 removeEnd = parenClose + 1;
@@ -409,16 +679,66 @@ namespace
 
     std::wstring ResolveImagePath(const std::wstring &filePath, const std::wstring &imgPath)
     {
-        if (imgPath.empty())
+        std::wstring normalized = NormalizeImageRef(imgPath);
+        if (normalized.empty())
             return L"";
-        std::filesystem::path p(imgPath);
+
+        std::wstring lower = ToLower(normalized);
+        if (lower.rfind(L"file://", 0) == 0)
+        {
+            normalized = normalized.substr(7);
+            if (normalized.size() >= 3 && normalized[0] == L'/' &&
+                iswalpha(normalized[1]) && normalized[2] == L':')
+            {
+                normalized.erase(0, 1);
+            }
+            std::replace(normalized.begin(), normalized.end(), L'/', L'\\');
+        }
+        else if (IsLikelyExternalUrl(normalized))
+        {
+            return normalized;
+        }
+
+        size_t queryPos = normalized.find_first_of(L"?#");
+        if (queryPos != std::wstring::npos)
+            normalized = normalized.substr(0, queryPos);
+
+        std::filesystem::path p(normalized);
+        auto normalizePath = [](const std::filesystem::path &in) -> std::filesystem::path
+        {
+            std::error_code ec;
+            std::filesystem::path weak = std::filesystem::weakly_canonical(in, ec);
+            if (!ec && !weak.empty())
+                return weak;
+            return in.lexically_normal();
+        };
+
+        if (p.has_root_directory() && !p.has_root_name())
+        {
+            if (filePath.empty())
+                return p.relative_path().wstring();
+            std::filesystem::path dir = std::filesystem::path(filePath).parent_path();
+            std::error_code ec;
+            std::filesystem::path root = dir;
+            while (!root.empty())
+            {
+                if (std::filesystem::exists(root / ".git", ec))
+                    break;
+                std::filesystem::path parent = root.parent_path();
+                if (parent == root)
+                    break;
+                root = parent;
+            }
+            return normalizePath(root / p.relative_path()).wstring();
+        }
+
         if (p.is_absolute())
-            return p.wstring();
+            return normalizePath(p).wstring();
         if (filePath.empty())
-            return p.wstring();
+            return normalizePath(p).wstring();
         std::filesystem::path base(filePath);
         base = base.parent_path();
-        return (base / p).wstring();
+        return normalizePath(base / p).wstring();
     }
 
 
@@ -755,6 +1075,8 @@ namespace
     {
         if (!ctx || path.empty())
             return nullptr;
+        if (IsLikelyExternalUrl(path))
+            return nullptr;
 
         std::wstring ext = ToLower(std::filesystem::path(path).extension().wstring());
         if (ext == L".svg")
@@ -964,13 +1286,22 @@ namespace
             MarkdownImageAlign imgAlign = MarkdownImageAlign::Left;
             if (ParseMarkdownImageLine(raw, imgPath, imgW, imgH, imgAlign))
             {
+                std::wstring resolvedPath = ResolveImagePath(filePath, imgPath);
+                if (resolvedPath.empty())
+                    continue;
+
+                bool isHtmlImgLine = FindNoCase(raw, L"<img") != std::wstring::npos;
+                bool hasFloatHint = FindNoCase(raw, L"align=") != std::wstring::npos ||
+                                    FindNoCase(raw, L"float:") != std::wstring::npos;
                 flushText();
                 MarkdownBlock img;
                 img.type = MarkdownBlock::Type::Image;
-                img.imagePath = ResolveImagePath(filePath, imgPath);
+                img.imagePath = std::move(resolvedPath);
                 img.imageWidth = imgW;
                 img.imageHeight = imgH;
                 img.imageAlign = imgAlign;
+                img.imageFloat = (!inCodeBlock && isHtmlImgLine && hasFloatHint &&
+                                  (imgAlign == MarkdownImageAlign::Right || imgAlign == MarkdownImageAlign::Left));
                 outBlocks.push_back(std::move(img));
                 continue;
             }
@@ -980,6 +1311,13 @@ namespace
             {
                 MarkdownInlineImage img;
                 img.path = ResolveImagePath(filePath, imgPath);
+                if (img.path.empty())
+                {
+                    raw = Trim(raw);
+                    if (raw.empty())
+                        break;
+                    continue;
+                }
                 img.width = imgW;
                 img.height = imgH;
                 img.align = imgAlign;
@@ -1049,6 +1387,7 @@ namespace
 
             float baseSize = 14.0f;
             bool isHeading = false;
+            int headingLevel = 0;
             if (!inCodeBlock)
             {
                 size_t hashCount = 0;
@@ -1057,6 +1396,7 @@ namespace
                 if (hashCount > 0 && hashCount <= 6 && hashCount < raw.size() && raw[hashCount] == L' ')
                 {
                     isHeading = true;
+                    headingLevel = (int)hashCount;
                     raw = raw.substr(hashCount + 1);
                     switch (hashCount)
                     {
@@ -1069,6 +1409,27 @@ namespace
                     default: break;
                     }
                 }
+            }
+
+            if (!inCodeBlock && isHeading)
+            {
+                flushText();
+                raw = StripMarkdownLinks(raw);
+                MarkdownBlock heading;
+                heading.type = MarkdownBlock::Type::Text;
+                heading.headingLevel = headingLevel;
+                UINT32 start = 0;
+                ParseInline(raw, heading.text, heading.spans, baseSize, true);
+                AddSpan(heading.spans, start, (UINT32)heading.text.size(),
+                        baseSize, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, false);
+                if (!inlineImages.empty())
+                {
+                    heading.inlineImages.insert(heading.inlineImages.end(),
+                                                std::make_move_iterator(inlineImages.begin()),
+                                                std::make_move_iterator(inlineImages.end()));
+                }
+                outBlocks.push_back(std::move(heading));
+                continue;
             }
 
             if (!inCodeBlock)
@@ -1086,6 +1447,12 @@ namespace
                     ParseInline(quoteText, quote.text, quote.spans, baseSize, isHeading);
                     AddSpan(quote.spans, 0, (UINT32)quote.text.size(),
                             baseSize, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_ITALIC, false);
+                    if (!inlineImages.empty())
+                    {
+                        quote.inlineImages.insert(quote.inlineImages.end(),
+                                                  std::make_move_iterator(inlineImages.begin()),
+                                                  std::make_move_iterator(inlineImages.end()));
+                    }
                     outBlocks.push_back(std::move(quote));
                     continue;
                 }
@@ -1118,11 +1485,18 @@ namespace
                         AddSpan(lineBlock.spans, start, (UINT32)lineBlock.text.size(),
                                 baseSize, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL, false);
                     }
-                    lineBlock.inlineImages = std::move(inlineImages);
+                    if (!inlineImages.empty())
+                    {
+                        lineBlock.inlineImages.insert(lineBlock.inlineImages.end(),
+                                                      std::make_move_iterator(inlineImages.begin()),
+                                                      std::make_move_iterator(inlineImages.end()));
+                    }
                     outBlocks.push_back(std::move(lineBlock));
                 }
                 else
                 {
+                    if (raw.empty() && current.text.empty())
+                        continue;
                     UINT32 start = (UINT32)current.text.size();
                     ParseInline(raw, current.text, current.spans, baseSize, isHeading);
                     if (isHeading)
@@ -1385,10 +1759,80 @@ namespace Orion
                 previewMarkdownLayoutHeight_ = availableH;
             }
 
+            auto getImageSizeForBlock = [&](const MarkdownBlock &blk, float widthLimit, float &outW, float &outH) -> bool
+            {
+                outW = 0.0f;
+                outH = 0.0f;
+                if (blk.imagePath.empty())
+                    return false;
+
+                ID2D1Bitmap *bmp = nullptr;
+                auto it = previewImageCache_.find(blk.imagePath);
+                if (it != previewImageCache_.end())
+                    bmp = it->second;
+                else
+                {
+                    bmp = LoadImageToD2DBitmap(ctx, blk.imagePath, blk.imageWidth, blk.imageHeight);
+                    if (bmp)
+                        previewImageCache_[blk.imagePath] = bmp;
+                }
+
+                if (!bmp)
+                    return false;
+
+                D2D1_SIZE_F sz = bmp->GetSize();
+                float w = blk.imageWidth > 0.0f ? blk.imageWidth : sz.width;
+                float h = blk.imageHeight > 0.0f ? blk.imageHeight : sz.height;
+                if (w > widthLimit && widthLimit > 0.0f)
+                {
+                    float scale = widthLimit / w;
+                    w *= scale;
+                    h *= scale;
+                }
+                outW = w;
+                outH = h;
+                return true;
+            };
+
             float totalHeight = 0.0f;
+            bool measurePendingFloat = false;
+            float measurePendingFloatWidth = 0.0f;
+            float measurePendingFloatHeight = 0.0f;
+
             for (size_t i = 0; i < previewMarkdownBlocks_.size(); ++i)
             {
                 const auto &blk = previewMarkdownBlocks_[i];
+                if (blk.type == MarkdownBlock::Type::Image)
+                {
+                    float drawW = 0.0f;
+                    float drawH = 0.0f;
+                    getImageSizeForBlock(blk, availableW, drawW, drawH);
+
+                    if (blk.imageFloat &&
+                        (blk.imageAlign == MarkdownImageAlign::Right || blk.imageAlign == MarkdownImageAlign::Left))
+                    {
+                        measurePendingFloat = true;
+                        measurePendingFloatWidth = drawW;
+                        measurePendingFloatHeight = drawH;
+                        continue;
+                    }
+
+                    if (measurePendingFloat)
+                    {
+                        totalHeight += measurePendingFloatHeight + 8.0f;
+                        measurePendingFloat = false;
+                        measurePendingFloatWidth = 0.0f;
+                        measurePendingFloatHeight = 0.0f;
+                    }
+
+                    totalHeight += drawH + 12.0f;
+                    continue;
+                }
+
+                float blockAvailW = availableW;
+                if (measurePendingFloat)
+                    blockAvailW = (std::max)(48.0f, availableW - (measurePendingFloatWidth + 12.0f));
+
                 if (blk.type == MarkdownBlock::Type::Text)
                 {
                     float h = previewMarkdownMetrics_[i].height;
@@ -1412,9 +1856,9 @@ namespace Orion
                                 D2D1_SIZE_F sz = bmp->GetSize();
                                 float iw = img.width > 0.0f ? img.width : sz.width;
                                 float ih = img.height > 0.0f ? img.height : sz.height;
-                                if (iw > availableW)
+                                if (iw > blockAvailW)
                                 {
-                                    float scale = availableW / iw;
+                                    float scale = blockAvailW / iw;
                                     iw *= scale;
                                     ih *= scale;
                                 }
@@ -1424,48 +1868,48 @@ namespace Orion
                         }
                         h = (std::max)(h, maxImgH);
                     }
-                    totalHeight += h + 8.0f;
+                    if (blk.headingLevel > 0 && blk.headingLevel <= 2)
+                        h += 8.0f;
+                    float advance = h + 8.0f;
+                    if (measurePendingFloat)
+                    {
+                        advance = (std::max)(advance, measurePendingFloatHeight + 8.0f);
+                        measurePendingFloat = false;
+                        measurePendingFloatWidth = 0.0f;
+                        measurePendingFloatHeight = 0.0f;
+                    }
+                    totalHeight += advance;
                 }
                 else if (blk.type == MarkdownBlock::Type::Rule)
                 {
-                    totalHeight += 12.0f;
+                    float advance = 12.0f;
+                    if (measurePendingFloat)
+                    {
+                        advance = (std::max)(advance, measurePendingFloatHeight + 8.0f);
+                        measurePendingFloat = false;
+                        measurePendingFloatWidth = 0.0f;
+                        measurePendingFloatHeight = 0.0f;
+                    }
+                    totalHeight += advance;
                 }
                 else if (blk.type == MarkdownBlock::Type::Table)
                 {
                     float rowH = 24.0f;
                     float rows = (float)blk.tableRows.size();
-                    totalHeight += rows * rowH + 16.0f;
-                }
-                else if (blk.type == MarkdownBlock::Type::Image)
-                {
-                    float drawH = 0.0f;
-                    ID2D1Bitmap *bmp = nullptr;
-                    auto it = previewImageCache_.find(blk.imagePath);
-                    if (it != previewImageCache_.end())
-                        bmp = it->second;
-                    else
+                    float advance = rows * rowH + 16.0f;
+                    if (measurePendingFloat)
                     {
-                        bmp = LoadImageToD2DBitmap(ctx, blk.imagePath, blk.imageWidth, blk.imageHeight);
-                        if (bmp)
-                            previewImageCache_[blk.imagePath] = bmp;
+                        advance = (std::max)(advance, measurePendingFloatHeight + 8.0f);
+                        measurePendingFloat = false;
+                        measurePendingFloatWidth = 0.0f;
+                        measurePendingFloatHeight = 0.0f;
                     }
-
-                    if (bmp)
-                    {
-                        D2D1_SIZE_F sz = bmp->GetSize();
-                        float w = blk.imageWidth > 0.0f ? blk.imageWidth : sz.width;
-                        float h = blk.imageHeight > 0.0f ? blk.imageHeight : sz.height;
-                        if (w > availableW)
-                        {
-                            float scale = availableW / w;
-                            w *= scale;
-                            h *= scale;
-                        }
-                        drawH = h;
-                    }
-                    totalHeight += drawH + 12.0f;
+                    totalHeight += advance;
                 }
             }
+
+            if (measurePendingFloat)
+                totalHeight += measurePendingFloatHeight + 8.0f;
 
             float contentHeight = (std::max)(totalHeight + 8.0f, availableH);
             scrollbar_.UpdateLayout(state_.leftEdge, state_.topEdge, state_.rightEdge - state_.leftEdge, state_.bottomEdge - state_.topEdge, contentHeight);
@@ -1478,6 +1922,10 @@ namespace Orion
 
             ctx->PushAxisAlignedClip(contentRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
             float y = contentRect.top - state_.scrollOffsetY;
+            bool pendingFloat = false;
+            float pendingFloatWidth = 0.0f;
+            float pendingFloatHeight = 0.0f;
+            MarkdownImageAlign pendingFloatAlign = MarkdownImageAlign::Right;
             for (size_t i = 0; i < previewMarkdownBlocks_.size(); ++i)
             {
                 const auto &blk = previewMarkdownBlocks_[i];
@@ -1485,9 +1933,22 @@ namespace Orion
                 {
                     if (previewMarkdownLayouts_[i])
                     {
+                        float localLeft = contentRect.left;
+                        float localRight = contentRect.right;
+                        if (pendingFloat)
+                        {
+                            if (pendingFloatAlign == MarkdownImageAlign::Left)
+                                localLeft += pendingFloatWidth + 12.0f;
+                            else
+                                localRight -= pendingFloatWidth + 12.0f;
+                            if (localRight < localLeft + 48.0f)
+                                localRight = localLeft + 48.0f;
+                        }
+                        float localAvailW = localRight - localLeft;
+
                         if (blk.isQuote)
                         {
-                            D2D1_RECT_F quoteRect = D2D1::RectF(contentRect.left, y, contentRect.right, y + previewMarkdownMetrics_[i].height + 10.0f);
+                            D2D1_RECT_F quoteRect = D2D1::RectF(localLeft, y, localRight, y + previewMarkdownMetrics_[i].height + 10.0f);
                             ID2D1SolidColorBrush *quoteBg = nullptr;
                             ID2D1SolidColorBrush *quoteBar = nullptr;
                             ctx->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.10f, 0.12f, 0.8f), &quoteBg);
@@ -1503,18 +1964,98 @@ namespace Orion
                                 ctx->FillRectangle(bar, quoteBar);
                                 quoteBar->Release();
                             }
-                            ctx->DrawTextLayout(D2D1::Point2F(contentRect.left + 10.0f, y + 5.0f), previewMarkdownLayouts_[i], textBrush);
-                            y += previewMarkdownMetrics_[i].height + 12.0f;
+                            const float quoteTextX = localLeft + 10.0f;
+                            const float quoteTextY = y + 5.0f;
+                            ctx->DrawTextLayout(D2D1::Point2F(quoteTextX, quoteTextY), previewMarkdownLayouts_[i], textBrush);
+
+                            float blockH = previewMarkdownMetrics_[i].height + 10.0f;
+                            if (!blk.inlineImages.empty())
+                            {
+                                float maxImgH = 0.0f;
+                                float xRight = localRight;
+                                float xLeft = quoteTextX;
+                                float quoteAvailW = (std::max)(24.0f, xRight - xLeft);
+                                bool hasText = !Trim(blk.text).empty();
+                                float inlineCursorX = hasText
+                                                          ? (quoteTextX + previewMarkdownMetrics_[i].widthIncludingTrailingWhitespace + 8.0f)
+                                                          : xLeft;
+
+                                for (const auto &img : blk.inlineImages)
+                                {
+                                    ID2D1Bitmap *bmp = nullptr;
+                                    auto it = previewImageCache_.find(img.path);
+                                    if (it != previewImageCache_.end())
+                                        bmp = it->second;
+                                    else
+                                    {
+                                        bmp = LoadImageToD2DBitmap(ctx, img.path, img.width, img.height);
+                                        if (bmp)
+                                            previewImageCache_[img.path] = bmp;
+                                    }
+
+                                    if (!bmp)
+                                        continue;
+
+                                    D2D1_SIZE_F sz = bmp->GetSize();
+                                    float iw = img.width > 0.0f ? img.width : sz.width;
+                                    float ih = img.height > 0.0f ? img.height : sz.height;
+                                    if (iw > quoteAvailW)
+                                    {
+                                        float scale = quoteAvailW / iw;
+                                        iw *= scale;
+                                        ih *= scale;
+                                    }
+
+                                    float ix = xLeft;
+                                    if (img.align == MarkdownImageAlign::Right)
+                                    {
+                                        ix = xRight - iw;
+                                    }
+                                    else if (img.align == MarkdownImageAlign::Center)
+                                    {
+                                        ix = xLeft + (quoteAvailW - iw) * 0.5f;
+                                    }
+                                    else
+                                    {
+                                        ix = hasText ? inlineCursorX : xLeft;
+                                        inlineCursorX = ix + iw + 6.0f;
+                                    }
+
+                                    if (ix + iw > xRight)
+                                        ix = xRight - iw;
+                                    if (ix < xLeft)
+                                        ix = xLeft;
+
+                                    D2D1_RECT_F rect = D2D1::RectF(ix, y, ix + iw, y + ih);
+                                    ctx->DrawBitmap(bmp, rect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                                    if (ih > maxImgH)
+                                        maxImgH = ih;
+                                }
+                                blockH = (std::max)(blockH, maxImgH);
+                            }
+                            float advance = blockH + 12.0f;
+                            if (pendingFloat)
+                            {
+                                advance = (std::max)(advance, pendingFloatHeight + 12.0f);
+                                pendingFloat = false;
+                                pendingFloatWidth = 0.0f;
+                                pendingFloatHeight = 0.0f;
+                            }
+                            y += advance;
                         }
                         else
                         {
-                            ctx->DrawTextLayout(D2D1::Point2F(contentRect.left, y), previewMarkdownLayouts_[i], textBrush);
+                            ctx->DrawTextLayout(D2D1::Point2F(localLeft, y), previewMarkdownLayouts_[i], textBrush);
                             float blockH = previewMarkdownMetrics_[i].height;
                             if (!blk.inlineImages.empty())
                             {
                                 float maxImgH = 0.0f;
-                                float xRight = contentRect.right;
-                                float xLeft = contentRect.left;
+                                float xRight = localRight;
+                                float xLeft = localLeft;
+                                bool hasText = !Trim(blk.text).empty();
+                                float inlineCursorX = hasText
+                                                          ? (xLeft + previewMarkdownMetrics_[i].widthIncludingTrailingWhitespace + 8.0f)
+                                                          : xLeft;
                                 for (const auto &img : blk.inlineImages)
                                 {
                                     ID2D1Bitmap *bmp = nullptr;
@@ -1533,9 +2074,9 @@ namespace Orion
                                         D2D1_SIZE_F sz = bmp->GetSize();
                                         float iw = img.width > 0.0f ? img.width : sz.width;
                                         float ih = img.height > 0.0f ? img.height : sz.height;
-                                        if (iw > availableW)
+                                        if (iw > localAvailW)
                                         {
-                                            float scale = availableW / iw;
+                                            float scale = localAvailW / iw;
                                             iw *= scale;
                                             ih *= scale;
                                         }
@@ -1543,7 +2084,16 @@ namespace Orion
                                         if (img.align == MarkdownImageAlign::Right)
                                             ix = xRight - iw;
                                         else if (img.align == MarkdownImageAlign::Center)
-                                            ix = xLeft + (availableW - iw) * 0.5f;
+                                            ix = xLeft + (localAvailW - iw) * 0.5f;
+                                        else
+                                        {
+                                            ix = hasText ? inlineCursorX : xLeft;
+                                            inlineCursorX = ix + iw + 6.0f;
+                                        }
+                                        if (ix + iw > xRight)
+                                            ix = xRight - iw;
+                                        if (ix < xLeft)
+                                            ix = xLeft;
                                         D2D1_RECT_F rect = D2D1::RectF(ix, y, ix + iw, y + ih);
                                         ctx->DrawBitmap(bmp, rect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
                                         if (ih > maxImgH)
@@ -1552,25 +2102,77 @@ namespace Orion
                                 }
                                 blockH = (std::max)(blockH, maxImgH);
                             }
-                            y += blockH + 8.0f;
+                            if (blk.headingLevel > 0 && blk.headingLevel <= 2)
+                            {
+                                float ruleY = y + blockH + 2.0f;
+                                ctx->DrawLine(D2D1::Point2F(localLeft, ruleY),
+                                              D2D1::Point2F(localRight, ruleY),
+                                              textBrush, 1.0f);
+                                blockH += 8.0f;
+                            }
+                            float advance = blockH + 8.0f;
+                            if (pendingFloat)
+                            {
+                                advance = (std::max)(advance, pendingFloatHeight + 8.0f);
+                                pendingFloat = false;
+                                pendingFloatWidth = 0.0f;
+                                pendingFloatHeight = 0.0f;
+                            }
+                            y += advance;
                         }
                     }
                 }
                 else if (blk.type == MarkdownBlock::Type::Rule)
                 {
+                    float localLeft = contentRect.left;
+                    float localRight = contentRect.right;
+                    if (pendingFloat)
+                    {
+                        if (pendingFloatAlign == MarkdownImageAlign::Left)
+                            localLeft += pendingFloatWidth + 12.0f;
+                        else
+                            localRight -= pendingFloatWidth + 12.0f;
+                    }
                     float lineY = y + 6.0f;
-                    ctx->DrawLine(D2D1::Point2F(contentRect.left, lineY),
-                                  D2D1::Point2F(contentRect.right, lineY),
+                    ctx->DrawLine(D2D1::Point2F(localLeft, lineY),
+                                  D2D1::Point2F(localRight, lineY),
                                   textBrush, 1.0f);
-                    y += 12.0f;
+                    float advance = 12.0f;
+                    if (pendingFloat)
+                    {
+                        advance = (std::max)(advance, pendingFloatHeight + 8.0f);
+                        pendingFloat = false;
+                        pendingFloatWidth = 0.0f;
+                        pendingFloatHeight = 0.0f;
+                    }
+                    y += advance;
                 }
                 else if (blk.type == MarkdownBlock::Type::Table)
                 {
                     if (!dwrite || blk.tableRows.empty())
                     {
-                        y += 12.0f;
+                        float advance = 12.0f;
+                        if (pendingFloat)
+                        {
+                            advance = (std::max)(advance, pendingFloatHeight + 8.0f);
+                            pendingFloat = false;
+                            pendingFloatWidth = 0.0f;
+                            pendingFloatHeight = 0.0f;
+                        }
+                        y += advance;
                         continue;
                     }
+
+                    float localLeft = contentRect.left;
+                    float localRight = contentRect.right;
+                    if (pendingFloat)
+                    {
+                        if (pendingFloatAlign == MarkdownImageAlign::Left)
+                            localLeft += pendingFloatWidth + 12.0f;
+                        else
+                            localRight -= pendingFloatWidth + 12.0f;
+                    }
+                    float localAvailW = (std::max)(48.0f, localRight - localLeft);
 
                     const float paddingX = 8.0f;
                     const float paddingY = 6.0f;
@@ -1580,7 +2182,15 @@ namespace Orion
                         colCount = (std::max)(colCount, row.size());
                     if (colCount == 0)
                     {
-                        y += 12.0f;
+                        float advance = 12.0f;
+                        if (pendingFloat)
+                        {
+                            advance = (std::max)(advance, pendingFloatHeight + 8.0f);
+                            pendingFloat = false;
+                            pendingFloatWidth = 0.0f;
+                            pendingFloatHeight = 0.0f;
+                        }
+                        y += advance;
                         continue;
                     }
 
@@ -1622,8 +2232,15 @@ namespace Orion
                     float tableWidth = 0.0f;
                     for (float w : colWidths)
                         tableWidth += w;
+                    if (tableWidth > localAvailW && tableWidth > 0.0f)
+                    {
+                        float scale = localAvailW / tableWidth;
+                        for (float &w : colWidths)
+                            w *= scale;
+                        tableWidth = localAvailW;
+                    }
 
-                    float x0 = contentRect.left;
+                    float x0 = localLeft;
                     float y0 = y;
 
                     ID2D1SolidColorBrush *gridBrush = nullptr;
@@ -1682,10 +2299,27 @@ namespace Orion
                     if (headerBg)
                         headerBg->Release();
 
-                    y = cy + 12.0f;
+                    float advance = (cy - y) + 12.0f;
+                    if (pendingFloat)
+                    {
+                        advance = (std::max)(advance, pendingFloatHeight + 12.0f);
+                        pendingFloat = false;
+                        pendingFloatWidth = 0.0f;
+                        pendingFloatHeight = 0.0f;
+                    }
+                    y += advance;
                 }
                 else if (blk.type == MarkdownBlock::Type::Image)
                 {
+                    if (pendingFloat && !(blk.imageFloat &&
+                                          (blk.imageAlign == MarkdownImageAlign::Right || blk.imageAlign == MarkdownImageAlign::Left)))
+                    {
+                        y += pendingFloatHeight + 8.0f;
+                        pendingFloat = false;
+                        pendingFloatWidth = 0.0f;
+                        pendingFloatHeight = 0.0f;
+                    }
+
                     ID2D1Bitmap *bmp = nullptr;
                     auto it = previewImageCache_.find(blk.imagePath);
                     if (it != previewImageCache_.end())
@@ -1783,10 +2417,23 @@ namespace Orion
                                 }
                             }
                         }
-                        y += h + 12.0f;
+                        if (blk.imageFloat &&
+                            (blk.imageAlign == MarkdownImageAlign::Right || blk.imageAlign == MarkdownImageAlign::Left))
+                        {
+                            pendingFloat = true;
+                            pendingFloatWidth = w;
+                            pendingFloatHeight = h;
+                            pendingFloatAlign = blk.imageAlign;
+                        }
+                        else
+                        {
+                            y += h + 12.0f;
+                        }
                     }
                 }
             }
+            if (pendingFloat)
+                y += pendingFloatHeight + 8.0f;
             ctx->PopAxisAlignedClip();
 
             textBrush->Release();

@@ -4,6 +4,7 @@
 #include <d2d1.h>
 #include <dwrite.h>
 #include <windows.h>
+#include "ui/components/input/TextInput.h"
 
 namespace Orion
 {
@@ -44,7 +45,9 @@ namespace Orion
         // Input handling
         void OnChar(wchar_t ch);
         void OnKeyDown(WPARAM key);
-        void OnLeftButtonDown(POINT pt);
+        void OnLeftButtonDown(HWND hwnd, POINT pt);
+        bool OnMouseMove(HWND hwnd, POINT pt);
+        bool OnLeftButtonUp(HWND hwnd, POINT pt);
         bool IsPointInSearchBox(POINT pt) const;
         void SetInputFocused(bool focused);
         void SetReplaceFocused(bool focused);
@@ -114,6 +117,11 @@ namespace Orion
         bool hoverCase_;
         bool hoverWord_;
         bool hoverRegex_;
+        bool hoverReplaceButton_ = false;
+
+        // Input components
+        TextInput searchInput_;
+        TextInput replaceInput_;
         
         // Helper methods
         void DrawButton(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,

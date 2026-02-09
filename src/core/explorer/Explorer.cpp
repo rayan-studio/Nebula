@@ -20,6 +20,7 @@
 #include "utils/logger/Logger.h"
 #include "ui/layout/ExplorerLayoutState.h"
 #include "lsp/LspManager.h"
+#include "ui/components/input/InputTheme.h"
 #include <vector>
 #include <exception>
 
@@ -742,7 +743,7 @@ void ExplorerManager::CreateNewFolderAt(const std::wstring &parentDir, const std
 
 std::wstring ExplorerManager::GetActiveDirectory() const
 {
-    // Si un dossier est hover/s�lectionn�, retourner ce chemin
+    // Si un dossier est hover/s lectionn , retourner ce chemin
     if (state_.hoveredItemIndex >= 0 && state_.hoveredItemIndex < (int)state_.items.size())
     {
         const auto &item = state_.items[state_.hoveredItemIndex];
@@ -845,7 +846,7 @@ void ExplorerManager::LoadDirectoryContents()
             item.isDirectory = entry.is_directory();
             item.depth = 0;
 
-            // CORRECTION 1: Restaurer l'�tat expanded IMM�DIATEMENT
+            // CORRECTION 1: Restaurer l' tat expanded IMM DIATEMENT
             auto f = prevExpanded.find(full);
             item.expanded = (f != prevExpanded.end()) ? f->second : false;
 
@@ -881,7 +882,7 @@ void ExplorerManager::LoadDirectoryContents()
 
                     std::wstring full = entry.path().wstring();
 
-                    // CORRECTION 2: V�rifier les doublons avec seen
+                    // CORRECTION 2: V rifier les doublons avec seen
                     if (seen.find(full) != seen.end())
                         continue;
                     seen.insert(full);
@@ -893,7 +894,7 @@ void ExplorerManager::LoadDirectoryContents()
                     ci.isDirectory = entry.is_directory();
                     ci.depth = depth;
 
-                    // Restaurer l'�tat expanded imm�diatement
+                    // Restaurer l' tat expanded imm diatement
                     auto f = prevExpanded.find(ci.fullPath);
                     ci.expanded = (f != prevExpanded.end()) ? f->second : false;
 
@@ -1104,7 +1105,7 @@ void ExplorerManager::UpdateLayout(HWND hwnd)
 
     UpdateItemPositions();
 
-    // Bouton "Ouvrir un projet" (affich� seulement si rootPath vide)
+    // Bouton "Ouvrir un projet" (affich  seulement si rootPath vide)
     {
         float left  = state_.leftEdge + state_.leftPadding;
         float right = state_.rightEdge - state_.leftPadding;
@@ -1177,16 +1178,16 @@ bool ExplorerManager::IsPointInExplorer(POINT clientPoint) const
 
 void ExplorerManager::OnMouseMove(HWND hwnd, POINT clientPoint)
 {
-    // PRIORIT� 1 : Scrollbar (si on drag ou si la souris est dessus)
+    // PRIORIT  1 : Scrollbar (si on drag ou si la souris est dessus)
     if (scrollbar_.OnMouseMove(clientPoint))
     {
         InvalidateRect(hwnd, nullptr, FALSE);
     }
 
-    // Si la scrollbar g�re le hover, ne pas g�rer l'Explorer
+    // Si la scrollbar g re le hover, ne pas g rer l'Explorer
     if (scrollbar_.IsHoveringThumb() || scrollbar_.IsHoveringTrack())
     {
-        // R�initialiser le hover de l'Explorer
+        // R initialiser le hover de l'Explorer
         if (state_.hoveredItemIndex != -1)
         {
             state_.hoveredItemIndex = -1;
@@ -1207,7 +1208,7 @@ void ExplorerManager::OnMouseMove(HWND hwnd, POINT clientPoint)
         // but keep current behavior (just visual)
     }
 
-    // PRIORIT� 2 : Mode normal - v�rifier hover
+    // PRIORIT  2 : Mode normal - v rifier hover
     int oldHovered = state_.hoveredItemIndex;
 
     if (IsPointInExplorer(clientPoint))
@@ -1440,7 +1441,7 @@ void ExplorerManager::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
             HideInlineInput();
         }
 
-        // 2. D�s�lectionner le dossier actif (revenir � la racine)
+        // 2. D s lectionner le dossier actif (revenir   la racine)
         state_.activePath.clear();
 
         InvalidateRect(hwnd, nullptr, FALSE);
@@ -1855,7 +1856,16 @@ void ExplorerManager::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     else if (searchMode_)
         DrawSearchPanel(ctx, dwrite, hwnd);
     else
+    {
+        D2D1_RECT_F itemsClip = D2D1::RectF(
+            state_.leftEdge,
+            state_.topEdge + state_.titleHeight + state_.topPadding,
+            state_.rightEdge,
+            state_.bottomEdge);
+        ctx->PushAxisAlignedClip(itemsClip, D2D1_ANTIALIAS_MODE_ALIASED);
         DrawItems(ctx, dwrite, hwnd);
+        ctx->PopAxisAlignedClip();
+    }
     DrawRightBorder(ctx);
     scrollbar_.Draw(ctx);
 
@@ -2458,13 +2468,13 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
     float folderIconGap = (float)win32_dpi_scale(4, dpi);
 
     // Rounded background constants and helper for crisp rounded fills
-    const float corner = 4.0f;           // petit arrondi (r�duit)
-    const float insetX = 4.0f;           // marge gauche/droite du fond (r�duite)
+    const float corner = UI::InputTheme::kCornerRadius;
+    const float insetX = 4.0f;           // marge gauche/droite du fond (r duite)
     const float insetY = 0.0f;           // marge haut/bas du fond (aucune, couvre toute la hauteur)
 
     auto DrawRoundedFill = [&](const D2D1_RECT_F& r, ID2D1Brush* brush)
     {
-        // Snap pour �viter le flou
+        // Snap pour  viter le flou
         D2D1_RECT_F rr = D2D1::RectF(
             std::round(r.left),
             std::round(r.top),
@@ -2550,12 +2560,12 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
 
             // Background
             ID2D1SolidColorBrush *bg = nullptr;
-            ctx->CreateSolidColorBrush(D2D1::ColorF(0.16f, 0.16f, 0.16f, 1.0f), &bg);
+            ctx->CreateSolidColorBrush(UI::InputTheme::Background(), &bg);
             DrawRoundedFill(inlineRect_, bg);
 
             // Border
             ID2D1SolidColorBrush *border = nullptr;
-            ctx->CreateSolidColorBrush(D2D1::ColorF(0.38f, 0.57f, 0.95f, 1.0f), &border);
+            ctx->CreateSolidColorBrush(UI::InputTheme::FocusBorder(), &border);
             {
                 D2D1_RECT_F rr = D2D1::RectF(
                     std::round(inlineRect_.left),
@@ -2605,9 +2615,9 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
 
             // Text
             IDWriteTextFormat *tf = nullptr;
-            dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL,
+            dwrite->CreateTextFormat(UI::InputTheme::kFontFamily, NULL, DWRITE_FONT_WEIGHT_NORMAL,
                                      DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                                     13.0f, L"en-us", &tf);
+                                     UI::InputTheme::kFontSize, L"en-us", &tf);
             if (tf)
             {
                 tf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -2615,11 +2625,11 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
             }
 
             ID2D1SolidColorBrush *txtBrush = nullptr;
-            ctx->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.95f, 0.95f, 1.0f), &txtBrush);
+            ctx->CreateSolidColorBrush(UI::InputTheme::Text(), &txtBrush);
 
             D2D1_RECT_F textRect = D2D1::RectF(
-                inlineRect_.left + 8.0f, inlineRect_.top,
-                inlineRect_.right - 8.0f, inlineRect_.bottom);
+                inlineRect_.left + UI::InputTheme::kHorizontalPadding, inlineRect_.top,
+                inlineRect_.right - UI::InputTheme::kHorizontalPadding, inlineRect_.bottom);
 
             if (inlineHasSelection_ && !inlineText_.empty())
             {
@@ -2650,7 +2660,7 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
                 }
 
                 ID2D1SolidColorBrush *selBrush = nullptr;
-                ctx->CreateSolidColorBrush(D2D1::ColorF(0.25f, 0.45f, 0.85f, 0.45f), &selBrush);
+                ctx->CreateSolidColorBrush(UI::InputTheme::Selection(), &selBrush);
                 if (selBrush)
                 {
                     D2D1_RECT_F selRect = D2D1::RectF(startX, textRect.top + 2.0f, endX, textRect.bottom - 2.0f);
@@ -2693,7 +2703,7 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
             continue;
         }
 
-        // Si c'est le placeholder, dessiner l'input inline � cet endroit
+        // Si c'est le placeholder, dessiner l'input inline   cet endroit
         if (item.fullPath == L"__inline_placeholder__")
         {
             if (inlineVisible_)
@@ -2748,12 +2758,12 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
 
                 // Background
                 ID2D1SolidColorBrush *bg = nullptr;
-                ctx->CreateSolidColorBrush(D2D1::ColorF(0.16f, 0.16f, 0.16f, 1.0f), &bg);
+                ctx->CreateSolidColorBrush(UI::InputTheme::Background(), &bg);
                 DrawRoundedFill(inlineRect_, bg);
 
                 // Border
                 ID2D1SolidColorBrush *border = nullptr;
-                ctx->CreateSolidColorBrush(D2D1::ColorF(0.38f, 0.57f, 0.95f, 1.0f), &border);
+                ctx->CreateSolidColorBrush(UI::InputTheme::FocusBorder(), &border);
                 {
                     D2D1_RECT_F rr = D2D1::RectF(
                         std::round(inlineRect_.left),
@@ -2790,9 +2800,9 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
 
                 // Text
                 IDWriteTextFormat *tf = nullptr;
-                dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL,
+                dwrite->CreateTextFormat(UI::InputTheme::kFontFamily, NULL, DWRITE_FONT_WEIGHT_NORMAL,
                                          DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                                         13.0f, L"en-us", &tf);
+                                         UI::InputTheme::kFontSize, L"en-us", &tf);
                 if (tf)
                 {
                     tf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -2800,16 +2810,16 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
                 }
 
                 ID2D1SolidColorBrush *txtBrush = nullptr;
-                ctx->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.95f, 0.95f, 1.0f), &txtBrush);
+                ctx->CreateSolidColorBrush(UI::InputTheme::Text(), &txtBrush);
 
                 D2D1_RECT_F textRect = D2D1::RectF(
-                    inlineRect_.left + 8.0f, inlineRect_.top,
-                    inlineRect_.right - 8.0f, inlineRect_.bottom);
+                    inlineRect_.left + UI::InputTheme::kHorizontalPadding, inlineRect_.top,
+                    inlineRect_.right - UI::InputTheme::kHorizontalPadding, inlineRect_.bottom);
 
                 if (inlineText_.empty())
                 {
                     ID2D1SolidColorBrush *ph = nullptr;
-                    ctx->CreateSolidColorBrush(D2D1::ColorF(0.6f, 0.6f, 0.6f, 1.0f), &ph);
+                    ctx->CreateSolidColorBrush(UI::InputTheme::Placeholder(), &ph);
                     std::wstring placeholder = inlineType_ == Input::Type::File ? L"Nom du fichier..." : L"Nom du dossier...";
                     ctx->DrawTextW(placeholder.c_str(), (UINT32)placeholder.size(), tf, textRect, ph);
                     if (ph)
@@ -2860,7 +2870,7 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
                             }
 
                             ID2D1SolidColorBrush *selBrush = nullptr;
-                            ctx->CreateSolidColorBrush(D2D1::ColorF(0.25f, 0.45f, 0.85f, 0.45f), &selBrush);
+                            ctx->CreateSolidColorBrush(UI::InputTheme::Selection(), &selBrush);
                             if (selBrush)
                             {
                                 D2D1_RECT_F selRect = D2D1::RectF(startX, textRect.top + 2.0f, endX, textRect.bottom - 2.0f);
@@ -3017,15 +3027,18 @@ void ExplorerManager::DrawRightBorder(ID2D1RenderTarget *ctx)
 
     if (brush)
     {
-        // Draw a crisp aliased vertical line
-        float bx = std::round(state_.rightEdge) - 0.5f;
-        D2D1_POINT_2F p1 = D2D1::Point2F(bx, state_.topEdge);
-        D2D1_POINT_2F p2 = D2D1::Point2F(bx, state_.bottomEdge);
+        ExplorerPlacement placement = GetExplorerLayoutState().placement;
+        bool handleOnLeft = (placement == ExplorerPlacement::Right);
+        float thickness = (state_.isHoveringResizeZone || state_.isResizing) ? 2.0f : 1.0f;
+        float edge = std::round(handleOnLeft ? state_.leftEdge : state_.rightEdge);
+
+        D2D1_RECT_F borderRect = handleOnLeft
+                                     ? D2D1::RectF(edge, state_.topEdge, edge + thickness, state_.bottomEdge)
+                                     : D2D1::RectF(edge - thickness, state_.topEdge, edge, state_.bottomEdge);
 
         D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
         ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
-        float thickness = (state_.isHoveringResizeZone || state_.isResizing) ? 2.0f : 1.0f;
-        ctx->DrawLine(p1, p2, brush, thickness);
+        ctx->FillRectangle(borderRect, brush);
         ctx->SetAntialiasMode(oldAA);
 
         brush->Release();

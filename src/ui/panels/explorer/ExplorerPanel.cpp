@@ -1,5 +1,6 @@
 #include "ExplorerPanel.h"
 #include "core/explorer/Explorer.h"
+#include "ui/layout/ExplorerLayoutState.h"
 #include "utils/logger/Logger.h"
 
 // ============================================================================
@@ -208,15 +209,20 @@ bool ExplorerPanel::IsPointInResizeZone(POINT clientPoint) const
     // Use synchronized state from Panel base class
     if (!visible_ || state_.physicalWidth <= 0)
         return false;
-    
-    float rightEdge = state_.rightEdge;
+
+    float resizeEdgeX = IsResizeHandleOnLeft() ? state_.leftEdge : state_.rightEdge;
     // Match base Panel resize hit area: start below the title area
     float contentTop = state_.topEdge + state_.titleHeight + state_.topPadding;
-    
-    return (clientPoint.x >= (int)(rightEdge - RESIZE_ZONE_WIDTH) &&
-            clientPoint.x <= (int)(rightEdge + RESIZE_ZONE_WIDTH) &&
+
+    return (clientPoint.x >= (int)(resizeEdgeX - RESIZE_ZONE_WIDTH) &&
+            clientPoint.x <= (int)(resizeEdgeX + RESIZE_ZONE_WIDTH) &&
             clientPoint.y >= (int)contentTop &&
             clientPoint.y <= (int)state_.bottomEdge);
+}
+
+bool ExplorerPanel::IsResizeHandleOnLeft() const
+{
+    return GetExplorerLayoutState().placement == ExplorerPlacement::Right;
 }
 
 void ExplorerPanel::ClearResizeHover(HWND hwnd)

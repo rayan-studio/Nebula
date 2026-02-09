@@ -5,6 +5,7 @@
 
 #include "core/explorer/Explorer.h"
 #include "ui/panels/PanelManager.h"
+#include "ui/panels/git/GitPanel.h"
 #include "ui/panels/search/SearchPanel.h"
 #include "ui/panels/terminal/TerminalPanel.h"
 #include "ui/components/input/InputTypeFixed.h"
@@ -385,43 +386,11 @@ bool KeyboardManager::HandleGlobalShortcuts(WPARAM wParam, const Mods &m)
         Orion::Editor *editor = window_->GetEditorForTab(active);
         if (editor)
         {
-            Orion::CaretPosition caret = editor->GetCaret();
-            auto lines = editor->GetLinesSnapshot();
-            if (caret.line >= 0 && caret.line < (int)lines.size())
+            auto loc = editor->TryGoToDefinitionAtCaret();
+            if (loc.has_value())
             {
-                const std::wstring &ln = lines[caret.line];
-                auto isWordChar = [](wchar_t c)
-                {
-                    return (iswalnum(c) != 0) || (c == L'_');
-                };
-
-                std::wstring word;
-                int col = caret.column;
-                if (!ln.empty())
-                {
-                    int idx = col;
-                    if (idx == (int)ln.size())
-                        idx = (int)ln.size() - 1;
-                    if (idx >= 0 && idx < (int)ln.size() && isWordChar(ln[idx]))
-                    {
-                        int left = idx;
-                        while (left > 0 && isWordChar(ln[left - 1]))
-                            --left;
-                        int right = idx;
-                        while (right + 1 < (int)ln.size() && isWordChar(ln[right + 1]))
-                            ++right;
-                        if (right >= left)
-                            word = ln.substr(left, right - left + 1);
-                    }
-                }
-
-                auto loc = Lsp::LspManager::Instance().GoToDefinition(editor->GetFilePath(), ln, caret.line, caret.column, word);
-                if (loc.has_value())
-                {
-                    auto *heapPath = new std::wstring(loc->filePath);
-                    PostMessageW(window_->GetHwnd(), WM_USER + 100, (WPARAM)loc->line, (LPARAM)heapPath);
-                    return true;
-                }
+                window_->OpenFileInNewTab(loc->filePath, loc->line, loc->column);
+                return true;
             }
         }
         return true;
@@ -551,6 +520,17 @@ bool KeyboardManager::HandleGlobalShortcuts(WPARAM wParam, const Mods &m)
         }
     }
 
+    // Ctrl+Shift+G => Open Source Control panel
+    if (m.ctrl && m.shift && !m.alt && IsLetter(wParam, 'G'))
+    {
+        GetPanelManager().SetActivePanel(PanelId::Git);
+        if (Panel *gitPanel = GetPanelManager().GetPanel(PanelId::Git))
+            gitPanel->SetVisible(true);
+        GetPanelManager().UpdateLayout(window_->GetHwnd());
+        InvalidateRect(window_->GetHwnd(), nullptr, FALSE);
+        return true;
+    }
+
     return false;
 }
 
@@ -594,6 +574,18 @@ bool KeyboardManager::RouteKeyDownToFocused(WPARAM wParam)
         if (searchPanel && searchPanel->IsInputFocused())
         {
             searchPanel->OnKeyDown(wParam);
+            InvalidateRect(window_->GetHwnd(), nullptr, FALSE);
+            return true;
+        }
+    }
+
+    // Git panel focused input
+    if (GetPanelManager().IsPanelActive(PanelId::Git))
+    {
+        GitPanel *gitPanel = GetPanelManager().GetPanelAs<GitPanel>(PanelId::Git);
+        if (gitPanel && gitPanel->IsVisible() && gitPanel->IsInputFocused())
+        {
+            gitPanel->OnKeyDown(wParam);
             InvalidateRect(window_->GetHwnd(), nullptr, FALSE);
             return true;
         }
@@ -647,6 +639,18 @@ bool KeyboardManager::RouteCharToFocused(WPARAM wParam)
         if (searchPanel && searchPanel->IsInputFocused())
         {
             searchPanel->OnChar((wchar_t)wParam);
+            InvalidateRect(window_->GetHwnd(), nullptr, FALSE);
+            return true;
+        }
+    }
+
+    // Git panel focused input
+    if (GetPanelManager().IsPanelActive(PanelId::Git))
+    {
+        GitPanel *gitPanel = GetPanelManager().GetPanelAs<GitPanel>(PanelId::Git);
+        if (gitPanel && gitPanel->IsVisible() && gitPanel->IsInputFocused())
+        {
+            gitPanel->OnChar((wchar_t)wParam);
             InvalidateRect(window_->GetHwnd(), nullptr, FALSE);
             return true;
         }

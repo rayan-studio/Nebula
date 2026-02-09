@@ -87,6 +87,9 @@ static std::string MenuDropdownIconPathForLabel(const std::wstring &label)
         return "assets/ressource/icons/folder-content-open.svg";
     if (label == L"Delete") return "assets/ressource/icons/folder-trash.svg";
     if (label == L"Select All") return "assets/ressource/icons/folder-keys-open.svg";
+    if (label == L"Expand Selection") return "assets/ressource/icons/folder-link-open.svg";
+    if (label == L"Shrink Selection") return "assets/ressource/icons/folder-backup-open.svg";
+    if (label == L"Select Line") return "assets/ressource/icons/folder-content-open.svg";
     if (label == L"Find" || label == L"Find in Files") return "assets/ressource/icons/search.svg";
     if (label == L"Replace" || label == L"Replace in Files") return "assets/ressource/icons/folder-tools-open.svg";
     if (label == L"Toggle Comment" || label == L"Format Document") return "assets/ressource/icons/folder-tools-open.svg";
@@ -528,11 +531,12 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     }
 
     // Menu items (Terminal removed)
-    std::vector<std::wstring> menus = {L"File", L"Tampon"};
+    std::vector<std::wstring> menus = {L"File", L"Edit", L"Tampon", L"Selection"};
 
-    // Initialiser g_menuItems si vide
-    if (g_menuItems.empty())
+    // Keep cached menu list in sync with the current top-level menu model.
+    if (g_menuItems.size() != menus.size())
     {
+        g_menuItems.clear();
         for (const auto &menu : menus)
         {
             g_menuItems.push_back({menu, D2D1::RectF(0, 0, 0, 0), false});
@@ -728,7 +732,7 @@ void ShowMenuDropdown(HWND hwnd, int menuIndex, D2D1_RECT_F menuRect)
     {
     case 0:
         // File menu with Open Recent submenu.
-        g_activeDropdown.items = {L"New", L"New Window", L"Open...", L"Open Recent", L"Open Project"};
+        g_activeDropdown.items = {L"New", L"New Window", L"Open...", L"Open Recent", L"Open Project", L"Close"};
         g_activeDropdown.shortcuts = {L"Ctrl+N", L"", L"Ctrl+O", L"", L"Ctrl+Shift+O", L"Ctrl+W"};
         g_activeDropdown.icons = {0xE710, 0xE8A7, 0xE8B7, 0xE8B7, 0xE8B7, 0xE8BB};
         g_activeDropdown.separators = {false, false, false, false, false, false};
@@ -736,6 +740,17 @@ void ShowMenuDropdown(HWND hwnd, int menuIndex, D2D1_RECT_F menuRect)
         break;
 
     case 1:
+        // Edit menu
+        g_activeDropdown.items = {L"Undo", L"Cut", L"Copy", L"Paste", L"Delete", L"Select All"};
+        g_activeDropdown.shortcuts = {L"Ctrl+Z", L"Ctrl+X", L"Ctrl+C", L"Ctrl+V", L"Del", L"Ctrl+A"};
+        g_activeDropdown.icons.assign(g_activeDropdown.items.size(), 0);
+        g_activeDropdown.separators.assign(g_activeDropdown.items.size(), false);
+        g_activeDropdown.hasSubmenu.assign(g_activeDropdown.items.size(), false);
+        g_activeDropdown.enabled.clear();
+        g_activeDropdown.enabled.resize(g_activeDropdown.items.size(), true);
+        break;
+
+    case 2:
         // Tampon (template) menu
         g_activeDropdown.items = {L"Definir Tampon...", L"Effacer Tampon", L"Voir Tampon"};
         g_activeDropdown.shortcuts.assign(g_activeDropdown.items.size(), L"");
@@ -745,14 +760,14 @@ void ShowMenuDropdown(HWND hwnd, int menuIndex, D2D1_RECT_F menuRect)
         g_activeDropdown.enabled.clear();
         g_activeDropdown.enabled.resize(g_activeDropdown.items.size(), true);
         break;
-    case 2:
+    case 3:
         g_activeDropdown.items = {L"Select All", L"Expand Selection", L"Shrink Selection", L"Select Line"};
         g_activeDropdown.shortcuts = {L"Ctrl+A", L"Shift+Alt+Right", L"Shift+Alt+Left", L"Ctrl+L"};
         g_activeDropdown.icons.assign(g_activeDropdown.items.size(), 0);
         g_activeDropdown.separators.assign(g_activeDropdown.items.size(), false);
         g_activeDropdown.hasSubmenu.assign(g_activeDropdown.items.size(), false);
         break;
-    case 3:
+    case 4:
         // Add New Terminal as a View action
         g_activeDropdown.items = {L"New Terminal", L"Command Palette", L"Open View", L"Toggle Sidebar", L"Show Extensions", L"Keyboard Shortcuts"};
         g_activeDropdown.shortcuts = {L"Ctrl+`", L"Ctrl+Shift+P", L"", L"Ctrl+B", L"Ctrl+Shift+X", L"Ctrl+K, Ctrl+S"};
@@ -760,21 +775,21 @@ void ShowMenuDropdown(HWND hwnd, int menuIndex, D2D1_RECT_F menuRect)
         g_activeDropdown.separators.assign(g_activeDropdown.items.size(), false);
         g_activeDropdown.hasSubmenu.assign(g_activeDropdown.items.size(), false);
         break;
-    case 4:
+    case 5:
         g_activeDropdown.items = {L"Go to File", L"Go to Line", L"Go to Symbol", L"Go to Definition"};
         g_activeDropdown.shortcuts = {L"Ctrl+P", L"Ctrl+G", L"Ctrl+Shift+O", L"F12"};
         g_activeDropdown.icons.assign(g_activeDropdown.items.size(), 0);
         g_activeDropdown.separators.assign(g_activeDropdown.items.size(), false);
         g_activeDropdown.hasSubmenu.assign(g_activeDropdown.items.size(), false);
         break;
-    case 5:
+    case 6:
         g_activeDropdown.items = {L"Start Debugging", L"Run", L"Stop", L"Restart Debugging", L"Step Over", L"Step Into"};
         g_activeDropdown.shortcuts = {L"F5", L"Ctrl+F5", L"Shift+F5", L"Ctrl+Shift+F5", L"F10", L"F11"};
         g_activeDropdown.icons.assign(g_activeDropdown.items.size(), 0);
         g_activeDropdown.separators.assign(g_activeDropdown.items.size(), false);
         g_activeDropdown.hasSubmenu.assign(g_activeDropdown.items.size(), false);
         break;
-    case 6:
+    case 7:
         // Help menu (moved from index 7 after removing Terminal)
         g_activeDropdown.items = {L"Welcome", L"Documentation", L"About", L"Release Notes", L"Report Issue"};
         g_activeDropdown.shortcuts = {L"", L"", L"", L"", L""};
@@ -793,7 +808,24 @@ void ShowMenuDropdown(HWND hwnd, int menuIndex, D2D1_RECT_F menuRect)
 
     float itemHeight = 28.0f;
     float width = 210.0f;
-    if (g_activeDropdown.items.size() > 6)
+    bool hasLongShortcut = false;
+    for (const auto &sc : g_activeDropdown.shortcuts)
+    {
+        if (sc.size() >= 10)
+        {
+            hasLongShortcut = true;
+            break;
+        }
+    }
+    if (g_activeDropdown.menuIndex == 3)
+    {
+        width = 320.0f;
+    }
+    else if (hasLongShortcut)
+    {
+        width = 290.0f;
+    }
+    else if (g_activeDropdown.items.size() > 6)
     {
         width = 260.0f;
     }
@@ -1115,6 +1147,15 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
     const float iconSize = 14.0f;
     const float iconPad = 10.0f;
     const float textPadLeft = 8.0f;
+    float shortcutColWidth = 66.0f;
+    for (const auto &sc : g_activeDropdown.shortcuts)
+    {
+        if (!sc.empty())
+        {
+            float approx = 10.0f + (float)sc.size() * 6.0f;
+            shortcutColWidth = (std::max)(shortcutColWidth, (std::min)(approx, 150.0f));
+        }
+    }
 
     for (size_t i = 0; i < g_activeDropdown.items.size(); i++)
     {
@@ -1155,7 +1196,7 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
         {
             const float rightPad = 12.0f;
             const float shortcutGap = 14.0f;
-            D2D1_RECT_F shortcutRect = D2D1::RectF(itemRect.right - 78.0f, itemRect.top,
+            D2D1_RECT_F shortcutRect = D2D1::RectF(itemRect.right - (shortcutColWidth + rightPad), itemRect.top,
                                                    itemRect.right - rightPad, itemRect.bottom);
             D2D1_RECT_F textRect = D2D1::RectF(itemRect.left + iconPad + iconSize + textPadLeft, itemRect.top,
                                                shortcutRect.left - shortcutGap, itemRect.bottom);

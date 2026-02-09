@@ -97,7 +97,8 @@ void Panel::DrawRightBorder(ID2D1RenderTarget *ctx)
 
     if (brush)
     {
-        float bx = std::round(state_.rightEdge) - 0.5f;
+        float resizeEdgeX = IsResizeHandleOnLeft() ? state_.leftEdge : state_.rightEdge;
+        float bx = std::round(resizeEdgeX) - 0.5f;
         D2D1_POINT_2F p1 = D2D1::Point2F(bx, state_.topEdge);
         D2D1_POINT_2F p2 = D2D1::Point2F(bx, state_.bottomEdge);
 
@@ -121,14 +122,14 @@ bool Panel::IsPointInResizeZone(POINT clientPoint) const
     if (!visible_ || state_.physicalWidth <= 0)
         return false;
 
-    float rightEdge = state_.rightEdge;
+    float resizeEdgeX = IsResizeHandleOnLeft() ? state_.leftEdge : state_.rightEdge;
 
     // Zone active sur toute la hauteur du panel (IMPORTANT)
     float top = state_.topEdge;
     float bottom = state_.bottomEdge;
 
-    return (clientPoint.x >= (int)std::floor(rightEdge - RESIZE_ZONE_WIDTH) &&
-            clientPoint.x <= (int)std::ceil(rightEdge + RESIZE_ZONE_WIDTH) &&
+    return (clientPoint.x >= (int)std::floor(resizeEdgeX - RESIZE_ZONE_WIDTH) &&
+            clientPoint.x <= (int)std::ceil(resizeEdgeX + RESIZE_ZONE_WIDTH) &&
             clientPoint.y >= (int)top &&
             clientPoint.y <= (int)bottom);
 }
@@ -145,7 +146,9 @@ bool Panel::HandleResizeMouseMove(HWND hwnd, POINT clientPoint)
         int deltaPhysical = clientPoint.x - state_.resizeStartClientX;
         int deltaLogical = MulDiv(deltaPhysical, 96, (int)dpi);
 
-        int newWidth = state_.resizeStartWidth + deltaLogical;
+        int newWidth = IsResizeHandleOnLeft()
+                           ? (state_.resizeStartWidth - deltaLogical)
+                           : (state_.resizeStartWidth + deltaLogical);
         if (newWidth < state_.minWidth)
             newWidth = state_.minWidth;
         if (newWidth > state_.maxWidth)

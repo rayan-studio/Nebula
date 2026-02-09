@@ -18,6 +18,76 @@
 #include "utils/logger/Logger.h"
 namespace Orion
 {
+    static bool TryReadLastWriteTime(const std::wstring &filePath, std::filesystem::file_time_type &outTime)
+    {
+        if (filePath.empty())
+            return false;
+
+        std::error_code ec;
+        outTime = std::filesystem::last_write_time(std::filesystem::path(filePath), ec);
+        return !ec;
+    }
+
+    void Editor::UpdateKnownFileWriteTime(const std::wstring &filePath)
+    {
+        std::filesystem::file_time_type wt{};
+        if (TryReadLastWriteTime(filePath, wt))
+        {
+            knownFileWriteTime_ = wt;
+            hasKnownFileWriteTime_ = true;
+        }
+        else
+        {
+            hasKnownFileWriteTime_ = false;
+        }
+    }
+
+    bool Editor::IsPointInEditorBounds(POINT pt) const
+    {
+        return (pt.x >= (int)state_.leftEdge &&
+                pt.x <= (int)state_.rightEdge &&
+                pt.y >= (int)state_.topEdge &&
+                pt.y <= (int)state_.bottomEdge);
+    }
+
+    bool Editor::ReloadFromDiskIfExternalChange(HWND hwnd, int tabIndex)
+    {
+        if (isPreview_ || isDirty_)
+            return false;
+
+        if (state_.filePath.empty() || state_.filePath.rfind(L"__untitled__", 0) == 0)
+            return false;
+
+        std::filesystem::file_time_type currentWriteTime{};
+        if (!TryReadLastWriteTime(state_.filePath, currentWriteTime))
+            return false;
+
+        if (!hasKnownFileWriteTime_)
+        {
+            knownFileWriteTime_ = currentWriteTime;
+            hasKnownFileWriteTime_ = true;
+            return false;
+        }
+
+        if (currentWriteTime == knownFileWriteTime_)
+            return false;
+
+        // Update immediately to avoid repeated async reload requests while file is loading.
+        knownFileWriteTime_ = currentWriteTime;
+        restoreViewAfterNextFileLoad_ = true;
+        restoreCaretAfterNextFileLoad_ = state_.caret;
+        restoreScrollXAfterNextFileLoad_ = state_.scrollOffsetX;
+        restoreScrollYAfterNextFileLoad_ = state_.scrollOffsetY;
+        LoadFileAsync(hwnd, state_.filePath, tabIndex, true);
+        return true;
+    }
+
+    void Editor::SetFilePath(const std::wstring &filePath)
+    {
+        state_.filePath = filePath;
+        UpdateKnownFileWriteTime(filePath);
+    }
+
     void Editor::LoadFile(const std::wstring &filePath)
     {
         state_.filePath = filePath;
@@ -26,6 +96,9 @@ namespace Orion
         state_.scrollOffsetX = 0.0f;
         state_.scrollOffsetY = 0.0f;
         state_.encoding = L"Unknown";
+        collapsedFolds_.clear();
+        foldLineMapsDirty_ = true;
+        gutterHoverLine_ = -1;
 
         int size_needed = WideCharToMultiByte(CP_UTF8, 0,
                                               filePath.c_str(), (int)filePath.size(),
@@ -40,6 +113,7 @@ namespace Orion
         {
             state_.lines.push_back(L"// Could not open file");
             state_.encoding = L"";
+            hasKnownFileWriteTime_ = false;
             return;
         }
 
@@ -186,6 +260,8 @@ namespace Orion
         if (state_.lines.empty())
             state_.lines.push_back(L"");
 
+        UpdateKnownFileWriteTime(filePath);
+
     }
 
     void Editor::CreateEmpty()
@@ -197,12 +273,19 @@ namespace Orion
         state_.filePath.clear();
         state_.scrollOffsetX = 0.0f;
         state_.scrollOffsetY = 0.0f;
+        collapsedFolds_.clear();
+        foldLineMapsDirty_ = true;
+        gutterHoverLine_ = -1;
+        hasKnownFileWriteTime_ = false;
     }
 
     void Editor::SetTextContent(const std::wstring &text, bool markDirty)
     {
         ResetPreview();
         state_.lines.clear();
+        collapsedFolds_.clear();
+        foldLineMapsDirty_ = true;
+        gutterHoverLine_ = -1;
 
         size_t start = 0;
         size_t i = 0;
@@ -234,6 +317,7 @@ namespace Orion
         state_.scrollOffsetX = 0.0f;
         state_.scrollOffsetY = 0.0f;
         state_.encoding = L"UTF-8";
+        hasKnownFileWriteTime_ = false;
 
         if (markDirty)
             MarkDirty();
@@ -274,6 +358,7 @@ namespace Orion
         state_.filePath = filePath;
         // Clear dirty flag after successful save
         ClearDirty();
+        UpdateKnownFileWriteTime(filePath);
         return true;
     }
 

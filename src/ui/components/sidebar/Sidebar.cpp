@@ -1,12 +1,93 @@
 #include "Sidebar.h"
 #include "helpers/window_helpers.h"
 #include "ui/panels/PanelManager.h"
+#include "core/explorer/Explorer.h"
 #include "core/window/Window.h"
 #include "ui/panels/terminal/TerminalPanel.h"
 #include <d2d1.h>
 #include <dwrite.h>
 #include <windows.h>
 #include <algorithm>
+#include <cwctype>
+
+namespace
+{
+bool EndsWithSvgInsensitive(const std::wstring &value)
+{
+    if (value.size() < 4)
+        return false;
+    const size_t base = value.size() - 4;
+    return (std::towlower(value[base + 0]) == L'.' &&
+            std::towlower(value[base + 1]) == L's' &&
+            std::towlower(value[base + 2]) == L'v' &&
+            std::towlower(value[base + 3]) == L'g');
+}
+
+std::string WideToUtf8Local(const std::wstring &text)
+{
+    if (text.empty())
+        return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, text.data(), (int)text.size(), nullptr, 0, nullptr, nullptr);
+    if (len <= 0)
+        return {};
+    std::string out((size_t)len, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.data(), (int)text.size(), out.data(), len, nullptr, nullptr);
+    return out;
+}
+
+struct SidebarSvgCacheEntry
+{
+    ID2D1RenderTarget *target = nullptr;
+    std::wstring path;
+    UINT dpi = 0;
+    int px = 0;
+    ID2D1Bitmap *bitmap = nullptr;
+};
+
+ID2D1Bitmap *GetCachedSidebarSvg(ID2D1RenderTarget *ctx, const std::wstring &path, int px, UINT dpi)
+{
+    static std::vector<SidebarSvgCacheEntry> cache;
+    if (!ctx || path.empty() || px <= 0)
+        return nullptr;
+
+    for (auto it = cache.begin(); it != cache.end();)
+    {
+        if (it->target != ctx)
+        {
+            if (it->bitmap)
+                it->bitmap->Release();
+            it = cache.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+
+    for (auto &entry : cache)
+    {
+        if (entry.target == ctx && entry.path == path && entry.dpi == dpi && entry.px == px)
+            return entry.bitmap;
+    }
+
+    std::string utf8Path = WideToUtf8Local(path);
+    if (utf8Path.empty())
+        return nullptr;
+
+    ID2D1Bitmap *bitmap = GetExplorerManager().LoadSvgIconPublic(ctx, utf8Path, px, dpi);
+    if (!bitmap)
+        return nullptr;
+
+    SidebarSvgCacheEntry entry;
+    entry.target = ctx;
+    entry.path = path;
+    entry.dpi = dpi;
+    entry.px = px;
+    entry.bitmap = bitmap;
+    cache.push_back(entry);
+    return bitmap;
+}
+}
 
 // ============================================================================
 // SidebarRenderer Implementation
@@ -259,13 +340,33 @@ void SidebarRenderer::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND 
         }
         
         // Draw icon
-        if (iconFormat) {
-            bool isActiveAndVisible = false;
-            if (state.isActive) {
-                Panel* panel = GetPanelManager().GetPanel(state.panelId);
-                isActiveAndVisible = panel && panel->IsVisible();
+        bool isActiveAndVisible = false;
+        if (state.isActive) {
+            Panel* panel = GetPanelManager().GetPanel(state.panelId);
+            isActiveAndVisible = panel && panel->IsVisible();
+        }
+
+        bool drawnSvg = false;
+        if (EndsWithSvgInsensitive(cfg->icon))
+        {
+            int iconPx = win32_dpi_scale((int)iconSize_, dpi);
+            ID2D1Bitmap *bitmap = GetCachedSidebarSvg(ctx, cfg->icon, iconPx, dpi);
+            if (bitmap)
+            {
+                float cx = (state.hitRect.left + state.hitRect.right) * 0.5f;
+                float cy = (state.hitRect.top + state.hitRect.bottom) * 0.5f;
+                D2D1_RECT_F dst = D2D1::RectF(
+                    cx - (iconSize_ * 0.5f),
+                    cy - (iconSize_ * 0.5f),
+                    cx + (iconSize_ * 0.5f),
+                    cy + (iconSize_ * 0.5f));
+                float alpha = isActiveAndVisible ? 1.0f : (state.isHovered ? 0.94f : 0.80f);
+                ctx->DrawBitmap(bitmap, dst, alpha, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                drawnSvg = true;
             }
-            
+        }
+
+        if (!drawnSvg && iconFormat) {
             ID2D1SolidColorBrush* brush = isActiveAndVisible ? iconActiveBrush :
                                           (state.isHovered ? iconHoverBrush : iconNormalBrush);
             ctx->DrawTextW(cfg->icon.c_str(), static_cast<UINT32>(cfg->icon.length()),

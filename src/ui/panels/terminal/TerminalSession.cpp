@@ -417,7 +417,7 @@ void TerminalSession::OnKeyDown(WPARAM vk)
     switch (vk)
     {
     case VK_RETURN: WriteUtf8("\r", 1); break;
-    case VK_BACK:   WriteUtf8("\x08", 1); break;
+    case VK_BACK:   WriteUtf8("\x7f", 1); break;
     case VK_TAB:    WriteUtf8("\t", 1); break;
 
     case VK_UP:     WriteVtSequence("\x1b[A"); break;
@@ -425,7 +425,7 @@ void TerminalSession::OnKeyDown(WPARAM vk)
     case VK_RIGHT:  WriteVtSequence("\x1b[C"); break;
     case VK_LEFT:   WriteVtSequence("\x1b[D"); break;
 
-    case VK_DELETE: WriteVtSequence("\x1b[3~"); break;
+    case VK_DELETE: WriteUtf8("\x7f", 1); break;
     case VK_HOME:   WriteVtSequence("\x1b[H"); break;
     case VK_END:    WriteVtSequence("\x1b[F"); break;
     default:

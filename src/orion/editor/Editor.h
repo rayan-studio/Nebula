@@ -11,6 +11,7 @@
 #include <windows.h>
 #include "ui/components/scrollbar/Scrollbar.h"
 #include <functional>
+#include <map>
 #include "orion/font/CustomFontLoader.h"
 #include "../search/SearchBox.h"
 #include "../syntax/Highlighter.h"
@@ -22,6 +23,8 @@
 #include "../selection/Selection.h"
 #include "orion/caret/CaretPosition.h"
 #include <unordered_map>
+#include <utility>
+#include <filesystem>
 #include "lsp/LspManager.h"
 
 // ============================================================================
@@ -97,6 +100,8 @@ namespace Orion
         float imageWidth = 0.0f;
         float imageHeight = 0.0f;
         MarkdownImageAlign imageAlign = MarkdownImageAlign::Left;
+        bool imageFloat = false;
+        int headingLevel = 0;
         bool isQuote = false;
         std::vector<std::vector<std::wstring>> tableRows;
         std::vector<MarkdownInlineImage> inlineImages;
@@ -258,6 +263,10 @@ namespace Orion
         // Sélection
         bool hasSelection = false;
         CaretPosition selectionStart = {0, 0};
+
+        // Fold line maps (actual <-> visible). Kept in state so gutter can render with compressed rows.
+        std::vector<int> visualLineByActual;
+        std::vector<int> actualLineByVisual;
     };
 
     class Editor
@@ -300,6 +309,7 @@ namespace Orion
         bool IsSearchVisible() const { return searchBox_.IsVisible(); }
         SearchBox *GetSearchBox() { return &searchBox_; }
         std::optional<Lsp::Location> TryGoToDefinitionAtPoint(POINT pt);
+        std::optional<Lsp::Location> TryGoToDefinitionAtCaret();
         // Create an empty buffer for a new untitled tab
         void CreateEmpty();
         // Replace entire buffer content (used for templates)
@@ -312,6 +322,12 @@ namespace Orion
         bool IsDirty() const { return isDirty_; }
         void MarkDirty()
         {
+            if (!collapsedFolds_.empty())
+            {
+                collapsedFolds_.clear();
+                foldLineMapsDirty_ = true;
+                gutterHoverLine_ = -1;
+            }
             isDirty_ = true;
             if (onDocumentChanged)
                 onDocumentChanged();
@@ -329,8 +345,10 @@ namespace Orion
         CaretPosition GetCaret() const { return state_.caret; }
         std::wstring GetFilePath() const { return state_.filePath; }
         std::wstring GetEncoding() const { return state_.encoding; }
-        void SetFilePath(const std::wstring &filePath) { state_.filePath = filePath; }
+        void SetFilePath(const std::wstring &filePath);
         std::vector<std::wstring> GetLinesSnapshot() const { return state_.lines; }
+        bool IsPointInEditorBounds(POINT pt) const;
+        bool ReloadFromDiskIfExternalChange(HWND hwnd, int tabIndex);
         // Retourne le texte sélectionné (vide si pas de sélection)
         std::wstring GetSelectionText() const;
         // Indique si le buffer a du contenu non vide
@@ -339,10 +357,14 @@ namespace Orion
         void CutSelectionToClipboard();
         void PasteFromClipboard();
         void SelectAll();
+        void SelectCurrentLine();
+        void ExpandSelection();
+        void ShrinkSelection();
         void DeleteSelectionPublic();
         void SetSelectionStyle(Rendering::SelectionStyle style);
         void SetSelectionColor(float r, float g, float b, float a);
         void CancelInteraction();
+        bool IsDragSelecting() const { return dragSelecting_; }
         bool Undo();
 
         // Diagnostics (LSP)
@@ -351,7 +373,7 @@ namespace Orion
         friend void Caret::SetCaret(Editor &editor, int line, int column);
 
 
-        void LoadFileAsync(HWND hwnd, const std::wstring &filePath, int tabIndex);
+        void LoadFileAsync(HWND hwnd, const std::wstring &filePath, int tabIndex, bool preserveView = false);
         void LoadPreviewAsync(HWND hwnd, const std::wstring &filePath, int tabIndex);
         void SetMarkdownPreviewEnabled(bool enabled);
         bool IsMarkdownPreviewEnabled() const;
@@ -379,8 +401,10 @@ namespace Orion
         Syntax::Highlighter *highlighter_ = nullptr;
         IDWriteTextFormat *cachedTextFormat_ = nullptr;
         void DrawActiveLine(ID2D1RenderTarget *ctx);
+        void DrawGitDiffDecorations(ID2D1RenderTarget *ctx);
         void DrawSelection(ID2D1RenderTarget *ctx);
         void DrawTextContent(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
+        void DrawFoldMarkers(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
         void DrawPreview(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
         void DrawCaret(ID2D1RenderTarget *ctx);
         void ResetPreview();
@@ -390,6 +414,15 @@ namespace Orion
         CaretPosition ScreenToTextPosition(POINT screenPoint);
 
         void DeleteSelection();
+        void EnsureFoldLineMaps();
+        void RebuildFoldLineMaps();
+        int GetVisibleLineCount();
+        int VisibleLineToActualLine(int visibleLine);
+        int ActualLineToVisibleLine(int actualLine);
+        bool IsLineHiddenByFold(int actualLine);
+        bool IsCollapsedFoldStart(int line, int *outEnd = nullptr);
+        int FindFoldEndLineForStart(int startLine) const;
+        bool ToggleFoldAtLine(int startLine);
 
         EditorState state_;
         EditorTheme theme_;
@@ -422,9 +455,14 @@ namespace Orion
         wchar_t suppressNextCharValue_ = 0;
         // Dirty flag: true when document has unsaved changes
         bool isDirty_ = false;
+        std::map<int, int> collapsedFolds_;
+        bool foldLineMapsDirty_ = true;
+        int gutterHoverLine_ = -1;
+        std::vector<std::pair<CaretPosition, CaretPosition>> selectionExpandHistory_;
         void DrawSearchMatches(ID2D1RenderTarget *ctx);
         void DrawWhitespaceIndicators(ID2D1RenderTarget *ctx);
         bool ReplaceCurrentMatch();
+        void NormalizeSecondaryCarets();
         std::vector<EditorState> undoStack_;
         size_t maxUndoEntries_ = 200;
         D2D1_COLOR_F GetTokenColor(::Orion::Syntax::TokenType type, const std::wstring &ext) const;
@@ -450,6 +488,7 @@ namespace Orion
         int clickCount_ = 0;
         POINT dragStartPos_ = {0, 0};
         bool dragSelecting_ = false;
+        std::vector<CaretPosition> secondaryCarets_;
 
         bool isPreview_ = false;
         enum class PreviewMode
@@ -485,9 +524,18 @@ namespace Orion
         int defHoverEnd_ = -1;
         std::wstring defHoverWord_;
         std::optional<Lsp::Location> defHoverLocation_;
+        bool restoreViewAfterNextFileLoad_ = false;
+        CaretPosition restoreCaretAfterNextFileLoad_ = {0, 0};
+        float restoreScrollXAfterNextFileLoad_ = 0.0f;
+        float restoreScrollYAfterNextFileLoad_ = 0.0f;
+        bool hasKnownFileWriteTime_ = false;
+        std::filesystem::file_time_type knownFileWriteTime_{};
 
     public:
         bool IsDefinitionHoverActive() const { return defHoverActive_; }
+
+    private:
+        void UpdateKnownFileWriteTime(const std::wstring &filePath);
     };
 
     class CustomTextRenderer : public IDWriteTextRenderer

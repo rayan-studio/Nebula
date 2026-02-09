@@ -36,6 +36,7 @@
 #include "ui/components/input/InputTypeFixed.h"
 #include "ui/panels/PanelInit.h"
 #include "ui/panels/PanelManager.h"
+#include "ui/panels/git/GitPanel.h"
 #include "ui/panels/search/SearchPanel.h"
 #include "ui/panels/terminal/TerminalPanel.h"
 #include "orion/font/CustomFontLoader.h"
@@ -195,6 +196,8 @@ static constexpr UINT TITLEBAR_HOVER_TIMER_ID = 2;
 static constexpr UINT TITLEBAR_HOVER_TIMER_INTERVAL_MS = 16;
 static constexpr UINT DIAG_TIMER_ID = 3;
 static constexpr UINT DIAG_TIMER_INTERVAL_MS = 80;
+static constexpr UINT EDITOR_DRAG_TIMER_ID = 4;
+static constexpr UINT EDITOR_DRAG_TIMER_INTERVAL_MS = 16;
 
 struct KeyMods
 {
@@ -542,6 +545,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         SetText(L"Bonjour — texte rendu via GPU (Direct2D)");
 
         SetTimer(hwnd_, CARET_TIMER_ID, CARET_TIMER_INTERVAL_MS, nullptr);
+        SetTimer(hwnd_, EDITOR_DRAG_TIMER_ID, EDITOR_DRAG_TIMER_INTERVAL_MS, nullptr);
 
         // Initialize ggwave wrapper (will fallback to SAPI if not enabled)
         CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
@@ -1274,6 +1278,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                     searchPanel->UnfocusInput();
                 }
             }
+            if (GetPanelManager().IsPanelActive(PanelId::Git))
+            {
+                GitPanel *gitPanel = GetPanelManager().GetPanelAs<GitPanel>(PanelId::Git);
+                if (gitPanel && gitPanel->IsInputFocused())
+                    gitPanel->UnfocusInputs();
+            }
 
             GetTerminalPanel().Unfocus();
             settingsTab_->OnLeftButtonDown(hwnd_, pt);
@@ -1282,7 +1292,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
 
         Orion::Editor *editor = GetEditor();
-        if (editor)
+        if (editor && editor->IsPointInEditorBounds(pt))
         {
             // Clicking in editor area - unfocus SearchPanel input if it was focused
             if (GetPanelManager().IsPanelActive(PanelId::Search))
@@ -1292,6 +1302,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 {
                     searchPanel->UnfocusInput();
                 }
+            }
+            if (GetPanelManager().IsPanelActive(PanelId::Git))
+            {
+                GitPanel *gitPanel = GetPanelManager().GetPanelAs<GitPanel>(PanelId::Git);
+                if (gitPanel && gitPanel->IsInputFocused())
+                    gitPanel->UnfocusInputs();
             }
 
             // Unfocus terminal when clicking in editor
@@ -1684,7 +1700,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 return 0;
             }
             Orion::Editor* editor = GetEditor();
-            if (editor)
+            if (editor && (GetCapture() == hwnd_ || editor->IsPointInEditorBounds(pt)))
             {
                 editor->OnMouseMove(hwnd_, pt);
                 ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
@@ -1935,7 +1951,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 popupItems = {L"New", L"Open", L"Save", L"Close"};
                 break;
             case 1:
-                popupItems = {L"Undo", L"Redo", L"Cut", L"Copy", L"Paste"};
+                popupItems = {L"Undo", L"Cut", L"Copy", L"Paste", L"Delete", L"Select All"};
+                break;
+            case 2:
+                popupItems = {L"Definir Tampon...", L"Effacer Tampon", L"Voir Tampon"};
+                break;
+            case 3:
+                popupItems = {L"Select All", L"Expand Selection", L"Shrink Selection", L"Select Line"};
                 break;
             case 6:
                 popupItems = {L"New Terminal", L"Split Terminal", L"Kill Terminal"};
@@ -2021,6 +2043,45 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             if (editor && editor->UpdateCaretBlink())
             {
                 InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+
+            // Poll external file modifications and auto-reload clean tabs.
+            DWORD now = GetTickCount();
+            if (now - lastExternalFileCheckTick_ >= 500)
+            {
+                bool reloadedAny = false;
+                for (auto &kv : editors_)
+                {
+                    Orion::Editor *ed = kv.second;
+                    if (!ed)
+                        continue;
+                    if (ed->ReloadFromDiskIfExternalChange(hwnd_, kv.first))
+                    {
+                        tabBar_.SetTabDirty(kv.first, false);
+                        reloadedAny = true;
+                    }
+                }
+                if (reloadedAny)
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                lastExternalFileCheckTick_ = now;
+            }
+            return 0;
+        }
+        if (wParam == EDITOR_DRAG_TIMER_ID)
+        {
+            Orion::Editor *editor = GetEditor();
+            if (!editor || !editor->IsDragSelecting())
+                return 0;
+            if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0)
+                return 0;
+            if (GetCapture() != hwnd_)
+                return 0;
+
+            POINT pt = {0, 0};
+            if (GetCursorPos(&pt))
+            {
+                ScreenToClient(hwnd_, &pt);
+                editor->OnMouseMove(hwnd_, pt);
             }
             return 0;
         }
@@ -2275,8 +2336,45 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 }
             }
 
-            // Tampon menu
+            // Edit menu
             if (menu == 1)
+            {
+                Orion::Editor *editor = GetEditor();
+                if (!editor)
+                    return 0;
+
+                switch (index)
+                {
+                case 0: // Undo
+                    editor->Undo();
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                case 1: // Cut
+                    editor->CutSelectionToClipboard();
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                case 2: // Copy
+                    editor->CopySelectionToClipboard();
+                    return 0;
+                case 3: // Paste
+                    editor->PasteFromClipboard();
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                case 4: // Delete
+                    editor->DeleteSelectionPublic();
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                case 5: // Select All
+                    editor->SelectAll();
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                default:
+                    break;
+                }
+            }
+
+            // Tampon menu
+            if (menu == 2)
             {
                 switch (index)
                 {
@@ -2310,10 +2408,40 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 }
             }
 
+            // Selection menu
+            if (menu == 3)
+            {
+                Orion::Editor *editor = GetEditor();
+                if (!editor)
+                    return 0;
+
+                switch (index)
+                {
+                case 0: // Select All
+                    editor->SelectAll();
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                case 1: // Expand Selection
+                    editor->ExpandSelection();
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                case 2: // Shrink Selection
+                    editor->ShrinkSelection();
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                case 3: // Select Line
+                    editor->SelectCurrentLine();
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                default:
+                    break;
+                }
+            }
+
             wchar_t buf[256];
             swprintf_s(buf, sizeof(buf) / sizeof(buf[0]), L"Menu %d item %d selected", menu, index);
-            // Handle some View menu actions (menu == 3)
-            if (menu == 3)
+            // Handle some View menu actions (menu == 4)
+            if (menu == 4)
             {
                 switch (index)
                 {
@@ -2572,6 +2700,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         KillTimer(hwnd_, CARET_TIMER_ID);
         KillTimer(hwnd_, TITLEBAR_HOVER_TIMER_ID);
         KillTimer(hwnd_, DIAG_TIMER_ID);
+        KillTimer(hwnd_, EDITOR_DRAG_TIMER_ID);
         // Shutdown ggwave wrapper
         ggwave::Shutdown();
         CoUninitialize();

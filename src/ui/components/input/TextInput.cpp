@@ -84,16 +84,38 @@ void TextInput::DrawStandardStyle(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite
     ctx->CreateSolidColorBrush(style_.cursorColor, &cursorBrush);
     ctx->CreateSolidColorBrush(style_.iconColor, &iconBrush);
 
-    D2D1_ROUNDED_RECT roundedRect = D2D1::RoundedRect(rect_, style_.cornerRadius, style_.cornerRadius);
-    ctx->FillRoundedRectangle(roundedRect, bgBrush);
-    ctx->DrawRoundedRectangle(roundedRect, borderBrush, 1.0f);
+    // Snap geometry to pixel grid to avoid blurry 1px borders.
+    D2D1_RECT_F snappedRect = D2D1::RectF(
+        std::round(rect_.left),
+        std::round(rect_.top),
+        std::round(rect_.right),
+        std::round(rect_.bottom));
+    if (snappedRect.right <= snappedRect.left)
+        snappedRect.right = snappedRect.left + 1.0f;
+    if (snappedRect.bottom <= snappedRect.top)
+        snappedRect.bottom = snappedRect.top + 1.0f;
+
+    D2D1_RECT_F strokeRect = D2D1::RectF(
+        snappedRect.left + 0.5f,
+        snappedRect.top + 0.5f,
+        snappedRect.right - 0.5f,
+        snappedRect.bottom - 0.5f);
+    if (strokeRect.right <= strokeRect.left)
+        strokeRect.right = strokeRect.left + 1.0f;
+    if (strokeRect.bottom <= strokeRect.top)
+        strokeRect.bottom = strokeRect.top + 1.0f;
+
+    const float fillRadius = style_.cornerRadius;
+    const float strokeRadius = (std::max)(0.0f, style_.cornerRadius - 0.5f);
+    ctx->FillRoundedRectangle(D2D1::RoundedRect(snappedRect, fillRadius, fillRadius), bgBrush);
+    ctx->DrawRoundedRectangle(D2D1::RoundedRect(strokeRect, strokeRadius, strokeRadius), borderBrush, 1.0f);
 
     float iconWidth = icon_.empty() ? 0.0f : style_.iconPadding;
-    float textLeft = rect_.left + style_.padding + iconWidth;
-    float textRight = rect_.right - style_.padding;
+    float textLeft = snappedRect.left + style_.padding + iconWidth;
+    float textRight = snappedRect.right - style_.padding;
     float topInset = style_.multiline ? style_.padding * 0.55f : 0.0f;
     float bottomInset = style_.multiline ? style_.padding * 0.45f : 0.0f;
-    D2D1_RECT_F textClip = D2D1::RectF(textLeft, rect_.top + topInset, textRight, rect_.bottom - bottomInset);
+    D2D1_RECT_F textClip = D2D1::RectF(textLeft, snappedRect.top + topInset, textRight, snappedRect.bottom - bottomInset);
     if (textClip.bottom < textClip.top)
         textClip.bottom = textClip.top;
 
@@ -105,7 +127,7 @@ void TextInput::DrawStandardStyle(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite
         if (iconFormat) {
             iconFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
             iconFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            D2D1_RECT_F iconRect = D2D1::RectF(rect_.left + 4.0f, rect_.top, rect_.left + style_.iconPadding, rect_.bottom);
+            D2D1_RECT_F iconRect = D2D1::RectF(snappedRect.left + 4.0f, snappedRect.top, snappedRect.left + style_.iconPadding, snappedRect.bottom);
             ctx->DrawTextW(icon_.c_str(), (UINT32)icon_.length(), iconFormat, iconRect, iconBrush);
             iconFormat->Release();
         }
@@ -147,16 +169,16 @@ void TextInput::DrawStandardStyle(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite
 
         if (drawCaret) {
             float caretX = std::floor(textClip.left) + 0.5f;
-            float caretTop = style_.multiline ? (textClip.top + 1.0f) : (rect_.top + 6.0f);
+            float caretTop = style_.multiline ? (textClip.top + 1.0f) : (snappedRect.top + 6.0f);
             float caretBottom = style_.multiline ? ((std::min)(textClip.bottom, textClip.top + style_.fontSize + 5.0f))
-                                                 : (rect_.bottom - 6.0f);
+                                                 : (snappedRect.bottom - 6.0f);
             ctx->DrawLine(D2D1::Point2F(caretX, caretTop), D2D1::Point2F(caretX, caretBottom), cursorBrush, 1.0f);
         }
     } else if (textFormat) {
         IDWriteTextLayout* layout = nullptr;
         dwrite->CreateTextLayout(text_.c_str(), (UINT32)text_.length(), textFormat,
                                  style_.multiline ? layoutWidth : 10000.0f,
-                                 style_.multiline ? layoutHeight : 100.0f, &layout);
+                                 layoutHeight, &layout);
 
         if (layout) {
             float originX = textClip.left - textOffsetX_;
@@ -195,9 +217,9 @@ void TextInput::DrawStandardStyle(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite
                 UINT32 textPos = (UINT32)(std::max)(0, (std::min)(cursorPos_, (int)text_.length()));
                 if (SUCCEEDED(layout->HitTestTextPosition(textPos, FALSE, &cx, &cy, &hm))) {
                     float caretX = std::floor(originX + cx) + 0.5f;
-                    float caretTop = style_.multiline ? (originY + cy) : (rect_.top + 6.0f);
+                    float caretTop = style_.multiline ? (originY + cy) : (snappedRect.top + 6.0f);
                     float caretBottom = style_.multiline ? (caretTop + (std::max)(hm.height, style_.fontSize + 2.0f))
-                                                         : (rect_.bottom - 6.0f);
+                                                         : (snappedRect.bottom - 6.0f);
                     ctx->DrawLine(D2D1::Point2F(caretX, caretTop), D2D1::Point2F(caretX, caretBottom), cursorBrush, 1.0f);
                 }
             }

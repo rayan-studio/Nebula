@@ -13,6 +13,7 @@
 enum class PanelId {
     Explorer,
     Search,
+    Git,
     Settings,
     Count
 };
@@ -126,6 +127,9 @@ public:
     virtual void ClearResizeHover(HWND hwnd);
 
 protected:
+    // Returns true when the resize handle is on the left edge of the panel.
+    virtual bool IsResizeHandleOnLeft() const { return false; }
+
     // Drawing helpers
     void DrawBackground(ID2D1RenderTarget* ctx);
     void DrawTitle(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite);

@@ -17,6 +17,7 @@ namespace Orion
 {
     D2D1_POINT_2F Editor::TextToScreenPosition(CaretPosition pos)
     {
+        EnsureFoldLineMaps();
         const float contentLeft = state_.leftEdge + metrics_.gutterWidth + metrics_.leftPadding;
         const float baseX = contentLeft - state_.scrollOffsetX;
 
@@ -27,7 +28,8 @@ namespace Orion
         if (line < 0) line = 0;
         if (line >= (int)state_.lines.size()) line = (int)state_.lines.size() - 1;
 
-        const float y = state_.topEdge + (line * metrics_.lineHeight) - state_.scrollOffsetY;
+        int visibleLine = ActualLineToVisibleLine(line);
+        const float y = state_.topEdge + (visibleLine * metrics_.lineHeight) - state_.scrollOffsetY;
 
         const std::wstring &ln = state_.lines[line];
         int col = pos.column;
@@ -45,6 +47,7 @@ namespace Orion
 
     CaretPosition Editor::ScreenToTextPosition(POINT screenPoint)
     {
+        EnsureFoldLineMaps();
         CaretPosition out{0, 0};
         if (state_.lines.empty())
             return out;
@@ -53,16 +56,16 @@ namespace Orion
         const float baseX = contentLeft - state_.scrollOffsetX;
 
         const float adjustedY = (float)screenPoint.y + state_.scrollOffsetY;
-        int line = (int)((adjustedY - state_.topEdge) / metrics_.lineHeight);
-        line = (std::max)(0, (std::min)(line, (int)state_.lines.size() - 1));
+        int visibleLine = (int)((adjustedY - state_.topEdge) / metrics_.lineHeight);
+        int line = VisibleLineToActualLine(visibleLine);
 
         const std::wstring &ln = state_.lines[line];
 
         float localX = (float)screenPoint.x - baseX;
         if (localX < 0.0f) localX = 0.0f;
 
-        int targetVisual = (int)std::floor(localX / metrics_.characterWidth);
-        if (targetVisual < 0) targetVisual = 0;
+        float targetVisual = localX / metrics_.characterWidth;
+        if (targetVisual < 0.0f) targetVisual = 0.0f;
 
         const int tabSize = GetIndentConfig().tabSize;
 
@@ -72,7 +75,7 @@ namespace Orion
         {
             int nextVisual = Orion::Geometry::AdvanceVisualCol(visual, ln[i], tabSize);
 
-            int mid = (visual + nextVisual) / 2;
+            float mid = 0.5f * ((float)visual + (float)nextVisual);
             if (targetVisual < mid)
             {
                 col = i;

@@ -18,7 +18,14 @@ namespace Orion
         void EnsureCaretVisible(EditorState &state, const EditorMetrics &metrics, Scrollbar &scrollbar)
         {
             float viewportHeight = state.bottomEdge - state.topEdge;
-            float caretTop = state.caret.line * metrics.lineHeight;
+            int caretVisualLine = state.caret.line;
+            if (!state.visualLineByActual.empty() &&
+                state.caret.line >= 0 &&
+                state.caret.line < (int)state.visualLineByActual.size())
+            {
+                caretVisualLine = state.visualLineByActual[(size_t)state.caret.line];
+            }
+            float caretTop = caretVisualLine * metrics.lineHeight;
             float caretBottom = caretTop + metrics.lineHeight;
             float pad = metrics.lineHeight * 0.25f;
 

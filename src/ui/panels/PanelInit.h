@@ -2,6 +2,7 @@
 #include "Panel.h"
 #include "PanelManager.h"
 #include "explorer/ExplorerPanel.h"
+#include "git/GitPanel.h"
 #include "search/SearchPanel.h"
 #include "settings/SettingsPanel.h"
 
@@ -21,6 +22,10 @@ void InitializePanelSystem()
     // Register Search panel
     auto searchPanel = std::make_unique<SearchPanel>();
     manager.RegisterPanel(std::move(searchPanel));
+
+    // Register Git panel
+    auto gitPanel = std::make_unique<GitPanel>();
+    manager.RegisterPanel(std::move(gitPanel));
 
     // Register Settings panel
     auto settingsPanel = std::make_unique<SettingsPanel>();
