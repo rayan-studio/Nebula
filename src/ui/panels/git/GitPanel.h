@@ -43,13 +43,19 @@ private:
     void SyncRepoPathFromExplorer();
     void RefreshStatus();
     bool RunCommit();
+    bool RunCommit(bool pushAfter);
     bool PushCurrentBranch(std::wstring &outError);
+    bool RunPushOnly();
+    bool ExecuteQuickAction(int actionIndex);
+    const wchar_t *GetQuickActionLabel(int actionIndex) const;
+    int HitTestQuickActionMenuItem(POINT pt) const;
     bool BuildDiffViewForChange(const Panels::GitChange &change,
                                 std::vector<int> &addedLines,
                                 std::vector<int> &deletedLines,
                                 GitDiffDecorations::SplitViewData &splitData);
 
     void DrawChanges(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd);
+    void DrawQuickActions(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
 
     bool IsPointInRect(const D2D1_RECT_F &rect, POINT pt) const;
     int HitTestChange(POINT pt) const;
@@ -68,6 +74,9 @@ private:
     D2D1_RECT_F changesRect_ = D2D1::RectF(0, 0, 0, 0);
     D2D1_RECT_F authStatusRect_ = D2D1::RectF(0, 0, 0, 0);
     D2D1_RECT_F infoRect_ = D2D1::RectF(0, 0, 0, 0);
+    D2D1_RECT_F quickActionPrimaryRect_ = D2D1::RectF(0, 0, 0, 0);
+    D2D1_RECT_F quickActionToggleRect_ = D2D1::RectF(0, 0, 0, 0);
+    D2D1_RECT_F quickActionMenuRect_ = D2D1::RectF(0, 0, 0, 0);
 
     std::wstring repoRoot_;
     std::wstring lastError_;
@@ -81,6 +90,11 @@ private:
     float changeRowHeight_ = 24.0f;
 
     bool capturedScrollbar_ = false;
+    bool quickActionPrimaryHovered_ = false;
+    bool quickActionToggleHovered_ = false;
+    bool quickActionMenuOpen_ = false;
+    int quickActionHoveredIndex_ = -1;
+    int quickActionPrimaryIndex_ = 0; // 0: Commit & Push
     bool wasVisibleLastLayout_ = false;
     bool hasAutoRefreshed_ = false;
     ULONGLONG lastAutoRefreshTick_ = 0;

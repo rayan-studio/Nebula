@@ -236,11 +236,11 @@ GitPanel::GitPanel()
         2);
     title_ = L"SOURCE CONTROL";
 
-    ApplyInputTheme(commitMessageInput_, L"Commit message", L"\uE70B");
+    ApplyInputTheme(commitMessageInput_, L"Commit message");
 
     commitMessageInput_.onSubmit = [this]()
     {
-        RunCommit();
+        ExecuteQuickAction(quickActionPrimaryIndex_);
     };
 
     commitMessageInput_.onEscape = [this]()
@@ -349,8 +349,41 @@ void GitPanel::UpdateLayout(HWND hwnd)
     const float inputH = 30.0f;
     const float gap = 8.0f;
 
-    commitMessageInput_.SetRect(D2D1::RectF(x0, y, x1, y + inputH));
+    const float actionPrimaryW = 112.0f;
+    const float actionToggleW = 24.0f;
+    const float actionGap = 8.0f;
+    const float minInputW = 170.0f;
+    const bool showQuickActions = ((x1 - x0) >= (actionPrimaryW + actionToggleW + actionGap + minInputW));
+
+    if (showQuickActions)
+    {
+        quickActionToggleRect_ = D2D1::RectF(x1 - actionToggleW, y, x1, y + inputH);
+        quickActionPrimaryRect_ = D2D1::RectF(quickActionToggleRect_.left - actionPrimaryW, y,
+                                              quickActionToggleRect_.left - 2.0f, y + inputH);
+        float inputRight = quickActionPrimaryRect_.left - actionGap;
+        commitMessageInput_.SetRect(D2D1::RectF(x0, y, inputRight, y + inputH));
+
+        const float menuItemH = inputH;
+        const float menuW = actionPrimaryW + actionToggleW + 2.0f;
+        const float menuTop = y + inputH + 2.0f;
+        quickActionMenuRect_ = D2D1::RectF(
+            quickActionPrimaryRect_.left,
+            menuTop,
+            quickActionPrimaryRect_.left + menuW,
+            menuTop + menuItemH * 4.0f);
+    }
+    else
+    {
+        commitMessageInput_.SetRect(D2D1::RectF(x0, y, x1, y + inputH));
+        quickActionPrimaryRect_ = D2D1::RectF(0, 0, 0, 0);
+        quickActionToggleRect_ = D2D1::RectF(0, 0, 0, 0);
+        quickActionMenuRect_ = D2D1::RectF(0, 0, 0, 0);
+        quickActionMenuOpen_ = false;
+        quickActionHoveredIndex_ = -1;
+    }
     y += inputH + gap;
+    if (showQuickActions && quickActionMenuOpen_)
+        y += (quickActionMenuRect_.bottom - quickActionMenuRect_.top) + gap;
 
     authStatusRect_ = D2D1::RectF(x0, y, x1, y + 18.0f);
     y += 20.0f;
@@ -383,6 +416,7 @@ void GitPanel::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
     Panel::DrawTitle(ctx, dwrite);
 
     commitMessageInput_.Draw(ctx, dwrite);
+    DrawQuickActions(ctx, dwrite);
 
     IDWriteTextFormat *metaFmt = nullptr;
     dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
@@ -431,20 +465,141 @@ void GitPanel::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
 
 }
 
+void GitPanel::DrawQuickActions(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
+{
+    if (quickActionPrimaryRect_.right <= quickActionPrimaryRect_.left ||
+        quickActionToggleRect_.right <= quickActionToggleRect_.left)
+        return;
+
+    ID2D1SolidColorBrush *primaryBrush = nullptr;
+    ID2D1SolidColorBrush *toggleBrush = nullptr;
+    ID2D1SolidColorBrush *menuBrush = nullptr;
+    ID2D1SolidColorBrush *menuHoverBrush = nullptr;
+    ID2D1SolidColorBrush *menuSelectedBrush = nullptr;
+    ID2D1SolidColorBrush *borderBrush = nullptr;
+    ID2D1SolidColorBrush *textBrush = nullptr;
+    ID2D1SolidColorBrush *chevronBrush = nullptr;
+
+    ctx->CreateSolidColorBrush(quickActionPrimaryHovered_ ? D2D1::ColorF(0.20f, 0.45f, 0.80f, 0.95f)
+                                                           : D2D1::ColorF(0.20f, 0.45f, 0.80f, 0.85f),
+                               &primaryBrush);
+    ctx->CreateSolidColorBrush(quickActionToggleHovered_ ? D2D1::ColorF(0.19f, 0.41f, 0.72f, 0.95f)
+                                                          : D2D1::ColorF(0.19f, 0.41f, 0.72f, 0.86f),
+                               &toggleBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.11f, 0.11f, 0.11f), &menuBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.18f, 0.18f), &menuHoverBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.45f, 0.80f, 0.35f), &menuSelectedBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.26f, 0.26f, 0.26f), &borderBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.95f, 0.95f), &textBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.90f, 0.90f), &chevronBrush);
+
+    if (primaryBrush)
+        ctx->FillRoundedRectangle(D2D1::RoundedRect(quickActionPrimaryRect_, 6.0f, 6.0f), primaryBrush);
+    if (toggleBrush)
+        ctx->FillRoundedRectangle(D2D1::RoundedRect(quickActionToggleRect_, 6.0f, 6.0f), toggleBrush);
+    if (borderBrush)
+    {
+        ctx->DrawRoundedRectangle(D2D1::RoundedRect(quickActionPrimaryRect_, 6.0f, 6.0f), borderBrush, 1.0f);
+        ctx->DrawRoundedRectangle(D2D1::RoundedRect(quickActionToggleRect_, 6.0f, 6.0f), borderBrush, 1.0f);
+    }
+
+    IDWriteTextFormat *buttonFmt = nullptr;
+    IDWriteTextFormat *menuFmt = nullptr;
+    dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+                             DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"en-us", &buttonFmt);
+    dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                             DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"en-us", &menuFmt);
+
+    if (buttonFmt)
+    {
+        buttonFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        buttonFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        buttonFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+    if (menuFmt)
+    {
+        menuFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        menuFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        menuFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+
+    if (buttonFmt && textBrush)
+    {
+        const wchar_t *label = GetQuickActionLabel(quickActionPrimaryIndex_);
+        ctx->DrawTextW(label, (UINT32)wcslen(label), buttonFmt, quickActionPrimaryRect_, textBrush);
+    }
+    if (buttonFmt && chevronBrush)
+    {
+        const wchar_t *chevron = L"\u25BE";
+        ctx->DrawTextW(chevron, 1, buttonFmt, quickActionToggleRect_, chevronBrush);
+    }
+
+    if (quickActionMenuOpen_ &&
+        quickActionMenuRect_.right > quickActionMenuRect_.left &&
+        quickActionMenuRect_.bottom > quickActionMenuRect_.top)
+    {
+        if (menuBrush)
+            ctx->FillRoundedRectangle(D2D1::RoundedRect(quickActionMenuRect_, 6.0f, 6.0f), menuBrush);
+        if (borderBrush)
+            ctx->DrawRoundedRectangle(D2D1::RoundedRect(quickActionMenuRect_, 6.0f, 6.0f), borderBrush, 1.0f);
+
+        const float rowH = (quickActionMenuRect_.bottom - quickActionMenuRect_.top) / 4.0f;
+        for (int i = 0; i < 4; ++i)
+        {
+            D2D1_RECT_F rowRect = D2D1::RectF(
+                quickActionMenuRect_.left,
+                quickActionMenuRect_.top + rowH * (float)i,
+                quickActionMenuRect_.right,
+                quickActionMenuRect_.top + rowH * (float)(i + 1));
+
+            if (i == quickActionPrimaryIndex_ && menuSelectedBrush)
+                ctx->FillRectangle(rowRect, menuSelectedBrush);
+            if (i == quickActionHoveredIndex_ && menuHoverBrush)
+                ctx->FillRectangle(rowRect, menuHoverBrush);
+
+            if (menuFmt && textBrush)
+            {
+                D2D1_RECT_F textRect = D2D1::RectF(rowRect.left + 10.0f, rowRect.top, rowRect.right - 8.0f, rowRect.bottom);
+                const wchar_t *itemLabel = GetQuickActionLabel(i);
+                ctx->DrawTextW(itemLabel, (UINT32)wcslen(itemLabel), menuFmt, textRect, textBrush);
+            }
+        }
+    }
+
+    if (buttonFmt)
+        buttonFmt->Release();
+    if (menuFmt)
+        menuFmt->Release();
+    if (primaryBrush)
+        primaryBrush->Release();
+    if (toggleBrush)
+        toggleBrush->Release();
+    if (menuBrush)
+        menuBrush->Release();
+    if (menuHoverBrush)
+        menuHoverBrush->Release();
+    if (menuSelectedBrush)
+        menuSelectedBrush->Release();
+    if (borderBrush)
+        borderBrush->Release();
+    if (textBrush)
+        textBrush->Release();
+    if (chevronBrush)
+        chevronBrush->Release();
+}
+
 void GitPanel::DrawChanges(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
 {
     ID2D1SolidColorBrush *pathBrush = nullptr;
     ID2D1SolidColorBrush *hoverBrush = nullptr;
     ID2D1SolidColorBrush *selectedBrush = nullptr;
     ID2D1SolidColorBrush *statusBrush = nullptr;
-    ID2D1SolidColorBrush *trackBrush = nullptr;
 
     ctx->CreateSolidColorBrush(D2D1::ColorF(0.84f, 0.84f, 0.84f), &pathBrush);
     // Match Explorer hover/active row tones.
     ctx->CreateSolidColorBrush(D2D1::ColorF(30.0f / 255.0f, 30.0f / 255.0f, 30.0f / 255.0f, 1.0f), &hoverBrush);
     ctx->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.18f, 0.25f, 1.0f), &selectedBrush);
     ctx->CreateSolidColorBrush(D2D1::ColorF(0.42f, 0.78f, 0.38f), &statusBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.15f, 0.15f, 0.15f, 0.7f), &trackBrush);
     IDWriteTextFormat *rowFmt = nullptr;
     dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
                              DWRITE_FONT_STRETCH_NORMAL, 13.0f, L"en-us", &rowFmt);
@@ -457,13 +612,6 @@ void GitPanel::DrawChanges(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
 
     D2D1_RECT_F listClip = D2D1::RectF(changesRect_.left, changesRect_.top, changesRect_.right, changesRect_.bottom);
     ctx->PushAxisAlignedClip(listClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-
-    // Dedicated right strip so the scrollbar is always visually obvious.
-    if (trackBrush)
-    {
-        D2D1_RECT_F trackRect = D2D1::RectF(changesRect_.right - 14.0f, changesRect_.top, changesRect_.right, changesRect_.bottom);
-        ctx->FillRectangle(trackRect, trackBrush);
-    }
 
     const float insetX = 4.0f;
     const float insetY = 0.0f;
@@ -482,9 +630,10 @@ void GitPanel::DrawChanges(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     };
 
     float y = listClip.top - changesScrollbar_.GetScrollOffset();
+    const float rowRightInset = changesScrollbar_.IsVisible() ? 16.0f : 4.0f;
     for (size_t i = 0; i < changes_.size(); ++i)
     {
-        D2D1_RECT_F rowRect = D2D1::RectF(changesRect_.left, y, changesRect_.right - 16.0f, y + changeRowHeight_);
+        D2D1_RECT_F rowRect = D2D1::RectF(changesRect_.left, y, changesRect_.right - rowRightInset, y + changeRowHeight_);
         if (rowRect.bottom < listClip.top)
         {
             y += changeRowHeight_;
@@ -566,8 +715,6 @@ void GitPanel::DrawChanges(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
         selectedBrush->Release();
     if (statusBrush)
         statusBrush->Release();
-    if (trackBrush)
-        trackBrush->Release();
 }
 
 void GitPanel::OnMouseMove(HWND hwnd, POINT clientPoint)
@@ -578,6 +725,19 @@ void GitPanel::OnMouseMove(HWND hwnd, POINT clientPoint)
     if (state_.isHoveringResizeZone)
         return;
 
+    bool prevPrimaryHover = quickActionPrimaryHovered_;
+    bool prevToggleHover = quickActionToggleHovered_;
+    int prevQuickActionHover = quickActionHoveredIndex_;
+
+    quickActionPrimaryHovered_ = IsPointInRect(quickActionPrimaryRect_, clientPoint);
+    quickActionToggleHovered_ = IsPointInRect(quickActionToggleRect_, clientPoint);
+    quickActionHoveredIndex_ = quickActionMenuOpen_ ? HitTestQuickActionMenuItem(clientPoint) : -1;
+
+    if (prevPrimaryHover != quickActionPrimaryHovered_ ||
+        prevToggleHover != quickActionToggleHovered_ ||
+        prevQuickActionHover != quickActionHoveredIndex_)
+        changed = true;
+
     if (commitMessageInput_.OnMouseMove(hwnd, clientPoint))
         changed = true;
 
@@ -585,7 +745,10 @@ void GitPanel::OnMouseMove(HWND hwnd, POINT clientPoint)
         changed = true;
 
     int prevHover = hoveredChangeIndex_;
-    if (changesScrollbar_.IsHoveringThumb() || changesScrollbar_.IsHoveringTrack() || changesScrollbar_.IsDragging())
+    if (quickActionMenuOpen_ ||
+        changesScrollbar_.IsHoveringThumb() ||
+        changesScrollbar_.IsHoveringTrack() ||
+        changesScrollbar_.IsDragging())
         hoveredChangeIndex_ = -1;
     else
         hoveredChangeIndex_ = HitTestChange(clientPoint);
@@ -611,6 +774,40 @@ void GitPanel::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
 {
     if (HandleResizeLeftButtonDown(hwnd, clientPoint))
         return;
+
+    bool hitPrimaryAction = IsPointInRect(quickActionPrimaryRect_, clientPoint);
+    bool hitToggleAction = IsPointInRect(quickActionToggleRect_, clientPoint);
+    if (hitPrimaryAction)
+    {
+        quickActionMenuOpen_ = false;
+        quickActionHoveredIndex_ = -1;
+        ExecuteQuickAction(quickActionPrimaryIndex_);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
+    }
+    if (hitToggleAction)
+    {
+        quickActionMenuOpen_ = !quickActionMenuOpen_;
+        quickActionHoveredIndex_ = quickActionMenuOpen_ ? HitTestQuickActionMenuItem(clientPoint) : -1;
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
+    }
+    if (quickActionMenuOpen_)
+    {
+        int item = HitTestQuickActionMenuItem(clientPoint);
+        if (item >= 0)
+        {
+            quickActionPrimaryIndex_ = item;
+            quickActionMenuOpen_ = false;
+            quickActionHoveredIndex_ = -1;
+            ExecuteQuickAction(item);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return;
+        }
+
+        quickActionMenuOpen_ = false;
+        quickActionHoveredIndex_ = -1;
+    }
 
     if (changesScrollbar_.OnLeftButtonDown(clientPoint))
     {
@@ -710,6 +907,13 @@ void GitPanel::OnChar(wchar_t ch)
 
 void GitPanel::OnKeyDown(WPARAM key)
 {
+    if (quickActionMenuOpen_ && key == VK_ESCAPE)
+    {
+        quickActionMenuOpen_ = false;
+        quickActionHoveredIndex_ = -1;
+        return;
+    }
+
     if (commitMessageInput_.IsFocused())
     {
         commitMessageInput_.OnKeyDown(key);
@@ -730,6 +934,8 @@ bool GitPanel::IsInputFocused() const
 void GitPanel::UnfocusInputs()
 {
     commitMessageInput_.SetFocused(false);
+    quickActionMenuOpen_ = false;
+    quickActionHoveredIndex_ = -1;
 }
 
 bool GitPanel::IsPointInRect(const D2D1_RECT_F &rect, POINT pt) const
@@ -754,6 +960,65 @@ int GitPanel::HitTestChange(POINT pt) const
     if (idx < 0 || idx >= (int)changes_.size())
         return -1;
     return idx;
+}
+
+int GitPanel::HitTestQuickActionMenuItem(POINT pt) const
+{
+    if (!quickActionMenuOpen_ || !IsPointInRect(quickActionMenuRect_, pt))
+        return -1;
+
+    const float menuHeight = quickActionMenuRect_.bottom - quickActionMenuRect_.top;
+    if (menuHeight <= 0.0f)
+        return -1;
+    const float rowH = menuHeight / 4.0f;
+    const float localY = (float)pt.y - quickActionMenuRect_.top;
+    if (localY < 0.0f)
+        return -1;
+    int idx = (int)(localY / rowH);
+    if (idx < 0 || idx >= 4)
+        return -1;
+    return idx;
+}
+
+const wchar_t *GitPanel::GetQuickActionLabel(int actionIndex) const
+{
+    switch (actionIndex)
+    {
+    case 0:
+        return L"Commit & Push";
+    case 1:
+        return L"Commit";
+    case 2:
+        return L"Push";
+    case 3:
+        return L"Refresh";
+    default:
+        return L"Commit & Push";
+    }
+}
+
+bool GitPanel::ExecuteQuickAction(int actionIndex)
+{
+    bool ok = false;
+    switch (actionIndex)
+    {
+    case 0:
+        ok = RunCommit(true);
+        break;
+    case 1:
+        ok = RunCommit(false);
+        break;
+    case 2:
+        ok = RunPushOnly();
+        break;
+    case 3:
+        RefreshStatus();
+        ok = true;
+        break;
+    default:
+        break;
+    }
+    return ok;
 }
 
 void GitPanel::RefreshStatus()
@@ -1078,6 +1343,45 @@ bool GitPanel::PushCurrentBranch(std::wstring &outError)
 
 bool GitPanel::RunCommit()
 {
+    return RunCommit(true);
+}
+
+bool GitPanel::RunPushOnly()
+{
+    if (!libgit2Ready_)
+    {
+        lastError_ = L"libgit2 is not initialized.";
+        return false;
+    }
+    if (!isGitRepo_)
+    {
+        lastError_ = L"No git repository selected.";
+        return false;
+    }
+    if (!GitHubAuth::HasToken())
+    {
+        lastError_ = L"GitHub not connected. Sign in from Settings.";
+        return false;
+    }
+
+    std::wstring pushError;
+    bool pushed = PushCurrentBranch(pushError);
+    if (!pushed)
+    {
+        if (pushError.empty())
+            pushError = L"Push failed.";
+        lastError_ = pushError;
+    }
+    else
+    {
+        lastError_.clear();
+    }
+    RefreshStatus();
+    return pushed;
+}
+
+bool GitPanel::RunCommit(bool pushAfter)
+{
     if (!libgit2Ready_)
     {
         lastError_ = L"libgit2 is not initialized.";
@@ -1193,6 +1497,14 @@ bool GitPanel::RunCommit()
         if (lastError_.empty())
             lastError_ = GetLastGitError(L"Commit failed.");
         return false;
+    }
+
+    if (!pushAfter)
+    {
+        lastError_.clear();
+        commitMessageInput_.SetText(L"");
+        RefreshStatus();
+        return true;
     }
 
     std::wstring pushError;
