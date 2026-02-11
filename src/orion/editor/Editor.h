@@ -282,6 +282,16 @@ namespace Orion
             std::wstring suggestion;
         };
 
+        struct GitSplitDiffRow
+        {
+            std::wstring leftText;
+            std::wstring rightText;
+            bool hasLeft = false;
+            bool hasRight = false;
+            bool leftDeleted = false;
+            bool rightAdded = false;
+        };
+
         Editor();
         ~Editor();
 
@@ -377,6 +387,10 @@ namespace Orion
         void LoadPreviewAsync(HWND hwnd, const std::wstring &filePath, int tabIndex);
         void SetMarkdownPreviewEnabled(bool enabled);
         bool IsMarkdownPreviewEnabled() const;
+        void SetGitSplitDiffView(const std::vector<GitSplitDiffRow> &rows);
+        void ClearGitSplitDiffView();
+        bool IsGitSplitDiffViewEnabled() const { return isGitSplitDiffView_; }
+        bool IsPointOnGitSplitDivider(POINT pt) const;
 
         // appel?? UNIQUEMENT sur le thread UI
         void ApplyLoadedFile(std::wstring filePath,
@@ -406,6 +420,7 @@ namespace Orion
         void DrawTextContent(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
         void DrawFoldMarkers(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
         void DrawPreview(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
+        void DrawGitSplitDiff(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
         void DrawCaret(ID2D1RenderTarget *ctx);
         void ResetPreview();
         void ResetMarkdownPreviewLayout();
@@ -423,6 +438,8 @@ namespace Orion
         bool IsCollapsedFoldStart(int line, int *outEnd = nullptr);
         int FindFoldEndLineForStart(int startLine) const;
         bool ToggleFoldAtLine(int startLine);
+        float GetGitSplitContentRight() const;
+        float GetGitSplitDividerX() const;
 
         EditorState state_;
         EditorTheme theme_;
@@ -491,6 +508,10 @@ namespace Orion
         std::vector<CaretPosition> secondaryCarets_;
 
         bool isPreview_ = false;
+        bool isGitSplitDiffView_ = false;
+        std::vector<GitSplitDiffRow> gitSplitDiffRows_;
+        float gitSplitDividerRatio_ = 0.5f;
+        bool gitSplitDividerDragging_ = false;
         enum class PreviewMode
         {
             None,

@@ -288,7 +288,7 @@ namespace Orion
 
     std::optional<Lsp::Location> Editor::TryGoToDefinitionAtCaret()
     {
-        if (isPreview_ || state_.lines.empty())
+        if (isPreview_ || isGitSplitDiffView_ || state_.lines.empty())
             return std::nullopt;
 
         CaretPosition caretPos = state_.caret;
@@ -322,7 +322,7 @@ namespace Orion
 
     std::optional<Lsp::Location> Editor::TryGoToDefinitionAtPoint(POINT pt)
     {
-        if (isPreview_)
+        if (isPreview_ || isGitSplitDiffView_)
             return std::nullopt;
 
         float contentLeft = state_.leftEdge + metrics_.gutterWidth + metrics_.leftPadding;
@@ -368,6 +368,18 @@ namespace Orion
     void Editor::OnLeftButtonDown(HWND hwnd, POINT pt)
     {
         (void)hwnd;
+        if (isGitSplitDiffView_)
+        {
+            if (IsPointOnGitSplitDivider(pt))
+            {
+                gitSplitDividerDragging_ = true;
+                SetCapture(hwnd);
+                return;
+            }
+            if (scrollbar_.OnLeftButtonDown(pt))
+                SetCapture(hwnd);
+            return;
+        }
         if (isPreview_)
         {
             if (previewMode_ == PreviewMode::Markdown)
@@ -686,6 +698,33 @@ namespace Orion
 
     void Editor::OnMouseMove(HWND hwnd, POINT pt)
     {
+        if (isGitSplitDiffView_)
+        {
+            if (gitSplitDividerDragging_)
+            {
+                const float contentLeft = state_.leftEdge;
+                const float contentRight = GetGitSplitContentRight();
+                const float fullWidth = contentRight - contentLeft;
+                if (fullWidth > 0.0f)
+                {
+                    const float minX = contentLeft + 140.0f;
+                    const float maxX = contentRight - 140.0f;
+                    float clampedX = (float)pt.x;
+                    if (maxX > minX)
+                        clampedX = (std::max)(minX, (std::min)(maxX, clampedX));
+                    gitSplitDividerRatio_ = (clampedX - contentLeft) / fullWidth;
+                    gitSplitDividerRatio_ = (std::max)(0.1f, (std::min)(0.9f, gitSplitDividerRatio_));
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                return;
+            }
+            if (scrollbar_.OnMouseMove(pt))
+            {
+                state_.scrollOffsetY = scrollbar_.GetScrollOffset();
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return;
+        }
         if (isPreview_)
         {
             if (previewMode_ == PreviewMode::Markdown)
@@ -967,6 +1006,20 @@ namespace Orion
 
     void Editor::OnLeftButtonUp(HWND hwnd, POINT pt)
     {
+        if (isGitSplitDiffView_)
+        {
+            bool release = false;
+            if (gitSplitDividerDragging_)
+            {
+                gitSplitDividerDragging_ = false;
+                release = true;
+            }
+            if (scrollbar_.OnLeftButtonUp())
+                release = true;
+            if (release)
+                ReleaseCapture();
+            return;
+        }
         if (isPreview_)
         {
             if (previewMode_ == PreviewMode::Markdown)
@@ -1002,6 +1055,16 @@ namespace Orion
 
     void Editor::OnMouseWheel(HWND hwnd, int delta, bool ctrlPressed)
     {
+        if (isGitSplitDiffView_)
+        {
+            if (scrollbar_.OnMouseWheel(delta))
+            {
+                state_.scrollOffsetY = scrollbar_.GetScrollOffset();
+                if (hwnd)
+                    InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return;
+        }
         if (isPreview_)
         {
             if (previewMode_ == PreviewMode::Markdown)
@@ -1064,7 +1127,7 @@ namespace Orion
 
     void Editor::OnHorizontalWheel(HWND hwnd, int delta)
     {
-        if (isPreview_)
+        if (isPreview_ || isGitSplitDiffView_)
             return;
         if (!hScrollbarVisible_)
             return;
@@ -1091,11 +1154,15 @@ namespace Orion
         state_.lastBlinkTime = GetTickCount();
         dragSelecting_ = false;
         secondaryCarets_.clear();
+        bool releaseCapture = gitSplitDividerDragging_;
+        gitSplitDividerDragging_ = false;
 
         if (scrollbar_.IsDragging())
         {
             scrollbar_.OnLeftButtonUp();
-            ReleaseCapture();
+            releaseCapture = true;
         }
+        if (releaseCapture)
+            ReleaseCapture();
     }
 } // namespace Orion

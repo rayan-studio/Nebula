@@ -52,7 +52,7 @@ namespace Orion
 
     bool Editor::ReloadFromDiskIfExternalChange(HWND hwnd, int tabIndex)
     {
-        if (isPreview_ || isDirty_)
+        if (isPreview_ || isGitSplitDiffView_ || isDirty_)
             return false;
 
         if (state_.filePath.empty() || state_.filePath.rfind(L"__untitled__", 0) == 0)
@@ -90,6 +90,7 @@ namespace Orion
 
     void Editor::LoadFile(const std::wstring &filePath)
     {
+        ClearGitSplitDiffView();
         state_.filePath = filePath;
         state_.lines.clear();
         state_.caret = {0, 0};
@@ -267,6 +268,7 @@ namespace Orion
     void Editor::CreateEmpty()
     {
         ResetPreview();
+        ClearGitSplitDiffView();
         state_.lines.clear();
         state_.lines.push_back(L"");
         state_.caret = {0, 0};
@@ -282,6 +284,7 @@ namespace Orion
     void Editor::SetTextContent(const std::wstring &text, bool markDirty)
     {
         ResetPreview();
+        ClearGitSplitDiffView();
         state_.lines.clear();
         collapsedFolds_.clear();
         foldLineMapsDirty_ = true;

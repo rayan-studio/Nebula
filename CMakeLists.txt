@@ -136,6 +136,9 @@ target_link_libraries(Nebula PRIVATE
   uxtheme 
   ole32
   windowscodecs
+  crypt32
+  winhttp
+  ws2_32
   winmm  # Pour waveOut
   dbghelp
 )

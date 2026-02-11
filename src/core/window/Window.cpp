@@ -37,6 +37,7 @@
 #include "ui/panels/PanelInit.h"
 #include "ui/panels/PanelManager.h"
 #include "ui/panels/git/GitPanel.h"
+#include "ui/panels/git/GitDiffDecorations.h"
 #include "ui/panels/search/SearchPanel.h"
 #include "ui/panels/terminal/TerminalPanel.h"
 #include "orion/font/CustomFontLoader.h"
@@ -803,7 +804,30 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 }
                 else
                 {
+                    std::wstring loadedPath = res->filePath;
                     ed->ApplyLoadedFile(std::move(res->filePath), std::move(res->encoding), std::move(res->lines));
+
+                    if (GitDiffDecorations::ConsumePendingSplitOpen(loadedPath))
+                    {
+                        GitDiffDecorations::SplitViewData splitData;
+                        if (GitDiffDecorations::GetSplitForFile(loadedPath, splitData))
+                        {
+                            std::vector<Orion::Editor::GitSplitDiffRow> rows;
+                            rows.reserve(splitData.rows.size());
+                            for (const auto &row : splitData.rows)
+                            {
+                                Orion::Editor::GitSplitDiffRow outRow;
+                                outRow.leftText = row.leftText;
+                                outRow.rightText = row.rightText;
+                                outRow.hasLeft = row.hasLeft;
+                                outRow.hasRight = row.hasRight;
+                                outRow.leftDeleted = row.leftDeleted;
+                                outRow.rightAdded = row.rightAdded;
+                                rows.push_back(std::move(outRow));
+                            }
+                            ed->SetGitSplitDiffView(rows);
+                        }
+                    }
 
                     auto it = pendingGoToLocation_.find(res->tabIndex);
                     if (it != pendingGoToLocation_.end())
@@ -2668,6 +2692,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 // Si on est en dessous de la barre de titre + tabs, probablement dans l'éditeur
                 if (pt.y >= tbRect.bottom + tabBar_.GetHeight())
                 {
+                    if (editor->IsPointOnGitSplitDivider(pt))
+                    {
+                        SetCursor(LoadCursor(NULL, IDC_SIZEWE));
+                        return TRUE;
+                    }
                     if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0 && editor->IsDefinitionHoverActive())
                     {
                         SetCursor(LoadCursor(NULL, IDC_HAND));

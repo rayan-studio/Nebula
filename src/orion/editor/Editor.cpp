@@ -11,6 +11,7 @@
 #include "orion/rendering/GuideRenderer.h"
 #include "orion/selection/Selection.h"
 #include "orion/caret/Caret.h"
+#include <cmath>
 
 // Ensure Windows min/max macros don't interfere with std::min/std::max
 #ifdef max
@@ -22,6 +23,12 @@
 
 namespace Orion
 {
+    namespace
+    {
+        constexpr float kGitSplitMinPaneWidth = 140.0f;
+        constexpr float kGitSplitDividerHitHalfWidth = 5.0f;
+    }
+
     static bool CaretPosLess(const CaretPosition &a, const CaretPosition &b)
     {
         if (a.line != b.line)
@@ -65,9 +72,73 @@ namespace Orion
 
     bool Editor::UpdateCaretBlink()
     {
+        if (isGitSplitDiffView_)
+        {
+            state_.caretVisible = false;
+            return false;
+        }
         bool wasVisible = state_.caretVisible;
         Caret::UpdateCaretBlink(state_);
         return wasVisible != state_.caretVisible;
+    }
+
+    void Editor::SetGitSplitDiffView(const std::vector<GitSplitDiffRow> &rows)
+    {
+        gitSplitDiffRows_ = rows;
+        isGitSplitDiffView_ = !gitSplitDiffRows_.empty();
+        state_.hasSelection = false;
+        secondaryCarets_.clear();
+        dragSelecting_ = false;
+        gitSplitDividerDragging_ = false;
+        gitSplitDividerRatio_ = 0.5f;
+        state_.caretVisible = !isGitSplitDiffView_;
+        state_.scrollOffsetX = 0.0f;
+        pendingRevealCaret_ = false;
+        if (isGitSplitDiffView_)
+        {
+            scrollbar_.SetScrollOffset(0.0f);
+            state_.scrollOffsetY = scrollbar_.GetScrollOffset();
+        }
+    }
+
+    void Editor::ClearGitSplitDiffView()
+    {
+        isGitSplitDiffView_ = false;
+        gitSplitDiffRows_.clear();
+        gitSplitDividerDragging_ = false;
+        state_.caretVisible = true;
+    }
+
+    float Editor::GetGitSplitContentRight() const
+    {
+        return state_.rightEdge - (scrollbar_.IsVisible() ? 14.0f : 0.0f);
+    }
+
+    float Editor::GetGitSplitDividerX() const
+    {
+        const float contentLeft = state_.leftEdge;
+        const float contentRight = GetGitSplitContentRight();
+        const float fullWidth = contentRight - contentLeft;
+        if (fullWidth <= 0.0f)
+            return contentLeft;
+
+        const float minX = contentLeft + kGitSplitMinPaneWidth;
+        const float maxX = contentRight - kGitSplitMinPaneWidth;
+        const float ratio = (std::max)(0.1f, (std::min)(0.9f, gitSplitDividerRatio_));
+        const float rawX = contentLeft + (fullWidth * ratio);
+        if (maxX <= minX)
+            return contentLeft + fullWidth * 0.5f;
+        return (std::max)(minX, (std::min)(maxX, rawX));
+    }
+
+    bool Editor::IsPointOnGitSplitDivider(POINT pt) const
+    {
+        if (!isGitSplitDiffView_)
+            return false;
+        if (pt.y < (int)state_.topEdge || pt.y > (int)state_.bottomEdge)
+            return false;
+        const float dividerX = GetGitSplitDividerX();
+        return std::fabs((float)pt.x - dividerX) <= kGitSplitDividerHitHalfWidth;
     }
 
     void Editor::NormalizeSecondaryCarets()

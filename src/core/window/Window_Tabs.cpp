@@ -3,6 +3,7 @@
 #include "orion/caret/Caret.h"
 #include "lsp/LspManager.h"
 #include "core/explorer/Explorer.h"
+#include "ui/panels/git/GitDiffDecorations.h"
 #include <filesystem>
 #include <algorithm>
 #include <cwctype>
@@ -180,10 +181,37 @@ void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber, int 
         Orion::Editor *editor = editors_[tabIndex];
         if (editor)
         {
-            int targetLine = lineNumber < 0 ? 0 : lineNumber;
-            int targetCol = column < 0 ? 0 : column;
-            Orion::Caret::SetCaret(*editor, targetLine, targetCol);
-            editor->RevealCaretOnNextLayout();
+            bool appliedSplit = false;
+            if (GitDiffDecorations::ConsumePendingSplitOpen(filePath))
+            {
+                GitDiffDecorations::SplitViewData splitData;
+                if (GitDiffDecorations::GetSplitForFile(filePath, splitData))
+                {
+                    std::vector<Orion::Editor::GitSplitDiffRow> rows;
+                    rows.reserve(splitData.rows.size());
+                    for (const auto &row : splitData.rows)
+                    {
+                        Orion::Editor::GitSplitDiffRow outRow;
+                        outRow.leftText = row.leftText;
+                        outRow.rightText = row.rightText;
+                        outRow.hasLeft = row.hasLeft;
+                        outRow.hasRight = row.hasRight;
+                        outRow.leftDeleted = row.leftDeleted;
+                        outRow.rightAdded = row.rightAdded;
+                        rows.push_back(std::move(outRow));
+                    }
+                    editor->SetGitSplitDiffView(rows);
+                    appliedSplit = true;
+                }
+            }
+
+            if (!appliedSplit)
+            {
+                int targetLine = lineNumber < 0 ? 0 : lineNumber;
+                int targetCol = column < 0 ? 0 : column;
+                Orion::Caret::SetCaret(*editor, targetLine, targetCol);
+                editor->RevealCaretOnNextLayout();
+            }
             InvalidateRect(hwnd_, nullptr, FALSE);
         }
     }

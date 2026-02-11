@@ -1628,6 +1628,7 @@ namespace Orion
                                     std::wstring previewMessage)
     {
         ResetPreview();
+        ClearGitSplitDiffView();
         isPreview_ = true;
         previewMode_ = PreviewMode::Image;
         state_.filePath = std::move(filePath);
@@ -1648,6 +1649,7 @@ namespace Orion
         if (enabled)
         {
             ResetPreview();
+            ClearGitSplitDiffView();
             isPreview_ = true;
             previewMode_ = PreviewMode::Markdown;
             BuildMarkdownBlocks(state_.lines, state_.filePath, previewMarkdownBlocks_);

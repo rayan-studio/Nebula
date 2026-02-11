@@ -1,7 +1,11 @@
 #include "SettingsTab.h"
+
 #include "helpers/window_helpers.h"
 #include "ui/layout/ExplorerLayoutState.h"
 #include "core/window/Window.h"
+#include "utils/auth/GitHubAuth.h"
+#include "utils/auth/GitHubOAuth.h"
+
 #include <algorithm>
 
 SettingsTabView::SettingsTabView()
@@ -53,7 +57,7 @@ void SettingsTabView::UpdateLayout(HWND hwnd, float left, float top, float right
 
     float sectionTop = rowRect_.bottom + (float)win32_dpi_scale(16, dpi);
     float minSectionHeight = (float)win32_dpi_scale(170, dpi);
-    float sectionBottom = (std::max)(sectionTop + minSectionHeight, bounds_.bottom - padding);
+    float sectionBottom = sectionTop + minSectionHeight;
     tamponSectionRect_ = D2D1::RectF(rowLeft, sectionTop, rowRight, sectionBottom);
 
     float inputTop = tamponSectionRect_.top + (float)win32_dpi_scale(50, dpi);
@@ -67,6 +71,20 @@ void SettingsTabView::UpdateLayout(HWND hwnd, float left, float top, float right
         inputTop + inputHeight);
     tamponInput_.SetRect(tamponInputRect_);
 
+    float githubTop = tamponSectionRect_.bottom + (float)win32_dpi_scale(14, dpi);
+    float githubBottom = (std::max)(githubTop + (float)win32_dpi_scale(138, dpi), bounds_.bottom - padding);
+    githubSectionRect_ = D2D1::RectF(rowLeft, githubTop, rowRight, githubBottom);
+
+    float githubPad = (float)win32_dpi_scale(12, dpi);
+    float btnTop = githubSectionRect_.top + (float)win32_dpi_scale(56, dpi);
+    float btnH = (float)win32_dpi_scale(30, dpi);
+    float signInW = (float)win32_dpi_scale(200, dpi);
+    float disconnectW = (float)win32_dpi_scale(120, dpi);
+    githubSignInRect_ = D2D1::RectF(githubSectionRect_.left + githubPad, btnTop,
+                                    githubSectionRect_.left + githubPad + signInW, btnTop + btnH);
+    githubDisconnectRect_ = D2D1::RectF(githubSignInRect_.right + (float)win32_dpi_scale(10, dpi), btnTop,
+                                        githubSignInRect_.right + (float)win32_dpi_scale(10, dpi) + disconnectW, btnTop + btnH);
+
     auto &style = tamponInput_.GetStyle();
     style.cornerRadius = 7.0f * scale;
     style.fontSize = 13.0f * scale;
@@ -75,6 +93,7 @@ void SettingsTabView::UpdateLayout(HWND hwnd, float left, float top, float right
 
 void SettingsTabView::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
 {
+    (void)hwnd;
     if (!ctx || !dwrite)
         return;
 
@@ -183,36 +202,24 @@ void SettingsTabView::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
         ctx->DrawRoundedRectangle(rowRounded, rowBorderBrush, 1.0f);
     }
 
-    const wchar_t *label = L"Explorer Position";
     if (labelFormat && labelBrush)
     {
+        const wchar_t *label = L"Explorer Position";
         D2D1_RECT_F labelRect = D2D1::RectF(rowRect_.left + 12.0f, rowRect_.top, toggleRect_.left - 10.0f, rowRect_.bottom);
         ctx->DrawTextW(label, (UINT32)wcslen(label), labelFormat, labelRect, labelBrush);
     }
 
     ExplorerPlacement placement = GetExplorerLayoutState().placement;
     const wchar_t *value = placement == ExplorerPlacement::Right ? L"Right" : L"Left";
-
     if (toggleBgBrush)
-    {
-        D2D1_ROUNDED_RECT toggleRounded = D2D1::RoundedRect(toggleRect_, 12.0f, 12.0f);
-        ctx->FillRoundedRectangle(toggleRounded, toggleBgBrush);
-    }
+        ctx->FillRoundedRectangle(D2D1::RoundedRect(toggleRect_, 12.0f, 12.0f), toggleBgBrush);
     if (toggleFormat && toggleTextBrush)
-    {
         ctx->DrawTextW(value, (UINT32)wcslen(value), toggleFormat, toggleRect_, toggleTextBrush);
-    }
 
     if (sectionBgBrush)
-    {
-        D2D1_ROUNDED_RECT sectionRounded = D2D1::RoundedRect(tamponSectionRect_, 8.0f, 8.0f);
-        ctx->FillRoundedRectangle(sectionRounded, sectionBgBrush);
-    }
+        ctx->FillRoundedRectangle(D2D1::RoundedRect(tamponSectionRect_, 8.0f, 8.0f), sectionBgBrush);
     if (sectionBorderBrush)
-    {
-        D2D1_ROUNDED_RECT sectionRounded = D2D1::RoundedRect(tamponSectionRect_, 8.0f, 8.0f);
-        ctx->DrawRoundedRectangle(sectionRounded, sectionBorderBrush, 1.0f);
-    }
+        ctx->DrawRoundedRectangle(D2D1::RoundedRect(tamponSectionRect_, 8.0f, 8.0f), sectionBorderBrush, 1.0f);
 
     if (labelFormat && labelBrush)
     {
@@ -244,8 +251,79 @@ void SettingsTabView::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
             tamponSectionRect_.top + 48.0f);
         ctx->DrawTextW(desc, (UINT32)wcslen(desc), descFormat, descRect, descBrush);
     }
-
     tamponInput_.Draw(ctx, dwrite);
+
+    if (sectionBgBrush)
+        ctx->FillRoundedRectangle(D2D1::RoundedRect(githubSectionRect_, 8.0f, 8.0f), sectionBgBrush);
+    if (sectionBorderBrush)
+        ctx->DrawRoundedRectangle(D2D1::RoundedRect(githubSectionRect_, 8.0f, 8.0f), sectionBorderBrush, 1.0f);
+
+    const bool githubConnected = GitHubAuth::HasToken();
+    if (labelFormat && labelBrush)
+    {
+        const wchar_t *gitTitle = L"GitHub";
+        D2D1_RECT_F titleRect = D2D1::RectF(
+            githubSectionRect_.left + 12.0f,
+            githubSectionRect_.top + 10.0f,
+            githubSectionRect_.right - 120.0f,
+            githubSectionRect_.top + 32.0f);
+        ctx->DrawTextW(gitTitle, (UINT32)wcslen(gitTitle), labelFormat, titleRect, labelBrush);
+    }
+    if (stateFormat && stateBrush)
+    {
+        stateBrush->SetColor(githubConnected ? D2D1::ColorF(0.36f, 0.78f, 0.49f) : D2D1::ColorF(0.87f, 0.43f, 0.43f));
+        const wchar_t *stateText = githubConnected ? L"Connected" : L"Not connected";
+        D2D1_RECT_F stateRect = D2D1::RectF(
+            githubSectionRect_.right - 160.0f,
+            githubSectionRect_.top + 10.0f,
+            githubSectionRect_.right - 12.0f,
+            githubSectionRect_.top + 32.0f);
+        ctx->DrawTextW(stateText, (UINT32)wcslen(stateText), stateFormat, stateRect, stateBrush);
+    }
+    if (descFormat && descBrush)
+    {
+        const wchar_t *desc = L"OAuth app login for bot workflow. Commit and push are blocked when disconnected.";
+        D2D1_RECT_F descRect = D2D1::RectF(
+            githubSectionRect_.left + 12.0f,
+            githubSectionRect_.top + 30.0f,
+            githubSectionRect_.right - 12.0f,
+            githubSectionRect_.top + 48.0f);
+        ctx->DrawTextW(desc, (UINT32)wcslen(desc), descFormat, descRect, descBrush);
+    }
+
+    ID2D1SolidColorBrush *btnOAuth = nullptr;
+    ID2D1SolidColorBrush *btnText = nullptr;
+    ID2D1SolidColorBrush *btnDanger = nullptr;
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.62f, 0.44f, githubSignInHovered_ ? 0.95f : 0.85f), &btnOAuth);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.95f, 0.95f), &btnText);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.62f, 0.20f, 0.20f, githubDisconnectHovered_ ? 0.95f : 0.85f), &btnDanger);
+
+    if (btnOAuth)
+        ctx->FillRoundedRectangle(D2D1::RoundedRect(githubSignInRect_, 6.0f, 6.0f), btnOAuth);
+    if (btnDanger)
+        ctx->FillRoundedRectangle(D2D1::RoundedRect(githubDisconnectRect_, 6.0f, 6.0f), btnDanger);
+
+    if (toggleFormat && btnText)
+    {
+        const wchar_t *oauthText = L"Sign in with GitHub";
+        const wchar_t *disconnectText = L"Disconnect";
+        ctx->DrawTextW(oauthText, (UINT32)wcslen(oauthText), toggleFormat, githubSignInRect_, btnText);
+        ctx->DrawTextW(disconnectText, (UINT32)wcslen(disconnectText), toggleFormat, githubDisconnectRect_, btnText);
+    }
+
+    if (descFormat && !githubStatusMessage_.empty() && descBrush)
+    {
+        D2D1_RECT_F msgRect = D2D1::RectF(githubSectionRect_.left + 12.0f, githubSignInRect_.bottom + 8.0f,
+                                          githubSectionRect_.right - 12.0f, githubSectionRect_.bottom - 8.0f);
+        ctx->DrawTextW(githubStatusMessage_.c_str(), (UINT32)githubStatusMessage_.size(), descFormat, msgRect, descBrush);
+    }
+
+    if (btnOAuth)
+        btnOAuth->Release();
+    if (btnText)
+        btnText->Release();
+    if (btnDanger)
+        btnDanger->Release();
 
     if (titleFormat)
         titleFormat->Release();
@@ -285,13 +363,25 @@ void SettingsTabView::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
 void SettingsTabView::OnMouseMove(HWND hwnd, POINT clientPoint)
 {
     bool wasHovered = rowHovered_;
+    bool wasSignInHovered = githubSignInHovered_;
+    bool wasDisconnectHovered = githubDisconnectHovered_;
+
     rowHovered_ = clientPoint.x >= rowRect_.left && clientPoint.x <= rowRect_.right &&
                   clientPoint.y >= rowRect_.top && clientPoint.y <= rowRect_.bottom;
+    githubSignInHovered_ = clientPoint.x >= githubSignInRect_.left && clientPoint.x <= githubSignInRect_.right &&
+                           clientPoint.y >= githubSignInRect_.top && clientPoint.y <= githubSignInRect_.bottom;
+    githubDisconnectHovered_ = clientPoint.x >= githubDisconnectRect_.left && clientPoint.x <= githubDisconnectRect_.right &&
+                               clientPoint.y >= githubDisconnectRect_.top && clientPoint.y <= githubDisconnectRect_.bottom;
 
     bool usedByInput = tamponInput_.OnMouseMove(hwnd, clientPoint);
 
-    if (wasHovered != rowHovered_ || usedByInput)
+    if (wasHovered != rowHovered_ ||
+        wasSignInHovered != githubSignInHovered_ ||
+        wasDisconnectHovered != githubDisconnectHovered_ ||
+        usedByInput)
+    {
         InvalidateRect(hwnd, nullptr, FALSE);
+    }
 }
 
 void SettingsTabView::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
@@ -306,8 +396,18 @@ void SettingsTabView::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
                                : ExplorerPlacement::Left;
     }
 
+    bool hitSignIn = clientPoint.x >= githubSignInRect_.left && clientPoint.x <= githubSignInRect_.right &&
+                     clientPoint.y >= githubSignInRect_.top && clientPoint.y <= githubSignInRect_.bottom;
+    bool hitDisconnect = clientPoint.x >= githubDisconnectRect_.left && clientPoint.x <= githubDisconnectRect_.right &&
+                         clientPoint.y >= githubDisconnectRect_.top && clientPoint.y <= githubDisconnectRect_.bottom;
+
+    if (hitSignIn)
+        BeginGitHubSignIn();
+    if (hitDisconnect)
+        ClearGitHubToken();
+
     bool hitInput = tamponInput_.OnLeftButtonDown(hwnd, clientPoint);
-    if (hitRow || hitInput)
+    if (hitRow || hitSignIn || hitDisconnect || hitInput)
         InvalidateRect(hwnd, nullptr, FALSE);
 }
 
@@ -333,6 +433,22 @@ bool SettingsTabView::OnKeyDown(WPARAM key)
         return true;
     }
     return tamponInput_.OnKeyDown(key);
+}
+
+void SettingsTabView::BeginGitHubSignIn()
+{
+    githubStatusMessage_ = L"Waiting for GitHub OAuth callback on localhost...";
+    GitHubOAuth::AuthResult res = GitHubOAuth::SignInViaBrowser();
+    githubStatusMessage_ = res.message;
+}
+
+void SettingsTabView::ClearGitHubToken()
+{
+    std::wstring err;
+    if (GitHubAuth::ClearToken(err))
+        githubStatusMessage_ = L"GitHub session removed.";
+    else
+        githubStatusMessage_ = err.empty() ? L"Failed to remove GitHub session." : err;
 }
 
 bool SettingsTabView::IsPointInView(POINT clientPoint) const

@@ -294,6 +294,32 @@ namespace Orion
         float width = state_.rightEdge - state_.leftEdge;
         float height = state_.bottomEdge - state_.topEdge;
 
+        if (isGitSplitDiffView_)
+        {
+            int splitRows = (std::max)(1, (int)gitSplitDiffRows_.size());
+            float baseContentHeight = (float)splitRows * metrics_.lineHeight;
+
+            float extra = height - metrics_.lineHeight;
+            if (extra < 0.0f)
+                extra = 0.0f;
+
+            float contentHeight = baseContentHeight + extra;
+            scrollbar_.UpdateLayout(state_.leftEdge, state_.topEdge, width, height, contentHeight);
+            state_.scrollOffsetY = scrollbar_.GetScrollOffset();
+
+            hScrollbarVisible_ = false;
+            hContentWidth_ = 0.0f;
+            hViewportWidth_ = 0.0f;
+            hThumbWidth_ = 0.0f;
+            hThumbPos_ = 0.0f;
+            hIsDragging_ = false;
+            state_.scrollOffsetX = 0.0f;
+
+            float editorWidth = right - left - metrics_.gutterWidth;
+            searchBox_.UpdateLayout(left + metrics_.gutterWidth, top, editorWidth);
+            return;
+        }
+
         if ((int)state_.visualLineByActual.size() != (int)state_.lines.size())
             foldLineMapsDirty_ = true;
         EnsureFoldLineMaps();
@@ -444,6 +470,16 @@ namespace Orion
         if (isPreview_)
         {
             DrawPreview(ctx, dwrite);
+            ctx->PopAxisAlignedClip();
+            ctx->SetAntialiasMode(oldAA);
+            ctx->SetTextAntialiasMode(oldTextAA);
+            return;
+        }
+
+        if (isGitSplitDiffView_)
+        {
+            DrawGitSplitDiff(ctx, dwrite);
+            scrollbar_.Draw(ctx);
             ctx->PopAxisAlignedClip();
             ctx->SetAntialiasMode(oldAA);
             ctx->SetTextAntialiasMode(oldTextAA);
@@ -719,6 +755,164 @@ namespace Orion
             addedBrush->Release();
         if (deletedBrush)
             deletedBrush->Release();
+    }
+
+    void Editor::DrawGitSplitDiff(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
+    {
+        if (!ctx || !dwrite)
+            return;
+
+        const float contentLeft = state_.leftEdge;
+        const float contentTop = state_.topEdge;
+        const float contentRight = GetGitSplitContentRight();
+        const float contentBottom = state_.bottomEdge;
+        const float splitGap = 10.0f;
+        const float dividerX = GetGitSplitDividerX();
+        const float paneNumberWidth = 46.0f;
+
+        D2D1_RECT_F leftPane = D2D1::RectF(contentLeft, contentTop, dividerX - splitGap * 0.5f, contentBottom);
+        D2D1_RECT_F rightPane = D2D1::RectF(dividerX + splitGap * 0.5f, contentTop, contentRight, contentBottom);
+
+        ID2D1SolidColorBrush *dividerBrush = nullptr;
+        ID2D1SolidColorBrush *lineNumBrush = nullptr;
+        ID2D1SolidColorBrush *textBrush = nullptr;
+        ID2D1SolidColorBrush *addedBrush = nullptr;
+        ID2D1SolidColorBrush *deletedBrush = nullptr;
+
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.18f, 0.18f, 1.0f), &dividerBrush);
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.54f, 0.54f, 0.54f, 1.0f), &lineNumBrush);
+        ctx->CreateSolidColorBrush(theme_.text, &textBrush);
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.58f, 0.30f, 0.20f), &addedBrush);
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.70f, 0.24f, 0.24f, 0.18f), &deletedBrush);
+
+        if (dividerBrush)
+        {
+            float half = gitSplitDividerDragging_ ? 2.0f : 1.0f;
+            D2D1_RECT_F dividerRect = D2D1::RectF(dividerX - half, contentTop, dividerX + half, contentBottom);
+            ctx->FillRectangle(dividerRect, dividerBrush);
+        }
+
+        IDWriteTextFormat *lineNumFormat = nullptr;
+        dwrite->CreateTextFormat(
+            L"JetBrains Mono",
+            customFontCollection_,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            12.0f,
+            L"en-us",
+            &lineNumFormat);
+        if (lineNumFormat)
+        {
+            lineNumFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+            lineNumFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            lineNumFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        }
+
+        const int rowCount = (int)gitSplitDiffRows_.size();
+        if (rowCount <= 0)
+        {
+            if (cachedTextFormat_ && textBrush)
+            {
+                const std::wstring msg = L"No diff available.";
+                D2D1_RECT_F msgRect = D2D1::RectF(contentLeft + 12.0f, contentTop + 12.0f, contentRight - 12.0f, contentTop + 40.0f);
+                ctx->DrawTextW(msg.c_str(), (UINT32)msg.size(), cachedTextFormat_, msgRect, textBrush);
+            }
+            if (lineNumFormat)
+                lineNumFormat->Release();
+            if (deletedBrush)
+                deletedBrush->Release();
+            if (addedBrush)
+                addedBrush->Release();
+            if (textBrush)
+                textBrush->Release();
+            if (lineNumBrush)
+                lineNumBrush->Release();
+            if (dividerBrush)
+                dividerBrush->Release();
+            return;
+        }
+
+        std::vector<int> leftNumbers((size_t)rowCount, 0);
+        std::vector<int> rightNumbers((size_t)rowCount, 0);
+        int leftLine = 1;
+        int rightLine = 1;
+        for (int i = 0; i < rowCount; ++i)
+        {
+            const auto &row = gitSplitDiffRows_[(size_t)i];
+            const bool hasLeft = row.hasLeft;
+            const bool hasRight = row.hasRight;
+            if (hasLeft)
+                leftNumbers[(size_t)i] = leftLine++;
+            if (hasRight)
+                rightNumbers[(size_t)i] = rightLine++;
+        }
+
+        const float lineHeight = metrics_.lineHeight;
+        const int firstRow = (std::max)(0, (int)(state_.scrollOffsetY / lineHeight));
+        const int lastRow = (std::min)(rowCount, (int)((state_.scrollOffsetY + (contentBottom - contentTop)) / lineHeight) + 1);
+
+        D2D1_RECT_F leftClip = D2D1::RectF(leftPane.left, leftPane.top, leftPane.right, leftPane.bottom);
+        D2D1_RECT_F rightClip = D2D1::RectF(rightPane.left, rightPane.top, rightPane.right, rightPane.bottom);
+
+        for (int i = firstRow; i < lastRow; ++i)
+        {
+            const auto &row = gitSplitDiffRows_[(size_t)i];
+            const float y = contentTop + (i * lineHeight) - state_.scrollOffsetY;
+
+            D2D1_RECT_F leftRowRect = D2D1::RectF(leftPane.left, y, leftPane.right, y + lineHeight);
+            D2D1_RECT_F rightRowRect = D2D1::RectF(rightPane.left, y, rightPane.right, y + lineHeight);
+
+            if (row.leftDeleted && deletedBrush)
+                ctx->FillRectangle(leftRowRect, deletedBrush);
+            if (row.rightAdded && addedBrush)
+                ctx->FillRectangle(rightRowRect, addedBrush);
+
+            if (lineNumFormat && lineNumBrush)
+            {
+                if (leftNumbers[(size_t)i] > 0)
+                {
+                    std::wstring num = std::to_wstring(leftNumbers[(size_t)i]);
+                    D2D1_RECT_F numRect = D2D1::RectF(leftPane.left + 4.0f, y, leftPane.left + paneNumberWidth, y + lineHeight);
+                    ctx->DrawTextW(num.c_str(), (UINT32)num.size(), lineNumFormat, numRect, lineNumBrush);
+                }
+                if (rightNumbers[(size_t)i] > 0)
+                {
+                    std::wstring num = std::to_wstring(rightNumbers[(size_t)i]);
+                    D2D1_RECT_F numRect = D2D1::RectF(rightPane.left + 4.0f, y, rightPane.left + paneNumberWidth, y + lineHeight);
+                    ctx->DrawTextW(num.c_str(), (UINT32)num.size(), lineNumFormat, numRect, lineNumBrush);
+                }
+            }
+
+            if (cachedTextFormat_ && textBrush)
+            {
+                D2D1_RECT_F leftTextRect = D2D1::RectF(leftPane.left + paneNumberWidth + 8.0f, y, leftPane.right - 6.0f, y + lineHeight);
+                D2D1_RECT_F rightTextRect = D2D1::RectF(rightPane.left + paneNumberWidth + 8.0f, y, rightPane.right - 6.0f, y + lineHeight);
+
+                ctx->PushAxisAlignedClip(leftClip, D2D1_ANTIALIAS_MODE_ALIASED);
+                if (row.hasLeft)
+                    ctx->DrawTextW(row.leftText.c_str(), (UINT32)row.leftText.size(), cachedTextFormat_, leftTextRect, textBrush);
+                ctx->PopAxisAlignedClip();
+
+                ctx->PushAxisAlignedClip(rightClip, D2D1_ANTIALIAS_MODE_ALIASED);
+                if (row.hasRight)
+                    ctx->DrawTextW(row.rightText.c_str(), (UINT32)row.rightText.size(), cachedTextFormat_, rightTextRect, textBrush);
+                ctx->PopAxisAlignedClip();
+            }
+        }
+
+        if (lineNumFormat)
+            lineNumFormat->Release();
+        if (deletedBrush)
+            deletedBrush->Release();
+        if (addedBrush)
+            addedBrush->Release();
+        if (textBrush)
+            textBrush->Release();
+        if (lineNumBrush)
+            lineNumBrush->Release();
+        if (dividerBrush)
+            dividerBrush->Release();
     }
 
     void Editor::DrawSelection(ID2D1RenderTarget *ctx)

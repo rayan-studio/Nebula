@@ -41,7 +41,7 @@ namespace Orion
     // --- OnChar (complete) ---
     void Editor::OnChar(wchar_t ch)
     {
-        if (isPreview_)
+        if (isPreview_ || isGitSplitDiffView_)
             return;
         bool contentChanged = false;
 
@@ -843,7 +843,7 @@ namespace Orion
     // --- OnKeyDown (complete) ---
     void Editor::OnKeyDown(WPARAM key)
     {
-        if (isPreview_)
+        if (isPreview_ || isGitSplitDiffView_)
             return;
         // Save initial caret to detect whether a key actually moved it.
         CaretPosition prevCaret = state_.caret;

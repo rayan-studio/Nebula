@@ -4,12 +4,14 @@
 #include "core/explorer/Explorer.h"
 #include "helpers/window_helpers.h"
 #include "ui/components/input/InputTheme.h"
+#include "utils/auth/GitHubAuth.h"
 
 #include <git2.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cwctype>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -61,7 +63,86 @@ struct DiffCollectContext
 {
     std::vector<int> *addedLines = nullptr;
     std::vector<int> *deletedLines = nullptr;
+    GitDiffDecorations::SplitViewData *splitData = nullptr;
+    std::deque<std::wstring> pendingDeleted;
 };
+
+struct PushCredentialContext
+{
+    std::string token;
+};
+
+int AcquirePushCredentials(git_credential **out,
+                           const char * /*url*/,
+                           const char * /*username_from_url*/,
+                           unsigned int /*allowed_types*/,
+                           void *payload)
+{
+    if (!out)
+        return -1;
+
+    PushCredentialContext *ctx = static_cast<PushCredentialContext *>(payload);
+    if (!ctx || ctx->token.empty())
+        return -1;
+    return git_credential_userpass_plaintext_new(out, "x-access-token", ctx->token.c_str());
+}
+
+std::wstring Utf8BytesToWide(const char *bytes, size_t len)
+{
+    if (!bytes || len == 0)
+        return {};
+
+    int wideLen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes, (int)len, nullptr, 0);
+    if (wideLen > 0)
+    {
+        std::wstring out((size_t)wideLen, L'\0');
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes, (int)len, out.data(), wideLen);
+        return out;
+    }
+
+    wideLen = MultiByteToWideChar(CP_UTF8, 0, bytes, (int)len, nullptr, 0);
+    if (wideLen > 0)
+    {
+        std::wstring out((size_t)wideLen, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, bytes, (int)len, out.data(), wideLen);
+        return out;
+    }
+
+    wideLen = MultiByteToWideChar(CP_ACP, 0, bytes, (int)len, nullptr, 0);
+    if (wideLen <= 0)
+        return {};
+    std::wstring out((size_t)wideLen, L'\0');
+    MultiByteToWideChar(CP_ACP, 0, bytes, (int)len, out.data(), wideLen);
+    return out;
+}
+
+std::wstring StripPatchLineEndings(const std::wstring &line)
+{
+    size_t end = line.size();
+    while (end > 0 && (line[end - 1] == L'\r' || line[end - 1] == L'\n'))
+        --end;
+    return line.substr(0, end);
+}
+
+void FlushPendingDeletedRows(DiffCollectContext &ctx)
+{
+    if (!ctx.splitData)
+    {
+        ctx.pendingDeleted.clear();
+        return;
+    }
+
+    while (!ctx.pendingDeleted.empty())
+    {
+        GitDiffDecorations::SplitRow row;
+        row.leftText = std::move(ctx.pendingDeleted.front());
+        row.hasLeft = true;
+        row.hasRight = false;
+        row.leftDeleted = true;
+        ctx.pendingDeleted.pop_front();
+        ctx.splitData->rows.push_back(std::move(row));
+    }
+}
 
 int CollectDiffLineNumbers(const git_diff_delta *, const git_diff_hunk *, const git_diff_line *line, void *payload)
 {
@@ -84,6 +165,53 @@ int CollectDiffLineNumbers(const git_diff_delta *, const git_diff_hunk *, const 
             lineNum = (int)line->old_lineno - 1;
         if (lineNum >= 0)
             ctx->deletedLines->push_back(lineNum);
+    }
+
+    if (ctx->splitData)
+    {
+        const char origin = line->origin;
+        const bool isAddition = (origin == GIT_DIFF_LINE_ADDITION);
+        const bool isDeletion = (origin == GIT_DIFF_LINE_DELETION);
+        const bool isContext = (origin == GIT_DIFF_LINE_CONTEXT);
+
+        if (isAddition || isDeletion || isContext)
+        {
+            std::wstring text = StripPatchLineEndings(Utf8BytesToWide(line->content, line->content_len));
+
+            if (isDeletion)
+            {
+                ctx->pendingDeleted.push_back(std::move(text));
+            }
+            else if (isAddition)
+            {
+                GitDiffDecorations::SplitRow row;
+                if (!ctx->pendingDeleted.empty())
+                {
+                    row.leftText = std::move(ctx->pendingDeleted.front());
+                    ctx->pendingDeleted.pop_front();
+                    row.hasLeft = true;
+                    row.leftDeleted = true;
+                }
+                row.hasRight = true;
+                row.rightText = std::move(text);
+                row.rightAdded = true;
+                ctx->splitData->rows.push_back(std::move(row));
+            }
+            else
+            {
+                FlushPendingDeletedRows(*ctx);
+                GitDiffDecorations::SplitRow row;
+                row.leftText = text;
+                row.rightText = std::move(text);
+                row.hasLeft = true;
+                row.hasRight = true;
+                ctx->splitData->rows.push_back(std::move(row));
+            }
+        }
+        else
+        {
+            FlushPendingDeletedRows(*ctx);
+        }
     }
 
     return 0;
@@ -224,6 +352,12 @@ void GitPanel::UpdateLayout(HWND hwnd)
     commitMessageInput_.SetRect(D2D1::RectF(x0, y, x1, y + inputH));
     y += inputH + gap;
 
+    authStatusRect_ = D2D1::RectF(x0, y, x1, y + 18.0f);
+    y += 20.0f;
+
+    infoRect_ = D2D1::RectF(x0, y, x1, y + 18.0f);
+    y += 20.0f;
+
     float changesBottom = state_.bottomEdge - 4.0f;
     if (changesBottom < y + 120.0f)
         changesBottom = y + 120.0f;
@@ -249,6 +383,45 @@ void GitPanel::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
     Panel::DrawTitle(ctx, dwrite);
 
     commitMessageInput_.Draw(ctx, dwrite);
+
+    IDWriteTextFormat *metaFmt = nullptr;
+    dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                             DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"en-us", &metaFmt);
+    if (metaFmt)
+    {
+        metaFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        metaFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        metaFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+
+    ID2D1SolidColorBrush *okBrush = nullptr;
+    ID2D1SolidColorBrush *warnBrush = nullptr;
+    ID2D1SolidColorBrush *textBrush = nullptr;
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.80f, 0.52f), &okBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.42f, 0.42f), &warnBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.74f, 0.74f, 0.74f), &textBrush);
+
+    const bool hasToken = GitHubAuth::HasToken();
+    const wchar_t *authText = hasToken ? L"GitHub: Connected" : L"GitHub: Not connected (Sign in from Settings)";
+    if (metaFmt)
+        ctx->DrawTextW(authText, (UINT32)wcslen(authText), metaFmt, authStatusRect_, hasToken ? okBrush : warnBrush);
+
+    std::wstring info;
+    if (!lastError_.empty())
+        info = lastError_;
+    else
+        info = L"Enter commits and pushes to current branch.";
+    if (metaFmt)
+        ctx->DrawTextW(info.c_str(), (UINT32)info.size(), metaFmt, infoRect_, lastError_.empty() ? textBrush : warnBrush);
+
+    if (metaFmt)
+        metaFmt->Release();
+    if (okBrush)
+        okBrush->Release();
+    if (warnBrush)
+        warnBrush->Release();
+    if (textBrush)
+        textBrush->Release();
 
     DrawChanges(ctx, dwrite, hwnd);
     changesScrollbar_.Draw(ctx);
@@ -464,20 +637,25 @@ void GitPanel::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
         {
             std::filesystem::path fullPath = std::filesystem::path(repoRoot_) /
                                              std::filesystem::path(changes_[(size_t)hit].path);
+            fullPath = fullPath.lexically_normal();
             std::vector<int> addedLines;
             std::vector<int> deletedLines;
-            if (BuildDiffDecorationsForChange(changes_[(size_t)hit], addedLines, deletedLines))
+            GitDiffDecorations::SplitViewData splitData;
+            if (BuildDiffViewForChange(changes_[(size_t)hit], addedLines, deletedLines, splitData))
             {
                 GitDiffDecorations::LineSets set;
                 set.addedLines = std::move(addedLines);
                 set.deletedLines = std::move(deletedLines);
                 GitDiffDecorations::SetForFile(fullPath.wstring(), set);
+                GitDiffDecorations::SetSplitForFile(fullPath.wstring(), splitData);
+                GitDiffDecorations::MarkPendingSplitOpen(fullPath.wstring());
             }
             else
             {
                 GitDiffDecorations::ClearForFile(fullPath.wstring());
+                GitDiffDecorations::ClearSplitForFile(fullPath.wstring());
             }
-            auto *heapPath = new std::wstring(fullPath.lexically_normal().wstring());
+            auto *heapPath = new std::wstring(fullPath.wstring());
             PostMessageW(hwnd, WM_USER + 100, 0, (LPARAM)heapPath);
         }
 
@@ -705,10 +883,14 @@ void GitPanel::RefreshStatus()
         selectedChangeIndex_ = 0;
 }
 
-bool GitPanel::BuildDiffDecorationsForChange(const Panels::GitChange &change, std::vector<int> &addedLines, std::vector<int> &deletedLines)
+bool GitPanel::BuildDiffViewForChange(const Panels::GitChange &change,
+                                      std::vector<int> &addedLines,
+                                      std::vector<int> &deletedLines,
+                                      GitDiffDecorations::SplitViewData &splitData)
 {
     addedLines.clear();
     deletedLines.clear();
+    splitData.rows.clear();
 
     if (!libgit2Ready_ || !isGitRepo_ || repoRoot_.empty())
         return false;
@@ -747,7 +929,9 @@ bool GitPanel::BuildDiffDecorationsForChange(const Panels::GitChange &change, st
         DiffCollectContext collectCtx;
         collectCtx.addedLines = &addedLines;
         collectCtx.deletedLines = &deletedLines;
+        collectCtx.splitData = &splitData;
         git_diff_print(diff, GIT_DIFF_FORMAT_PATCH, CollectDiffLineNumbers, &collectCtx);
+        FlushPendingDeletedRows(collectCtx);
     }
 
     git_diff_free(diff);
@@ -766,13 +950,130 @@ bool GitPanel::BuildDiffDecorationsForChange(const Panels::GitChange &change, st
             int lineIndex = 0;
             std::wstring line;
             while (std::getline(in, line))
+            {
                 addedLines.push_back(lineIndex++);
+                GitDiffDecorations::SplitRow row;
+                row.rightText = line;
+                row.hasRight = true;
+                row.rightAdded = true;
+                splitData.rows.push_back(std::move(row));
+            }
         }
     }
 
     SortUnique(addedLines);
     SortUnique(deletedLines);
-    return !addedLines.empty() || !deletedLines.empty();
+    return !addedLines.empty() || !deletedLines.empty() || !splitData.rows.empty();
+}
+
+bool GitPanel::PushCurrentBranch(std::wstring &outError)
+{
+    outError.clear();
+
+    if (!libgit2Ready_ || !isGitRepo_ || repoRoot_.empty())
+    {
+        outError = L"No git repository selected.";
+        return false;
+    }
+
+    git_repository *repo = nullptr;
+    int rc = git_repository_open_ext(&repo, WideToUtf8(repoRoot_).c_str(), GIT_REPOSITORY_OPEN_CROSS_FS, nullptr);
+    if (rc != 0 || !repo)
+    {
+        outError = GetLastGitError(L"Unable to open repository for push.");
+        return false;
+    }
+
+    git_reference *headRef = nullptr;
+    rc = git_repository_head(&headRef, repo);
+    if (rc != 0 || !headRef)
+    {
+        outError = GetLastGitError(L"Unable to resolve HEAD branch.");
+        git_repository_free(repo);
+        return false;
+    }
+
+    const char *branchName = nullptr;
+    rc = git_branch_name(&branchName, headRef);
+    if (rc != 0 || !branchName || branchName[0] == '\0')
+    {
+        outError = GetLastGitError(L"Unable to determine branch name.");
+        git_reference_free(headRef);
+        git_repository_free(repo);
+        return false;
+    }
+
+    git_buf remoteName = GIT_BUF_INIT;
+    rc = git_branch_remote_name(&remoteName, repo, git_reference_name(headRef));
+    if (rc != 0 || !remoteName.ptr || remoteName.size == 0)
+    {
+        outError = L"No upstream remote configured for this branch.";
+        git_buf_dispose(&remoteName);
+        git_reference_free(headRef);
+        git_repository_free(repo);
+        return false;
+    }
+    const char *remoteCStr = remoteName.ptr;
+
+    git_remote *remote = nullptr;
+    rc = git_remote_lookup(&remote, repo, remoteCStr);
+    if (rc != 0 || !remote)
+    {
+        outError = GetLastGitError(L"Unable to resolve remote for push.");
+        git_buf_dispose(&remoteName);
+        git_reference_free(headRef);
+        git_repository_free(repo);
+        return false;
+    }
+
+    std::wstring tokenWide;
+    if (!GitHubAuth::LoadToken(tokenWide, outError))
+    {
+        git_remote_free(remote);
+        git_buf_dispose(&remoteName);
+        git_reference_free(headRef);
+        git_repository_free(repo);
+        if (outError.empty())
+            outError = L"GitHub is not connected. Sign in from Settings.";
+        return false;
+    }
+
+    PushCredentialContext credCtx;
+    credCtx.token = WideToUtf8(tokenWide);
+    if (!tokenWide.empty())
+        SecureZeroMemory(tokenWide.data(), tokenWide.size() * sizeof(wchar_t));
+    if (credCtx.token.empty())
+    {
+        outError = L"Invalid GitHub OAuth session.";
+        git_remote_free(remote);
+        git_buf_dispose(&remoteName);
+        git_reference_free(headRef);
+        git_repository_free(repo);
+        return false;
+    }
+
+    git_push_options pushOpts = GIT_PUSH_OPTIONS_INIT;
+    pushOpts.callbacks.credentials = AcquirePushCredentials;
+    pushOpts.callbacks.payload = &credCtx;
+
+    std::string srcRef = std::string("refs/heads/") + branchName;
+    std::string dstRef = srcRef;
+    std::string refspec = srcRef + ":" + dstRef;
+    char *specs[1] = {const_cast<char *>(refspec.c_str())};
+    git_strarray refspecArray = {specs, 1};
+
+    rc = git_remote_push(remote, &refspecArray, &pushOpts);
+    if (rc != 0)
+        outError = GetLastGitError(L"Push failed.");
+
+    git_remote_free(remote);
+    git_buf_dispose(&remoteName);
+    git_reference_free(headRef);
+    git_repository_free(repo);
+    if (!credCtx.token.empty())
+        SecureZeroMemory(credCtx.token.data(), credCtx.token.size());
+
+    return rc == 0;
 }
 
 bool GitPanel::RunCommit()
@@ -786,6 +1087,11 @@ bool GitPanel::RunCommit()
     if (!isGitRepo_)
     {
         lastError_ = L"No git repository selected.";
+        return false;
+    }
+    if (!GitHubAuth::HasToken())
+    {
+        lastError_ = L"GitHub not connected. Sign in from Settings.";
         return false;
     }
 
@@ -889,10 +1195,21 @@ bool GitPanel::RunCommit()
         return false;
     }
 
-    lastError_.clear();
+    std::wstring pushError;
+    bool pushed = PushCurrentBranch(pushError);
+    if (!pushed)
+    {
+        if (pushError.empty())
+            pushError = L"Push failed.";
+        lastError_ = L"Committed locally, but push failed: " + pushError;
+    }
+    else
+    {
+        lastError_.clear();
+    }
     commitMessageInput_.SetText(L"");
     RefreshStatus();
-    return true;
+    return pushed;
 }
 
 std::wstring GitPanel::Trim(const std::wstring &s)

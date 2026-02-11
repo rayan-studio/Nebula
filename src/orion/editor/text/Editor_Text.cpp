@@ -207,6 +207,7 @@ namespace Orion
                                         std::vector<std::wstring> lines)
     {
         ResetPreview();
+        ClearGitSplitDiffView();
         collapsedFolds_.clear();
         foldLineMapsDirty_ = true;
         gutterHoverLine_ = -1;
@@ -247,6 +248,7 @@ namespace Orion
         {
             restoreViewAfterNextFileLoad_ = false;
             ResetPreview();
+            ClearGitSplitDiffView();
             // UI : afficher un "loading" instantan?? (optionnel)
             state_.filePath = filePath;
             state_.lines.clear();

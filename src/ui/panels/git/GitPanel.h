@@ -3,6 +3,7 @@
 #include "ui/panels/Panel.h"
 #include "ui/components/input/TextInput.h"
 #include "ui/components/scrollbar/Scrollbar.h"
+#include "ui/panels/git/GitDiffDecorations.h"
 
 #include <string>
 #include <vector>
@@ -42,7 +43,11 @@ private:
     void SyncRepoPathFromExplorer();
     void RefreshStatus();
     bool RunCommit();
-    bool BuildDiffDecorationsForChange(const Panels::GitChange &change, std::vector<int> &addedLines, std::vector<int> &deletedLines);
+    bool PushCurrentBranch(std::wstring &outError);
+    bool BuildDiffViewForChange(const Panels::GitChange &change,
+                                std::vector<int> &addedLines,
+                                std::vector<int> &deletedLines,
+                                GitDiffDecorations::SplitViewData &splitData);
 
     void DrawChanges(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd);
 
@@ -61,6 +66,8 @@ private:
     Scrollbar changesScrollbar_;
 
     D2D1_RECT_F changesRect_ = D2D1::RectF(0, 0, 0, 0);
+    D2D1_RECT_F authStatusRect_ = D2D1::RectF(0, 0, 0, 0);
+    D2D1_RECT_F infoRect_ = D2D1::RectF(0, 0, 0, 0);
 
     std::wstring repoRoot_;
     std::wstring lastError_;
