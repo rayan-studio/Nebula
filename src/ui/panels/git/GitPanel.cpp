@@ -382,14 +382,17 @@ void GitPanel::UpdateLayout(HWND hwnd)
         quickActionHoveredIndex_ = -1;
     }
     y += inputH + gap;
-    if (showQuickActions && quickActionMenuOpen_)
-        y += (quickActionMenuRect_.bottom - quickActionMenuRect_.top) + gap;
 
-    authStatusRect_ = D2D1::RectF(x0, y, x1, y + 18.0f);
-    y += 20.0f;
-
-    infoRect_ = D2D1::RectF(x0, y, x1, y + 18.0f);
-    y += 20.0f;
+    authStatusRect_ = D2D1::RectF(0, 0, 0, 0);
+    if (!lastError_.empty())
+    {
+        infoRect_ = D2D1::RectF(x0, y, x1, y + 18.0f);
+        y += 20.0f;
+    }
+    else
+    {
+        infoRect_ = D2D1::RectF(0, 0, 0, 0);
+    }
 
     float changesBottom = state_.bottomEdge - 4.0f;
     if (changesBottom < y + 120.0f)
@@ -416,49 +419,33 @@ void GitPanel::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
     Panel::DrawTitle(ctx, dwrite);
 
     commitMessageInput_.Draw(ctx, dwrite);
-    DrawQuickActions(ctx, dwrite);
 
-    IDWriteTextFormat *metaFmt = nullptr;
-    dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                             DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"en-us", &metaFmt);
-    if (metaFmt)
+    if (!lastError_.empty() && infoRect_.right > infoRect_.left)
     {
-        metaFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        metaFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        metaFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        IDWriteTextFormat *metaFmt = nullptr;
+        dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                                 DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"en-us", &metaFmt);
+        if (metaFmt)
+        {
+            metaFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            metaFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            metaFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        }
+
+        ID2D1SolidColorBrush *warnBrush = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.42f, 0.42f), &warnBrush);
+        if (metaFmt && warnBrush)
+            ctx->DrawTextW(lastError_.c_str(), (UINT32)lastError_.size(), metaFmt, infoRect_, warnBrush);
+
+        if (metaFmt)
+            metaFmt->Release();
+        if (warnBrush)
+            warnBrush->Release();
     }
-
-    ID2D1SolidColorBrush *okBrush = nullptr;
-    ID2D1SolidColorBrush *warnBrush = nullptr;
-    ID2D1SolidColorBrush *textBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.80f, 0.52f), &okBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.42f, 0.42f), &warnBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.74f, 0.74f, 0.74f), &textBrush);
-
-    const bool hasToken = GitHubAuth::HasToken();
-    const wchar_t *authText = hasToken ? L"GitHub: Connected" : L"GitHub: Not connected (Sign in from Settings)";
-    if (metaFmt)
-        ctx->DrawTextW(authText, (UINT32)wcslen(authText), metaFmt, authStatusRect_, hasToken ? okBrush : warnBrush);
-
-    std::wstring info;
-    if (!lastError_.empty())
-        info = lastError_;
-    else
-        info = L"Enter commits and pushes to current branch.";
-    if (metaFmt)
-        ctx->DrawTextW(info.c_str(), (UINT32)info.size(), metaFmt, infoRect_, lastError_.empty() ? textBrush : warnBrush);
-
-    if (metaFmt)
-        metaFmt->Release();
-    if (okBrush)
-        okBrush->Release();
-    if (warnBrush)
-        warnBrush->Release();
-    if (textBrush)
-        textBrush->Release();
 
     DrawChanges(ctx, dwrite, hwnd);
     changesScrollbar_.Draw(ctx);
+    DrawQuickActions(ctx, dwrite);
 
     Panel::DrawRightBorder(ctx);
     ctx->PopAxisAlignedClip();
@@ -480,16 +467,16 @@ void GitPanel::DrawQuickActions(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
     ID2D1SolidColorBrush *textBrush = nullptr;
     ID2D1SolidColorBrush *chevronBrush = nullptr;
 
-    ctx->CreateSolidColorBrush(quickActionPrimaryHovered_ ? D2D1::ColorF(0.20f, 0.45f, 0.80f, 0.95f)
-                                                           : D2D1::ColorF(0.20f, 0.45f, 0.80f, 0.85f),
+    ctx->CreateSolidColorBrush(quickActionPrimaryHovered_ ? D2D1::ColorF(0.24f, 0.53f, 0.92f, 0.96f)
+                                                           : D2D1::ColorF(0.20f, 0.46f, 0.82f, 0.90f),
                                &primaryBrush);
-    ctx->CreateSolidColorBrush(quickActionToggleHovered_ ? D2D1::ColorF(0.19f, 0.41f, 0.72f, 0.95f)
-                                                          : D2D1::ColorF(0.19f, 0.41f, 0.72f, 0.86f),
+    ctx->CreateSolidColorBrush(quickActionToggleHovered_ ? D2D1::ColorF(0.22f, 0.48f, 0.85f, 0.96f)
+                                                          : D2D1::ColorF(0.18f, 0.42f, 0.75f, 0.90f),
                                &toggleBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.11f, 0.11f, 0.11f), &menuBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.18f, 0.18f), &menuHoverBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.45f, 0.80f, 0.35f), &menuSelectedBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.26f, 0.26f, 0.26f), &borderBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.10f, 0.10f), &menuBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.17f, 0.17f, 0.17f), &menuHoverBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.45f, 0.80f, 0.26f), &menuSelectedBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.24f, 0.24f), &borderBrush);
     ctx->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.95f, 0.95f), &textBrush);
     ctx->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.90f, 0.90f), &chevronBrush);
 
@@ -1268,24 +1255,64 @@ bool GitPanel::PushCurrentBranch(std::wstring &outError)
         return false;
     }
 
-    git_buf remoteName = GIT_BUF_INIT;
-    rc = git_branch_remote_name(&remoteName, repo, git_reference_name(headRef));
-    if (rc != 0 || !remoteName.ptr || remoteName.size == 0)
+    std::string remoteName;
+    git_buf branchRemoteName = GIT_BUF_INIT;
+    rc = git_branch_remote_name(&branchRemoteName, repo, git_reference_name(headRef));
+    if (rc == 0 && branchRemoteName.ptr && branchRemoteName.size > 0)
     {
-        outError = L"No upstream remote configured for this branch.";
-        git_buf_dispose(&remoteName);
+        remoteName.assign(branchRemoteName.ptr, branchRemoteName.size);
+    }
+    git_buf_dispose(&branchRemoteName);
+
+    if (remoteName.empty())
+    {
+        git_strarray remotes = {0};
+        if (git_remote_list(&remotes, repo) == 0 && remotes.count > 0)
+        {
+            if (remotes.count == 1 && remotes.strings && remotes.strings[0])
+            {
+                remoteName = remotes.strings[0];
+            }
+            else if (remotes.strings)
+            {
+                for (size_t i = 0; i < remotes.count; ++i)
+                {
+                    const char *name = remotes.strings[i];
+                    if (name && std::string(name) == "origin")
+                    {
+                        remoteName = name;
+                        break;
+                    }
+                }
+                if (remoteName.empty())
+                {
+                    for (size_t i = 0; i < remotes.count; ++i)
+                    {
+                        if (remotes.strings[i])
+                        {
+                            remoteName = remotes.strings[i];
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        git_strarray_dispose(&remotes);
+    }
+
+    if (remoteName.empty())
+    {
+        outError = L"No remote configured for push.";
         git_reference_free(headRef);
         git_repository_free(repo);
         return false;
     }
-    const char *remoteCStr = remoteName.ptr;
 
     git_remote *remote = nullptr;
-    rc = git_remote_lookup(&remote, repo, remoteCStr);
+    rc = git_remote_lookup(&remote, repo, remoteName.c_str());
     if (rc != 0 || !remote)
     {
         outError = GetLastGitError(L"Unable to resolve remote for push.");
-        git_buf_dispose(&remoteName);
         git_reference_free(headRef);
         git_repository_free(repo);
         return false;
@@ -1295,7 +1322,6 @@ bool GitPanel::PushCurrentBranch(std::wstring &outError)
     if (!GitHubAuth::LoadToken(tokenWide, outError))
     {
         git_remote_free(remote);
-        git_buf_dispose(&remoteName);
         git_reference_free(headRef);
         git_repository_free(repo);
         if (outError.empty())
@@ -1311,7 +1337,6 @@ bool GitPanel::PushCurrentBranch(std::wstring &outError)
     {
         outError = L"Invalid GitHub OAuth session.";
         git_remote_free(remote);
-        git_buf_dispose(&remoteName);
         git_reference_free(headRef);
         git_repository_free(repo);
         return false;
@@ -1332,7 +1357,6 @@ bool GitPanel::PushCurrentBranch(std::wstring &outError)
         outError = GetLastGitError(L"Push failed.");
 
     git_remote_free(remote);
-    git_buf_dispose(&remoteName);
     git_reference_free(headRef);
     git_repository_free(repo);
     if (!credCtx.token.empty())
