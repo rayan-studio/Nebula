@@ -5,6 +5,7 @@
 #include "utils/auth/GitHubAuth.h"
 #include "core/window/Window.h"
 #include "core/explorer/Explorer.h"
+#include "ui/theme/Theme.h"
 #include <windows.h>
 #include <wincodec.h>
 #include <algorithm>
@@ -386,18 +387,10 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     float aMax = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Maximize) : (hoveredButton == Window::Hovered_Maximize ? 1.0f : 0.0f);
     float aClose = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Close) : (hoveredButton == Window::Hovered_Close ? 1.0f : 0.0f);
     float aRun = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Run) : (hoveredButton == Window::Hovered_Run ? 1.0f : 0.0f);
-    const D2D1_COLOR_F titlebarBg = hasFocus
-                                        ? D2D1::ColorF(0.06f, 0.07f, 0.09f, 1.0f)
-                                        : D2D1::ColorF(0.11f, 0.11f, 0.12f, 1.0f);
-    const D2D1_COLOR_F titlebarBorder = hasFocus
-                                            ? D2D1::ColorF(0.17f, 0.35f, 0.60f, 0.96f)
-                                            : D2D1::ColorF(0.24f, 0.24f, 0.26f, 1.0f);
-    const D2D1_COLOR_F titlebarText = hasFocus
-                                          ? D2D1::ColorF(0.90f, 0.93f, 0.98f, 1.0f)
-                                          : D2D1::ColorF(0.68f, 0.72f, 0.78f, 1.0f);
-    const D2D1_COLOR_F titlebarIcon = hasFocus
-                                          ? D2D1::ColorF(0.95f, 0.97f, 1.0f, 1.0f)
-                                          : D2D1::ColorF(0.75f, 0.78f, 0.84f, 1.0f);
+    const D2D1_COLOR_F titlebarBg = UI::Theme::TitlebarBackground(hasFocus);
+    const D2D1_COLOR_F titlebarBorder = UI::Theme::TitlebarBorder(hasFocus);
+    const D2D1_COLOR_F titlebarText = UI::Theme::TitlebarText(hasFocus);
+    const D2D1_COLOR_F titlebarIcon = UI::Theme::TitlebarIcon(hasFocus);
     if (window && window->IsNewProjectOverlayVisible())
     {
         // Minimal titlebar for the new-project screen (no editor menus).
@@ -743,9 +736,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
         }
 
         ID2D1SolidColorBrush *titleBrush = nullptr;
-        D2D1_COLOR_F titleColor = hasFocus
-                                      ? D2D1::ColorF(0.95f, 0.97f, 1.0f, 1.0f)
-                                      : D2D1::ColorF(0.82f, 0.86f, 0.92f, 0.96f);
+        D2D1_COLOR_F titleColor = UI::Theme::TitlebarCenterTitle(hasFocus);
         ctx->CreateSolidColorBrush(titleColor, &titleBrush);
 
         // Créer un format temporaire avec CENTER alignment

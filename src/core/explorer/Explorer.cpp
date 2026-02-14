@@ -22,6 +22,7 @@
 #include "ui/layout/ExplorerLayoutState.h"
 #include "lsp/LspManager.h"
 #include "ui/components/input/InputTheme.h"
+#include "ui/theme/Theme.h"
 #include <vector>
 #include <exception>
 
@@ -1800,11 +1801,7 @@ void ExplorerManager::HandleContextSubmenuCommand(int commandId)
 void ExplorerManager::DrawBackground(ID2D1RenderTarget *ctx)
 {
     ID2D1SolidColorBrush *bgBrush = nullptr;
-    D2D1_COLOR_F bgColor = D2D1::ColorF(
-        18.0f / 255.0f,
-        18.0f / 255.0f,
-        18.0f / 255.0f,
-        1.0f);
+    D2D1_COLOR_F bgColor = UI::Theme::ChromeBackground();
     ctx->CreateSolidColorBrush(bgColor, &bgBrush);
 
     D2D1_RECT_F rect = D2D1::RectF(
@@ -1859,7 +1856,7 @@ void ExplorerManager::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
                                  12.5f, L"fr-fr", &fmt);
 
         ID2D1SolidColorBrush* msgBrush = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.60f, 0.60f, 0.60f, 1.0f), &msgBrush);
+        ctx->CreateSolidColorBrush(UI::Theme::MutedText(), &msgBrush);
 
         if (fmt)
         {
@@ -1923,7 +1920,7 @@ void ExplorerManager::DrawTitle(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
     }
 
     ID2D1SolidColorBrush *textBrush = nullptr;
-    D2D1_COLOR_F textColor = D2D1::ColorF(204.0f / 255.0f, 204.0f / 255.0f, 204.0f / 255.0f, 1.0f);
+    D2D1_COLOR_F textColor = UI::Theme::PrimaryText();
     ctx->CreateSolidColorBrush(textColor, &textBrush);
 
     D2D1_RECT_F titleRect = D2D1::RectF(
@@ -1961,7 +1958,7 @@ void ExplorerManager::DrawTitle(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
 
     // Draw SVG icons for buttons (cached in iconCache_). Keep hover rounded background.
     ID2D1SolidColorBrush *btnHoverBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0x2a2d2e), &btnHoverBrush); // same hover color as titlebar menus
+    ctx->CreateSolidColorBrush(UI::Theme::GetPalette().explorerToolbarHover, &btnHoverBrush);
 
     // Determine DPI from render target
     float dpiX = 96.0f, dpiY = 96.0f;
@@ -2480,15 +2477,15 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
     }
 
     ID2D1SolidColorBrush *textBrush = nullptr;
-    D2D1_COLOR_F textColor = D2D1::ColorF(204.0f / 255.0f, 204.0f / 255.0f, 204.0f / 255.0f, 1.0f);
+    D2D1_COLOR_F textColor = UI::Theme::PrimaryText();
     ctx->CreateSolidColorBrush(textColor, &textBrush);
 
     ID2D1SolidColorBrush *hoverBrush = nullptr;
-    D2D1_COLOR_F hoverColor = D2D1::ColorF(30.0f / 255.0f, 30.0f / 255.0f, 30.0f / 255.0f, 1.0f);
+    D2D1_COLOR_F hoverColor = UI::Theme::GetPalette().explorerRowHover;
     ctx->CreateSolidColorBrush(hoverColor, &hoverBrush);
 
     ID2D1SolidColorBrush *guideBrush = nullptr;
-    D2D1_COLOR_F guideColor = D2D1::ColorF(42.0f / 255.0f, 42.0f / 255.0f, 42.0f / 255.0f, 0.9f);
+    D2D1_COLOR_F guideColor = UI::Theme::GetPalette().explorerGuide;
     ctx->CreateSolidColorBrush(guideColor, &guideBrush);
 
     UINT dpi = win32_get_dpi_for_window(hwnd);
@@ -2955,7 +2952,7 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
                 std::round(item.yPosition + item.height) - insetY);
 
             ID2D1SolidColorBrush* activeBrush = nullptr;
-            D2D1_COLOR_F activeColor = D2D1::ColorF(0.12f, 0.18f, 0.25f, 1.0f);
+            D2D1_COLOR_F activeColor = UI::Theme::GetPalette().explorerRowActive;
             ctx->CreateSolidColorBrush(activeColor, &activeBrush);
 
             if (activeBrush)
@@ -3051,8 +3048,8 @@ void ExplorerManager::DrawRightBorder(ID2D1RenderTarget *ctx)
     // Draw border - cyan when hovering/resizing, subtle gray otherwise
     ID2D1SolidColorBrush *brush = nullptr;
     D2D1_COLOR_F borderColor = (state_.isHoveringResizeZone || state_.isResizing)
-                                   ? D2D1::ColorF(0x00ccff) // Cyan on hover/resize
-                                   : D2D1::ColorF(48.0f / 255.0f, 48.0f / 255.0f, 48.0f / 255.0f, 1.0f);
+                                   ? UI::Theme::AccentStrong()
+                                   : UI::Theme::ChromeBorder();
     ctx->CreateSolidColorBrush(borderColor, &brush);
 
     if (brush)
@@ -3330,11 +3327,11 @@ void ExplorerManager::DrawSearchPanel(ID2D1RenderTarget *ctx, IDWriteFactory *dw
     }
 
     ID2D1SolidColorBrush *bg = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f), &bg);
+    ctx->CreateSolidColorBrush(UI::InputTheme::Background(), &bg);
     ID2D1SolidColorBrush *border = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.3f, 0.3f, 0.3f, 1.0f), &border);
+    ctx->CreateSolidColorBrush(UI::InputTheme::Border(), &border);
     ID2D1SolidColorBrush *txt = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.9f, 0.9f, 0.9f, 1.0f), &txt);
+    ctx->CreateSolidColorBrush(UI::InputTheme::Text(), &txt);
 
     float left = state_.leftEdge + state_.leftPadding;
     float right = state_.rightEdge - state_.leftPadding;
@@ -3358,10 +3355,8 @@ void ExplorerManager::DrawSearchPanel(ID2D1RenderTarget *ctx, IDWriteFactory *dw
     // Draw query
     std::wstring display = searchQuery_.empty() ? std::wstring(L"Search...") : searchQuery_;
     ID2D1SolidColorBrush *phBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.6f, 0.6f, 0.6f, 1.0f), &phBrush);
+    ctx->CreateSolidColorBrush(UI::InputTheme::Placeholder(), &phBrush);
     ctx->DrawTextW(display.c_str(), (UINT32)display.size(), tf, D2D1::RectF(inputRect.left + 8.0f, inputRect.top, inputRect.right - 8.0f, inputRect.bottom), searchQuery_.empty() ? phBrush : txt);
-    if (phBrush)
-        phBrush->Release();
 
     // Draw results list below
     float y = inputRect.bottom + 8.0f;
@@ -3383,4 +3378,6 @@ void ExplorerManager::DrawSearchPanel(ID2D1RenderTarget *ctx, IDWriteFactory *dw
         border->Release();
     if (txt)
         txt->Release();
+    if (phBrush)
+        phBrush->Release();
 }

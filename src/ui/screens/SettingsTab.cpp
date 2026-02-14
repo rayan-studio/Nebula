@@ -5,6 +5,8 @@
 #include "core/window/Window.h"
 #include "utils/auth/GitHubAuth.h"
 #include "utils/auth/GitHubOAuth.h"
+#include "ui/components/input/InputTheme.h"
+#include "ui/theme/Theme.h"
 
 #include <algorithm>
 
@@ -20,14 +22,19 @@ SettingsTabView::SettingsTabView()
             SetTamponText(text);
     };
 
+    RefreshInputTheme();
+}
+
+void SettingsTabView::RefreshInputTheme()
+{
     auto &style = tamponInput_.GetStyle();
-    style.backgroundColor = D2D1::ColorF(0.11f, 0.11f, 0.11f);
-    style.borderColor = D2D1::ColorF(0.28f, 0.28f, 0.28f);
-    style.focusBorderColor = D2D1::ColorF(0.24f, 0.57f, 0.92f);
-    style.textColor = D2D1::ColorF(0.95f, 0.95f, 0.95f);
-    style.placeholderColor = D2D1::ColorF(0.60f, 0.60f, 0.60f);
-    style.selectionColor = D2D1::ColorF(0.20f, 0.57f, 1.0f, 0.26f);
-    style.cursorColor = D2D1::ColorF(0.95f, 0.95f, 0.95f);
+    style.backgroundColor = UI::InputTheme::Background();
+    style.borderColor = UI::InputTheme::Border();
+    style.focusBorderColor = UI::InputTheme::FocusBorder();
+    style.textColor = UI::InputTheme::Text();
+    style.placeholderColor = UI::InputTheme::Placeholder();
+    style.selectionColor = UI::InputTheme::Selection();
+    style.cursorColor = UI::InputTheme::Caret();
     style.fontFamily = L"Segoe UI Variable Text";
     style.multiline = true;
 }
@@ -55,7 +62,12 @@ void SettingsTabView::UpdateLayout(HWND hwnd, float left, float top, float right
     float toggleTop = rowRect_.top + (rowHeight - toggleHeight) * 0.5f;
     toggleRect_ = D2D1::RectF(toggleLeft, toggleTop, toggleRight, toggleTop + toggleHeight);
 
-    float sectionTop = rowRect_.bottom + (float)win32_dpi_scale(16, dpi);
+    float themeRowTop = rowRect_.bottom + (float)win32_dpi_scale(10, dpi);
+    themeRowRect_ = D2D1::RectF(rowLeft, themeRowTop, rowRight, themeRowTop + rowHeight);
+    float themeToggleTop = themeRowRect_.top + (rowHeight - toggleHeight) * 0.5f;
+    themeToggleRect_ = D2D1::RectF(toggleLeft, themeToggleTop, toggleRight, themeToggleTop + toggleHeight);
+
+    float sectionTop = themeRowRect_.bottom + (float)win32_dpi_scale(16, dpi);
     float minSectionHeight = (float)win32_dpi_scale(170, dpi);
     float sectionBottom = sectionTop + minSectionHeight;
     tamponSectionRect_ = D2D1::RectF(rowLeft, sectionTop, rowRight, sectionBottom);
@@ -101,6 +113,7 @@ void SettingsTabView::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     const std::wstring &tampon = GetTamponText();
     if (!tamponInput_.IsFocused() && tamponInput_.GetText() != tampon)
         tamponInput_.SetText(tampon);
+    RefreshInputTheme();
 
     D2D1_RECT_F clip = bounds_;
     ctx->PushAxisAlignedClip(clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -108,7 +121,7 @@ void SettingsTabView::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     ctx->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
 
     ID2D1SolidColorBrush *bgBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.09f, 0.09f, 0.09f), &bgBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &bgBrush);
     if (bgBrush)
     {
         ctx->FillRectangle(bounds_, bgBrush);
@@ -174,16 +187,17 @@ void SettingsTabView::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     ID2D1SolidColorBrush *sectionBorderBrush = nullptr;
     ID2D1SolidColorBrush *stateBrush = nullptr;
 
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.95f, 0.95f), &titleBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.86f, 0.86f, 0.86f), &labelBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.64f, 0.64f, 0.64f), &descBrush);
-    ctx->CreateSolidColorBrush(rowHovered_ ? D2D1::ColorF(0.16f, 0.16f, 0.16f) : D2D1::ColorF(0.13f, 0.13f, 0.13f), &rowBgBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.25f, 0.25f, 0.25f), &rowBorderBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.45f, 0.80f), &toggleBgBrush);
+    const UI::Theme::Palette &palette = UI::Theme::GetPalette();
+    ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &titleBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &labelBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::MutedText(), &descBrush);
+    ctx->CreateSolidColorBrush(rowHovered_ ? palette.explorerRowHover : UI::Theme::ChromeBackground(), &rowBgBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &rowBorderBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::Accent(), &toggleBgBrush);
     ctx->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f), &toggleTextBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.12f), &sectionBgBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.24f, 0.24f), &sectionBorderBrush);
-    ctx->CreateSolidColorBrush(HasTamponText() ? D2D1::ColorF(0.36f, 0.78f, 0.49f) : D2D1::ColorF(0.70f, 0.70f, 0.70f), &stateBrush);
+    ctx->CreateSolidColorBrush(UI::InputTheme::Background(), &sectionBgBrush);
+    ctx->CreateSolidColorBrush(UI::InputTheme::Border(), &sectionBorderBrush);
+    ctx->CreateSolidColorBrush(HasTamponText() ? D2D1::ColorF(0.36f, 0.78f, 0.49f) : UI::Theme::MutedText(), &stateBrush);
 
     if (titleFormat && titleBrush)
     {
@@ -216,6 +230,36 @@ void SettingsTabView::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
         ctx->FillRoundedRectangle(D2D1::RoundedRect(toggleRect_, 12.0f, 12.0f), toggleBgBrush);
     if (toggleFormat && toggleTextBrush)
         ctx->DrawTextW(value, (UINT32)wcslen(value), toggleFormat, toggleRect_, toggleTextBrush);
+
+    if (rowBgBrush)
+    {
+        ID2D1SolidColorBrush *themeRowBrush = nullptr;
+        ctx->CreateSolidColorBrush(themeRowHovered_ ? palette.explorerRowHover : UI::Theme::ChromeBackground(), &themeRowBrush);
+        if (themeRowBrush)
+        {
+            D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(themeRowRect_, 6.0f, 6.0f);
+            ctx->FillRoundedRectangle(rr, themeRowBrush);
+            themeRowBrush->Release();
+        }
+    }
+    if (rowBorderBrush)
+    {
+        D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(themeRowRect_, 6.0f, 6.0f);
+        ctx->DrawRoundedRectangle(rr, rowBorderBrush, 1.0f);
+    }
+    if (labelFormat && labelBrush)
+    {
+        const wchar_t *themeLabel = L"Theme";
+        D2D1_RECT_F labelRect = D2D1::RectF(themeRowRect_.left + 12.0f, themeRowRect_.top, themeToggleRect_.left - 10.0f, themeRowRect_.bottom);
+        ctx->DrawTextW(themeLabel, (UINT32)wcslen(themeLabel), labelFormat, labelRect, labelBrush);
+    }
+    if (toggleBgBrush)
+        ctx->FillRoundedRectangle(D2D1::RoundedRect(themeToggleRect_, 12.0f, 12.0f), toggleBgBrush);
+    if (toggleFormat && toggleTextBrush)
+    {
+        const wchar_t *themeValue = UI::Theme::GetMode() == UI::Theme::Mode::Dark ? L"Dark" : L"Light";
+        ctx->DrawTextW(themeValue, (UINT32)wcslen(themeValue), toggleFormat, themeToggleRect_, toggleTextBrush);
+    }
 
     if (sectionBgBrush)
         ctx->FillRoundedRectangle(D2D1::RoundedRect(tamponSectionRect_, 8.0f, 8.0f), sectionBgBrush);
@@ -364,11 +408,14 @@ void SettingsTabView::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
 void SettingsTabView::OnMouseMove(HWND hwnd, POINT clientPoint)
 {
     bool wasHovered = rowHovered_;
+    bool wasThemeHovered = themeRowHovered_;
     bool wasSignInHovered = githubSignInHovered_;
     bool wasDisconnectHovered = githubDisconnectHovered_;
 
     rowHovered_ = clientPoint.x >= rowRect_.left && clientPoint.x <= rowRect_.right &&
                   clientPoint.y >= rowRect_.top && clientPoint.y <= rowRect_.bottom;
+    themeRowHovered_ = clientPoint.x >= themeRowRect_.left && clientPoint.x <= themeRowRect_.right &&
+                       clientPoint.y >= themeRowRect_.top && clientPoint.y <= themeRowRect_.bottom;
     githubSignInHovered_ = clientPoint.x >= githubSignInRect_.left && clientPoint.x <= githubSignInRect_.right &&
                            clientPoint.y >= githubSignInRect_.top && clientPoint.y <= githubSignInRect_.bottom;
     githubDisconnectHovered_ = clientPoint.x >= githubDisconnectRect_.left && clientPoint.x <= githubDisconnectRect_.right &&
@@ -377,6 +424,7 @@ void SettingsTabView::OnMouseMove(HWND hwnd, POINT clientPoint)
     bool usedByInput = tamponInput_.OnMouseMove(hwnd, clientPoint);
 
     if (wasHovered != rowHovered_ ||
+        wasThemeHovered != themeRowHovered_ ||
         wasSignInHovered != githubSignInHovered_ ||
         wasDisconnectHovered != githubDisconnectHovered_ ||
         usedByInput)
@@ -401,6 +449,11 @@ void SettingsTabView::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
                      clientPoint.y >= githubSignInRect_.top && clientPoint.y <= githubSignInRect_.bottom;
     bool hitDisconnect = clientPoint.x >= githubDisconnectRect_.left && clientPoint.x <= githubDisconnectRect_.right &&
                          clientPoint.y >= githubDisconnectRect_.top && clientPoint.y <= githubDisconnectRect_.bottom;
+    bool hitThemeRow = clientPoint.x >= themeRowRect_.left && clientPoint.x <= themeRowRect_.right &&
+                       clientPoint.y >= themeRowRect_.top && clientPoint.y <= themeRowRect_.bottom;
+
+    if (hitThemeRow)
+        UI::Theme::ToggleMode();
 
     if (hitSignIn)
         BeginGitHubSignIn();
@@ -408,7 +461,7 @@ void SettingsTabView::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
         ClearGitHubToken();
 
     bool hitInput = tamponInput_.OnLeftButtonDown(hwnd, clientPoint);
-    if (hitRow || hitSignIn || hitDisconnect || hitInput)
+    if (hitRow || hitThemeRow || hitSignIn || hitDisconnect || hitInput)
         InvalidateRect(hwnd, nullptr, FALSE);
 }
 

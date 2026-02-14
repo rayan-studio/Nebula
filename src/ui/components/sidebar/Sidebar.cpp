@@ -4,6 +4,7 @@
 #include "core/explorer/Explorer.h"
 #include "core/window/Window.h"
 #include "ui/panels/terminal/TerminalPanel.h"
+#include "ui/theme/Theme.h"
 #include <d2d1.h>
 #include <dwrite.h>
 #include <windows.h>
@@ -258,7 +259,7 @@ void SidebarRenderer::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND 
     
     // Background
     ID2D1SolidColorBrush* bgBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(18.0f/255.0f, 18.0f/255.0f, 18.0f/255.0f), &bgBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &bgBrush);
     if (bgBrush) {
         ctx->FillRectangle(sbRect, bgBrush);
         bgBrush->Release();
@@ -266,7 +267,7 @@ void SidebarRenderer::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND 
     
     // Border
     ID2D1SolidColorBrush* borderBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(48.0f/255.0f, 48.0f/255.0f, 48.0f/255.0f), &borderBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &borderBrush);
     
     // Create brushes
     ID2D1SolidColorBrush* iconNormalBrush = nullptr;
@@ -276,12 +277,13 @@ void SidebarRenderer::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND 
     ID2D1SolidColorBrush* activeBgBrush = nullptr;
     ID2D1SolidColorBrush* indicatorBrush = nullptr;
     
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0x9e9e9e), &iconNormalBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0xffffff), &iconHoverBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0xffffff), &iconActiveBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0x2d2d2d), &hoverBgBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0x3c3f41), &activeBgBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0x4A9FEB), &indicatorBrush);
+    const UI::Theme::Palette &palette = UI::Theme::GetPalette();
+    ctx->CreateSolidColorBrush(palette.sidebarIconNormal, &iconNormalBrush);
+    ctx->CreateSolidColorBrush(palette.sidebarIconHover, &iconHoverBrush);
+    ctx->CreateSolidColorBrush(palette.sidebarIconActive, &iconActiveBrush);
+    ctx->CreateSolidColorBrush(palette.sidebarHoverBg, &hoverBgBrush);
+    ctx->CreateSolidColorBrush(palette.sidebarActiveBg, &activeBgBrush);
+    ctx->CreateSolidColorBrush(palette.sidebarIndicator, &indicatorBrush);
     
     // Icon font
     IDWriteTextFormat* iconFormat = nullptr;

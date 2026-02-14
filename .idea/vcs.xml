@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<project version="4">
-  <component name="VcsDirectoryMappings">
-    <mapping directory="" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/external/ggwave" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/external/libvterm" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/external/nanosvg" vcs="Git" />
-  </component>
-</project>

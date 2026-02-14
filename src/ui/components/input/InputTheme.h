@@ -1,6 +1,7 @@
 #pragma once
 
 #include <d2d1.h>
+#include "ui/theme/Theme.h"
 
 namespace UI::InputTheme
 {
@@ -11,36 +12,36 @@ namespace UI::InputTheme
 
     inline D2D1_COLOR_F Background()
     {
-        return D2D1::ColorF(0.10f, 0.10f, 0.10f, 1.0f);
+        return Theme::GetPalette().inputBackground;
     }
 
     inline D2D1_COLOR_F Border()
     {
-        return D2D1::ColorF(0.26f, 0.26f, 0.26f, 1.0f);
+        return Theme::GetPalette().inputBorder;
     }
 
     inline D2D1_COLOR_F FocusBorder()
     {
-        return D2D1::ColorF(0.24f, 0.57f, 0.92f, 1.0f);
+        return Theme::GetPalette().inputFocusBorder;
     }
 
     inline D2D1_COLOR_F Text()
     {
-        return D2D1::ColorF(0.93f, 0.93f, 0.93f, 1.0f);
+        return Theme::GetPalette().inputText;
     }
 
     inline D2D1_COLOR_F Placeholder()
     {
-        return D2D1::ColorF(0.56f, 0.56f, 0.56f, 1.0f);
+        return Theme::GetPalette().inputPlaceholder;
     }
 
     inline D2D1_COLOR_F Selection()
     {
-        return D2D1::ColorF(0.20f, 0.57f, 1.0f, 0.27f);
+        return Theme::GetPalette().inputSelection;
     }
 
     inline D2D1_COLOR_F Caret()
     {
-        return D2D1::ColorF(0.95f, 0.95f, 0.95f, 1.0f);
+        return Theme::GetPalette().inputCaret;
     }
 }

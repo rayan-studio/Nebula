@@ -50,6 +50,7 @@
 #include "lsp/LspManager.h"
 #include "core/window/OpenFileRequest.h"
 #include "utils/update/UpdateService.h"
+#include "ui/theme/Theme.h"
 
 static void EnableMicaIfAvailable(HWND hwnd)
 {
@@ -77,6 +78,7 @@ static void EnableMicaIfAvailable(HWND hwnd)
 
 static void SetDwmBorderColor(HWND hwnd, bool focused)
 {
+    (void)focused;
     HMODULE hDwm = LoadLibraryW(L"dwmapi.dll");
     if (!hDwm)
         return;
@@ -91,7 +93,7 @@ static void SetDwmBorderColor(HWND hwnd, bool focused)
 
     // DWMWA_BORDER_COLOR = 34 (Windows 11+). Use COLORREF (0x00bbggrr).
     const DWORD DWMWA_BORDER_COLOR = 34;
-    COLORREF color = focused ? RGB(61, 143, 242) : RGB(51, 51, 51);
+    COLORREF color = RGB(51, 51, 51);
     pDwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &color, sizeof(color));
 
     FreeLibrary(hDwm);
@@ -481,6 +483,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     }
     case WM_CREATE:
     {
+        UI::Theme::Initialize();
+        UI::Theme::SetWindowFocused(true);
         skia_ = new Skia();
         if (!skia_->Init(hwnd_))
         {
@@ -579,6 +583,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     case WM_ACTIVATE:
     {
         bool focused = (LOWORD(wParam) != WA_INACTIVE);
+        UI::Theme::SetWindowFocused(focused);
         SetDwmBorderColor(hwnd_, focused);
         RECT title_bar_rect = win32_titlebar_rect(hwnd_);
         // Clear hovered state when window activation changes
@@ -587,6 +592,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             SetMenuItemHovered((int)i, false);
         HideMenuDropdown(hwnd_);
         InvalidateRect(hwnd_, &title_bar_rect, FALSE);
+        InvalidateRect(hwnd_, nullptr, FALSE);
         return DefWindowProc(hwnd_, uMsg, wParam, lParam);
     }
     case WM_OPEN_NEW_PROJECT:
