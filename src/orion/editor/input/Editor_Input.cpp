@@ -501,6 +501,65 @@ namespace Orion
             }
         }
 
+        // Fold gutter click handling (toggle fold on chevron area) + line-number drag selection.
+        if (pt.y >= (int)state_.topEdge && pt.y <= (int)state_.bottomEdge &&
+            pt.x >= (int)state_.leftEdge && pt.x <= (int)(state_.leftEdge + metrics_.gutterWidth))
+        {
+            const float arrowSize = 12.0f;
+            const float iconRightPad = 3.0f;
+            const float centerX = std::round(state_.leftEdge + metrics_.gutterWidth - arrowSize * 0.5f - iconRightPad);
+            const float hitHalf = arrowSize * 0.5f + 4.0f;
+            const bool isChevronHit = ((float)pt.x >= centerX - hitHalf && (float)pt.x <= centerX + hitHalf);
+
+            if (isChevronHit && metrics_.lineHeight > 0.0f)
+            {
+                int visibleLine = (int)(((float)pt.y - state_.topEdge + state_.scrollOffsetY) / metrics_.lineHeight);
+                if (visibleLine >= 0 && visibleLine < GetVisibleLineCount())
+                {
+                    int actualLine = VisibleLineToActualLine(visibleLine);
+                    int collapsedEnd = -1;
+                    bool isCollapsed = IsCollapsedFoldStart(actualLine, &collapsedEnd);
+                    int foldEnd = isCollapsed ? collapsedEnd : FindFoldEndLineForStart(actualLine);
+                    if (foldEnd > actualLine && ToggleFoldAtLine(actualLine))
+                    {
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                        return;
+                    }
+                }
+            }
+
+            if (!state_.lines.empty() && metrics_.lineHeight > 0.0f)
+            {
+                int visibleCount = GetVisibleLineCount();
+                if (visibleCount > 0)
+                {
+                    int visibleLine = (int)(((float)pt.y - state_.topEdge + state_.scrollOffsetY) / metrics_.lineHeight);
+                    visibleLine = (std::max)(0, (std::min)(visibleCount - 1, visibleLine));
+                    int actualLine = VisibleLineToActualLine(visibleLine);
+                    actualLine = (std::max)(0, (std::min)((int)state_.lines.size() - 1, actualLine));
+
+                    gutterLineDragSelecting_ = true;
+                    gutterLineDragMoved_ = false;
+                    gutterLineDragAnchorLine_ = actualLine;
+                    gutterLineDragLastLine_ = actualLine;
+                    dragSelecting_ = false;
+                    secondaryCarets_.clear();
+
+                    state_.selectionStart = {actualLine, 0};
+                    state_.caret = {actualLine, (int)state_.lines[(size_t)actualLine].size()};
+                    state_.hasSelection = true;
+                    state_.caretVisible = true;
+                    state_.lastBlinkTime = GetTickCount();
+
+                    SetCapture(hwnd);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+            }
+
+            // Keep gutter clicks from moving text caret unexpectedly.
+            return;
+        }
+
         float contentLeft = state_.leftEdge + metrics_.gutterWidth + metrics_.leftPadding;
         bool isInEditorArea = !(pt.x < contentLeft || pt.x > state_.rightEdge || pt.y < state_.topEdge || pt.y > state_.bottomEdge);
         if (!isInEditorArea)
@@ -569,18 +628,23 @@ namespace Orion
 
         // Click count logic
         DWORD now = GetTickCount();
-        UINT dblTime = GetDoubleClickTime();
-        int dblWidth = GetSystemMetrics(SM_CXDOUBLECLK);
-        int dblHeight = GetSystemMetrics(SM_CYDOUBLECLK);
+        UINT dblTime = (std::max)(GetDoubleClickTime(), 420u);
+        int dblWidth = (std::max)(GetSystemMetrics(SM_CXDOUBLECLK), 10);
+        int dblHeight = (std::max)(GetSystemMetrics(SM_CYDOUBLECLK), 10);
         bool withinDoubleClickArea = std::abs(pt.x - lastClickPos_.x) <= dblWidth
             && std::abs(pt.y - lastClickPos_.y) <= dblHeight;
-        if (now - lastClickTime_ <= dblTime && withinDoubleClickArea)
+        bool withinDoubleClickText = (lastClickTextLine_ == clickedPos.line) &&
+                                     (lastClickTextColumn_ >= 0) &&
+                                     (std::abs(lastClickTextColumn_ - clickedPos.column) <= 2);
+        if (now - lastClickTime_ <= dblTime && (withinDoubleClickArea || withinDoubleClickText))
             clickCount_ = (clickCount_ < 3) ? clickCount_ + 1 : 1;
         else
             clickCount_ = 1;
 
         lastClickTime_ = now;
         lastClickPos_ = pt;
+        lastClickTextLine_ = clickedPos.line;
+        lastClickTextColumn_ = clickedPos.column;
 
         bool shiftPressed = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 
@@ -769,14 +833,100 @@ namespace Orion
             return;
         }
 
+        bool leftButtonDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+
+        if (gutterLineDragSelecting_ && leftButtonDown && !state_.lines.empty() && metrics_.lineHeight > 0.0f)
+        {
+            bool needsRedraw = false;
+
+            if (pt.y < (int)state_.topEdge + 2)
+            {
+                float over = ((float)state_.topEdge + 2.0f) - (float)pt.y;
+                float speed = (std::max)(4.0f, over * 0.5f);
+                scrollbar_.ScrollBy(-speed);
+                state_.scrollOffsetY = scrollbar_.GetScrollOffset();
+                needsRedraw = true;
+            }
+            else if (pt.y > (int)state_.bottomEdge - 2)
+            {
+                float over = (float)pt.y - ((float)state_.bottomEdge - 2.0f);
+                float speed = (std::max)(4.0f, over * 0.5f);
+                scrollbar_.ScrollBy(speed);
+                state_.scrollOffsetY = scrollbar_.GetScrollOffset();
+                needsRedraw = true;
+            }
+
+            int visibleCount = GetVisibleLineCount();
+            if (visibleCount > 0)
+            {
+                int visibleLine = (int)(((float)pt.y - state_.topEdge + state_.scrollOffsetY) / metrics_.lineHeight);
+                visibleLine = (std::max)(0, (std::min)(visibleCount - 1, visibleLine));
+                int actualLine = VisibleLineToActualLine(visibleLine);
+                actualLine = (std::max)(0, (std::min)((int)state_.lines.size() - 1, actualLine));
+
+                if (actualLine != gutterLineDragLastLine_)
+                {
+                    gutterLineDragLastLine_ = actualLine;
+                    gutterLineDragMoved_ = true;
+                    needsRedraw = true;
+                }
+
+                int first = (std::min)(gutterLineDragAnchorLine_, actualLine);
+                int last = (std::max)(gutterLineDragAnchorLine_, actualLine);
+                CaretPosition newStart = {first, 0};
+                CaretPosition newCaret = {last, (int)state_.lines[(size_t)last].size()};
+
+                if (!state_.hasSelection ||
+                    state_.selectionStart.line != newStart.line ||
+                    state_.selectionStart.column != newStart.column ||
+                    state_.caret.line != newCaret.line ||
+                    state_.caret.column != newCaret.column)
+                {
+                    state_.selectionStart = newStart;
+                    state_.caret = newCaret;
+                    state_.hasSelection = true;
+                    state_.caretVisible = true;
+                    state_.lastBlinkTime = GetTickCount();
+                    needsRedraw = true;
+                }
+            }
+
+            if (needsRedraw)
+                InvalidateRect(hwnd, nullptr, FALSE);
+            return;
+        }
+
+        // Fold gutter hover detection (for fold chevrons and click target feedback)
+        int prevGutterHover = gutterHoverLine_;
+        gutterHoverLine_ = -1;
+        bool inVerticalRange = !(pt.y < state_.topEdge || pt.y > state_.bottomEdge);
+        bool isInGutterArea = inVerticalRange &&
+                              pt.x >= (int)state_.leftEdge &&
+                              pt.x <= (int)(state_.leftEdge + metrics_.gutterWidth);
+        if (isInGutterArea && metrics_.lineHeight > 0.0f)
+        {
+            int visibleLine = (int)(((float)pt.y - state_.topEdge + state_.scrollOffsetY) / metrics_.lineHeight);
+            if (visibleLine >= 0 && visibleLine < GetVisibleLineCount())
+            {
+                int actualLine = VisibleLineToActualLine(visibleLine);
+                int collapsedEnd = -1;
+                bool isCollapsed = IsCollapsedFoldStart(actualLine, &collapsedEnd);
+                int foldEnd = isCollapsed ? collapsedEnd : FindFoldEndLineForStart(actualLine);
+                if (foldEnd > actualLine)
+                    gutterHoverLine_ = actualLine;
+            }
+        }
+        if (prevGutterHover != gutterHoverLine_)
+            InvalidateRect(hwnd, nullptr, FALSE);
+
         // editor area check
         float contentLeft = state_.leftEdge + metrics_.gutterWidth + metrics_.leftPadding;
         bool isInEditorArea = !(pt.x < contentLeft || pt.x > state_.rightEdge || pt.y < state_.topEdge || pt.y > state_.bottomEdge);
 
-        if (!isInEditorArea && !(GetAsyncKeyState(VK_LBUTTON) & 0x8000))
+        if (!isInEditorArea && !isInGutterArea && !leftButtonDown)
             return;
 
-        if (GetAsyncKeyState(VK_LBUTTON) & 0x8000)
+        if (leftButtonDown)
         {
             if (!dragSelecting_)
             {
@@ -1032,6 +1182,18 @@ namespace Orion
         (void)hwnd;
         (void)pt;
 
+        if (gutterLineDragSelecting_)
+        {
+            gutterLineDragSelecting_ = false;
+            gutterLineDragMoved_ = false;
+            gutterLineDragAnchorLine_ = -1;
+            gutterLineDragLastLine_ = -1;
+
+            if (GetCapture() == hwnd)
+                ReleaseCapture();
+            return;
+        }
+
         dragSelecting_ = false;
 
         if (scrollbar_.OnLeftButtonUp())
@@ -1153,8 +1315,12 @@ namespace Orion
         state_.caretVisible = true;
         state_.lastBlinkTime = GetTickCount();
         dragSelecting_ = false;
+        bool releaseCapture = gitSplitDividerDragging_ || gutterLineDragSelecting_;
+        gutterLineDragSelecting_ = false;
+        gutterLineDragMoved_ = false;
+        gutterLineDragAnchorLine_ = -1;
+        gutterLineDragLastLine_ = -1;
         secondaryCarets_.clear();
-        bool releaseCapture = gitSplitDividerDragging_;
         gitSplitDividerDragging_ = false;
 
         if (scrollbar_.IsDragging())

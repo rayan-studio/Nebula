@@ -662,15 +662,11 @@ namespace Orion
         for (int v = firstVisible; v < lastVisible; ++v)
         {
             int line = VisibleLineToActualLine(v);
+            if (line != gutterHoverLine_)
+                continue;
             int collapsedEnd = -1;
             bool isCollapsed = IsCollapsedFoldStart(line, &collapsedEnd);
-
-            int foldEnd = isCollapsed ? collapsedEnd : -1;
-            bool isHoverLine = (line == gutterHoverLine_);
-            if (!isCollapsed && isHoverLine)
-            {
-                foldEnd = FindFoldEndLineForStart(line);
-            }
+            int foldEnd = isCollapsed ? collapsedEnd : FindFoldEndLineForStart(line);
 
             if (foldEnd <= line)
                 continue;

@@ -269,6 +269,17 @@ GitPanel::GitPanel()
 
 GitPanel::~GitPanel()
 {
+    if (quickChevronRightBmp_)
+    {
+        quickChevronRightBmp_->Release();
+        quickChevronRightBmp_ = nullptr;
+    }
+    if (quickChevronUpBmp_)
+    {
+        quickChevronUpBmp_->Release();
+        quickChevronUpBmp_ = nullptr;
+    }
+
     std::lock_guard<std::mutex> lock(g_libgit2Mutex);
     if (libgit2Ready_ && g_libgit2RefCount > 0)
     {
@@ -382,6 +393,8 @@ void GitPanel::UpdateLayout(HWND hwnd)
         quickActionHoveredIndex_ = -1;
     }
     y += inputH + gap;
+    if (showQuickActions && quickActionMenuOpen_)
+        y += (quickActionMenuRect_.bottom - quickActionMenuRect_.top) + 4.0f;
 
     authStatusRect_ = D2D1::RectF(0, 0, 0, 0);
     if (!lastError_.empty())
@@ -445,50 +458,37 @@ void GitPanel::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
 
     DrawChanges(ctx, dwrite, hwnd);
     changesScrollbar_.Draw(ctx);
-    DrawQuickActions(ctx, dwrite);
+    DrawQuickActions(ctx, dwrite, hwnd);
 
     Panel::DrawRightBorder(ctx);
     ctx->PopAxisAlignedClip();
 
 }
 
-void GitPanel::DrawQuickActions(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
+void GitPanel::DrawQuickActions(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
 {
     if (quickActionPrimaryRect_.right <= quickActionPrimaryRect_.left ||
         quickActionToggleRect_.right <= quickActionToggleRect_.left)
         return;
 
-    ID2D1SolidColorBrush *primaryBrush = nullptr;
-    ID2D1SolidColorBrush *toggleBrush = nullptr;
-    ID2D1SolidColorBrush *menuBrush = nullptr;
-    ID2D1SolidColorBrush *menuHoverBrush = nullptr;
-    ID2D1SolidColorBrush *menuSelectedBrush = nullptr;
-    ID2D1SolidColorBrush *borderBrush = nullptr;
-    ID2D1SolidColorBrush *textBrush = nullptr;
-    ID2D1SolidColorBrush *chevronBrush = nullptr;
-
-    ctx->CreateSolidColorBrush(quickActionPrimaryHovered_ ? D2D1::ColorF(0.24f, 0.53f, 0.92f, 0.96f)
-                                                           : D2D1::ColorF(0.20f, 0.46f, 0.82f, 0.90f),
-                               &primaryBrush);
-    ctx->CreateSolidColorBrush(quickActionToggleHovered_ ? D2D1::ColorF(0.22f, 0.48f, 0.85f, 0.96f)
-                                                          : D2D1::ColorF(0.18f, 0.42f, 0.75f, 0.90f),
-                               &toggleBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.10f, 0.10f), &menuBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.17f, 0.17f, 0.17f), &menuHoverBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.45f, 0.80f, 0.26f), &menuSelectedBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.24f, 0.24f), &borderBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.95f, 0.95f), &textBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.90f, 0.90f), &chevronBrush);
-
-    if (primaryBrush)
-        ctx->FillRoundedRectangle(D2D1::RoundedRect(quickActionPrimaryRect_, 6.0f, 6.0f), primaryBrush);
-    if (toggleBrush)
-        ctx->FillRoundedRectangle(D2D1::RoundedRect(quickActionToggleRect_, 6.0f, 6.0f), toggleBrush);
-    if (borderBrush)
+    UINT dpi = win32_get_dpi_for_window(hwnd);
+    float iconPx = (float)win32_dpi_scale(12, dpi);
+    if (!quickChevronRightBmp_)
     {
-        ctx->DrawRoundedRectangle(D2D1::RoundedRect(quickActionPrimaryRect_, 6.0f, 6.0f), borderBrush, 1.0f);
-        ctx->DrawRoundedRectangle(D2D1::RoundedRect(quickActionToggleRect_, 6.0f, 6.0f), borderBrush, 1.0f);
+        quickChevronRightBmp_ = GetExplorerManager().LoadSvgIconPublic(
+            ctx, "assets\\ressource\\icons\\chevron-right.svg", (int)iconPx, dpi);
     }
+    if (!quickChevronUpBmp_)
+    {
+        quickChevronUpBmp_ = GetExplorerManager().LoadSvgIconPublic(
+            ctx, "assets\\ressource\\icons\\chevron-up.svg", (int)iconPx, dpi);
+    }
+
+    ID2D1SolidColorBrush *textBrush = nullptr;
+    ID2D1SolidColorBrush *hoverBrush = nullptr;
+
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.86f, 0.86f, 0.86f), &textBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(30.0f / 255.0f, 30.0f / 255.0f, 30.0f / 255.0f, 1.0f), &hoverBrush);
 
     IDWriteTextFormat *buttonFmt = nullptr;
     IDWriteTextFormat *menuFmt = nullptr;
@@ -499,7 +499,7 @@ void GitPanel::DrawQuickActions(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
 
     if (buttonFmt)
     {
-        buttonFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        buttonFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         buttonFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         buttonFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
@@ -510,43 +510,78 @@ void GitPanel::DrawQuickActions(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
         menuFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
+    auto fillHoverRect = [&](const D2D1_RECT_F &rect)
+    {
+        if (!hoverBrush)
+            return;
+        D2D1_RECT_F rr = D2D1::RectF(std::round(rect.left), std::round(rect.top), std::round(rect.right), std::round(rect.bottom));
+        D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
+        ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        ctx->FillRoundedRectangle(D2D1::RoundedRect(rr, 4.0f, 4.0f), hoverBrush);
+        ctx->SetAntialiasMode(oldAA);
+    };
+
+    if (quickActionPrimaryHovered_)
+        fillHoverRect(quickActionPrimaryRect_);
+    if (quickActionToggleHovered_)
+        fillHoverRect(quickActionToggleRect_);
+
     if (buttonFmt && textBrush)
     {
         const wchar_t *label = GetQuickActionLabel(quickActionPrimaryIndex_);
-        ctx->DrawTextW(label, (UINT32)wcslen(label), buttonFmt, quickActionPrimaryRect_, textBrush);
+        D2D1_RECT_F textRect = D2D1::RectF(
+            std::round(quickActionPrimaryRect_.left + 8.0f),
+            std::round(quickActionPrimaryRect_.top),
+            std::round(quickActionPrimaryRect_.right - 6.0f),
+            std::round(quickActionPrimaryRect_.bottom));
+        ctx->DrawTextW(label, (UINT32)wcslen(label), buttonFmt, textRect, textBrush);
     }
-    if (buttonFmt && chevronBrush)
+
+    ID2D1Bitmap *chevronBmp = quickActionMenuOpen_ ? quickChevronUpBmp_ : quickChevronRightBmp_;
+    if (chevronBmp)
     {
-        const wchar_t *chevron = L"\u25BE";
-        ctx->DrawTextW(chevron, 1, buttonFmt, quickActionToggleRect_, chevronBrush);
+        float cx = std::round((quickActionToggleRect_.left + quickActionToggleRect_.right) * 0.5f);
+        float cy = std::round((quickActionToggleRect_.top + quickActionToggleRect_.bottom) * 0.5f);
+        D2D1_RECT_F dst = D2D1::RectF(
+            std::round(cx - iconPx * 0.5f),
+            std::round(cy - iconPx * 0.5f),
+            std::round(cx + iconPx * 0.5f),
+            std::round(cy + iconPx * 0.5f));
+        D2D1_MATRIX_3X2_F oldTransform;
+        ctx->GetTransform(&oldTransform);
+        if (!quickActionMenuOpen_)
+        {
+            D2D1_MATRIX_3X2_F rotation = D2D1::Matrix3x2F::Rotation(90.0f, D2D1::Point2F(cx, cy));
+            ctx->SetTransform(rotation * oldTransform);
+        }
+        ctx->DrawBitmap(chevronBmp, dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+        if (!quickActionMenuOpen_)
+            ctx->SetTransform(oldTransform);
     }
 
     if (quickActionMenuOpen_ &&
         quickActionMenuRect_.right > quickActionMenuRect_.left &&
         quickActionMenuRect_.bottom > quickActionMenuRect_.top)
     {
-        if (menuBrush)
-            ctx->FillRoundedRectangle(D2D1::RoundedRect(quickActionMenuRect_, 6.0f, 6.0f), menuBrush);
-        if (borderBrush)
-            ctx->DrawRoundedRectangle(D2D1::RoundedRect(quickActionMenuRect_, 6.0f, 6.0f), borderBrush, 1.0f);
-
         const float rowH = (quickActionMenuRect_.bottom - quickActionMenuRect_.top) / 4.0f;
         for (int i = 0; i < 4; ++i)
         {
             D2D1_RECT_F rowRect = D2D1::RectF(
-                quickActionMenuRect_.left,
-                quickActionMenuRect_.top + rowH * (float)i,
-                quickActionMenuRect_.right,
-                quickActionMenuRect_.top + rowH * (float)(i + 1));
+                std::round(quickActionMenuRect_.left),
+                std::round(quickActionMenuRect_.top + rowH * (float)i),
+                std::round(quickActionMenuRect_.right),
+                std::round(quickActionMenuRect_.top + rowH * (float)(i + 1)));
 
-            if (i == quickActionPrimaryIndex_ && menuSelectedBrush)
-                ctx->FillRectangle(rowRect, menuSelectedBrush);
-            if (i == quickActionHoveredIndex_ && menuHoverBrush)
-                ctx->FillRectangle(rowRect, menuHoverBrush);
+            if (i == quickActionHoveredIndex_)
+                fillHoverRect(rowRect);
 
             if (menuFmt && textBrush)
             {
-                D2D1_RECT_F textRect = D2D1::RectF(rowRect.left + 10.0f, rowRect.top, rowRect.right - 8.0f, rowRect.bottom);
+                D2D1_RECT_F textRect = D2D1::RectF(
+                    std::round(rowRect.left + 10.0f),
+                    rowRect.top,
+                    std::round(rowRect.right - 8.0f),
+                    rowRect.bottom);
                 const wchar_t *itemLabel = GetQuickActionLabel(i);
                 ctx->DrawTextW(itemLabel, (UINT32)wcslen(itemLabel), menuFmt, textRect, textBrush);
             }
@@ -557,22 +592,10 @@ void GitPanel::DrawQuickActions(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
         buttonFmt->Release();
     if (menuFmt)
         menuFmt->Release();
-    if (primaryBrush)
-        primaryBrush->Release();
-    if (toggleBrush)
-        toggleBrush->Release();
-    if (menuBrush)
-        menuBrush->Release();
-    if (menuHoverBrush)
-        menuHoverBrush->Release();
-    if (menuSelectedBrush)
-        menuSelectedBrush->Release();
-    if (borderBrush)
-        borderBrush->Release();
     if (textBrush)
         textBrush->Release();
-    if (chevronBrush)
-        chevronBrush->Release();
+    if (hoverBrush)
+        hoverBrush->Release();
 }
 
 void GitPanel::DrawChanges(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)

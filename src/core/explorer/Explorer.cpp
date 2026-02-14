@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <mutex>
 #include "helpers/window_helpers.h"
+#include "helpers/path_helpers.h"
 #include <filesystem>
 #include <algorithm>
 #include <fstream>
@@ -140,11 +141,35 @@ static std::string ReadFileToString(const std::wstring &wpath) {
     return ss.str();
 }
 
+static std::filesystem::path ResolveAssetLikePath(const std::string &rawPath)
+{
+    if (rawPath.empty())
+        return {};
+
+    std::filesystem::path p = std::filesystem::u8path(rawPath).lexically_normal();
+    if (p.is_absolute())
+        return p;
+
+    std::string generic = p.generic_string();
+    std::string lower = generic;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return (char)std::tolower(c); });
+
+    const std::string assetsPrefix = "assets/";
+    if (lower.rfind(assetsPrefix, 0) == 0)
+    {
+        std::filesystem::path rel = std::filesystem::u8path(generic.substr(assetsPrefix.size()));
+        return NebulaAssetPath(rel);
+    }
+
+    return p;
+}
+
 static void InvalidateMainWindow();
 
 static void LoadIconMapBlocking()
 {
-    std::wstring jsonPath = L"assets\\ressource\\material-icons.json";
+    std::wstring jsonPath = NebulaAssetPath(L"ressource\\material-icons.json").wstring();
     std::string content = ReadFileToString(jsonPath);
     std::unordered_map<std::string, std::string> local;
     std::unordered_map<std::string, std::string> folderNames;
@@ -374,7 +399,12 @@ static ID2D1Bitmap *LoadSvgIcon(ID2D1RenderTarget *ctx, const std::string &iconP
     if (iconPath.empty())
         return nullptr;
 
-    NSVGimage *image = nsvgParseFromFile(iconPath.c_str(), "px", 96.0f);
+    std::filesystem::path resolvedPath = ResolveAssetLikePath(iconPath);
+    std::string svgPath = resolvedPath.empty() ? iconPath : WideToUtf8(resolvedPath.wstring());
+    if (svgPath.empty())
+        svgPath = iconPath;
+
+    NSVGimage *image = nsvgParseFromFile(svgPath.c_str(), "px", 96.0f);
     if (!image)
         return nullptr;
 

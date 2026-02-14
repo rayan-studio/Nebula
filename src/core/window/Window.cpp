@@ -49,6 +49,7 @@
 #include "ui/layout/ExplorerLayoutState.h"
 #include "lsp/LspManager.h"
 #include "core/window/OpenFileRequest.h"
+#include "utils/update/UpdateService.h"
 
 static void EnableMicaIfAvailable(HWND hwnd)
 {
@@ -556,6 +557,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         InitializePanelSystem();
         // Initialize keyboard manager when HWND is available
         keyboard_.Init(this);
+        UpdateService::EnsureInitialized();
+        lastUpdateStateSnapshot_ = static_cast<int>(UpdateService::GetState());
+        lastUpdateStatusMessage_ = UpdateService::GetStatusMessage();
         bool openedFromArgs = HandleCommandLineArgs();
 
         // If no project yet and nothing opened from args, prompt for project creation
@@ -603,8 +607,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         {
             RECT rc;
             GetWindowRect(hwnd_, &rc);
-            int width = 520;
-            int height = 220;
+            UINT dpi = win32_get_dpi_for_window(hwnd_);
+            int width = win32_dpi_scale(520, dpi);
+            int height = win32_dpi_scale(220, dpi);
             int x = rc.left + (rc.right - rc.left - width) / 2;
             int y = rc.top + (rc.bottom - rc.top - height) / 3;
             size_t split = title->find(L'\n');
@@ -1093,6 +1098,19 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             }
         }
 
+        if (IsPointInUpdateToast(pt) && UpdateService::HasUpdateAvailable())
+        {
+            std::wstring err;
+            if (UpdateService::InstallUpdateAndRestart(err))
+            {
+                Footer_SetHint(hwnd_, L"Mise a jour en cours... redemarrage automatique", 2600);
+                PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+            }
+            else
+                Footer_SetHint(hwnd_, err.empty() ? L"Impossible d'ouvrir le setup." : err, 2600);
+            return 0;
+        }
+
         // Global Input overlay removed; clicks always propagate to Explorer/editor.
 
         // Prioritize panel resize zone over explorer hit (prevents dead resize area)
@@ -1421,6 +1439,29 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
         }
+
+        Orion::Editor *editor = GetEditor();
+        if (editor && editor->IsPointInEditorBounds(pt))
+        {
+            if (GetPanelManager().IsPanelActive(PanelId::Search))
+            {
+                SearchPanel *searchPanel = GetPanelManager().GetPanelAs<SearchPanel>(PanelId::Search);
+                if (searchPanel && searchPanel->IsInputFocused())
+                    searchPanel->UnfocusInput();
+            }
+            if (GetPanelManager().IsPanelActive(PanelId::Git))
+            {
+                GitPanel *gitPanel = GetPanelManager().GetPanelAs<GitPanel>(PanelId::Git);
+                if (gitPanel && gitPanel->IsInputFocused())
+                    gitPanel->UnfocusInputs();
+            }
+
+            GetTerminalPanel().Unfocus();
+            editor->OnLeftButtonDown(hwnd_, pt);
+            SetCapture(hwnd_);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
         return DefWindowProc(hwnd_, uMsg, wParam, lParam);
     }
     case WM_CHAR:
@@ -1604,6 +1645,9 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             RECT tabRect = GetTabBarRectClient();
             InvalidateRect(hwnd_, &tabRect, FALSE); // not throttled for hover
         }
+
+        if (SetUpdateToastHovered(IsPointInUpdateToast(pt)))
+            ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
 
         // If we're inside the tabbar -> consume the event here
         RECT tabRect = GetTabBarRectClient();
@@ -2069,6 +2113,16 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 InvalidateRect(hwnd_, nullptr, FALSE);
             }
 
+            const int currentUpdateState = static_cast<int>(UpdateService::GetState());
+            const std::wstring currentUpdateMessage = UpdateService::GetStatusMessage();
+            if (currentUpdateState != lastUpdateStateSnapshot_ ||
+                currentUpdateMessage != lastUpdateStatusMessage_)
+            {
+                lastUpdateStateSnapshot_ = currentUpdateState;
+                lastUpdateStatusMessage_ = currentUpdateMessage;
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+
             // Poll external file modifications and auto-reload clean tabs.
             DWORD now = GetTickCount();
             if (now - lastExternalFileCheckTick_ >= 500)
@@ -2198,6 +2252,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                         return 0;
                     }
                 }
+                  case 50: // Deplacer vers fonction (selection lignes via gouttiere)
+                  {
+                      if (editor->MoveSelectionToFunction())
+                      {
+                          InvalidateRect(hwnd_, nullptr, FALSE);
+                          return 0;
+                      }
+                      break;
+                  }
                 break;
                 }
             }
@@ -2637,6 +2700,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             GetCursorPos(&pt);
             ScreenToClient(hwnd_, &pt);
 
+            if (IsPointInUpdateToast(pt) && UpdateService::HasUpdateAvailable())
+            {
+                SetCursor(LoadCursor(NULL, IDC_HAND));
+                return TRUE;
+            }
+
             // Check active panel for cursor
             Panel *panelCursor = GetPanelManager().GetActivePanel();
             if (panelCursor && panelCursor->IsVisible())
@@ -2854,10 +2923,38 @@ void Window::ClearAllHoverStates()
         GetExplorerManager().ClearHover(hwnd_);
     GetPanelManager().ClearResizeHover(hwnd_);
     Footer_ClearHover(hwnd_);
+    updateToastHovered_ = false;
     StartTitlebarHoverAnimation();
 
     // tabbar hover se clear ailleurs (WM_MOUSELEAVE / sortie tabbar)
     ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void Window::SetUpdateToastRect(const D2D1_RECT_F &rect)
+{
+    updateToastRect_ = rect;
+}
+
+void Window::ClearUpdateToastRect()
+{
+    updateToastRect_ = D2D1::RectF(0, 0, 0, 0);
+    updateToastHovered_ = false;
+}
+
+bool Window::IsPointInUpdateToast(POINT pt) const
+{
+    if (updateToastRect_.right <= updateToastRect_.left || updateToastRect_.bottom <= updateToastRect_.top)
+        return false;
+    return pt.x >= updateToastRect_.left && pt.x <= updateToastRect_.right &&
+           pt.y >= updateToastRect_.top && pt.y <= updateToastRect_.bottom;
+}
+
+bool Window::SetUpdateToastHovered(bool hovered)
+{
+    if (updateToastHovered_ == hovered)
+        return false;
+    updateToastHovered_ = hovered;
+    return true;
 }
 
 RECT Window::GetTabBarRectClient() const

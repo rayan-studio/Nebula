@@ -775,6 +775,84 @@ namespace
         return bmp;
     }
 
+    std::string ToLowerAscii(std::string s)
+    {
+        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c)
+                       { return (char)std::tolower(c); });
+        return s;
+    }
+
+    bool SvgHasRoundedCornersHint(const std::wstring &path)
+    {
+        static std::unordered_map<std::wstring, bool> cache;
+        auto it = cache.find(path);
+        if (it != cache.end())
+            return it->second;
+
+        bool hint = false;
+        std::string u8 = WideToUtf8(path);
+        if (!u8.empty())
+        {
+            std::ifstream file(u8, std::ios::binary);
+            if (file)
+            {
+                std::string data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+                std::string lower = ToLowerAscii(data);
+                hint = lower.find("<mask") != std::string::npos ||
+                       lower.find("<clippath") != std::string::npos ||
+                       lower.find(" rx=") != std::string::npos ||
+                       lower.find(" ry=") != std::string::npos;
+            }
+        }
+
+        cache[path] = hint;
+        return hint;
+    }
+
+    void ApplyRoundedAlphaMask(std::vector<unsigned char> &rgba, int w, int h, float radius)
+    {
+        if (rgba.empty() || w <= 0 || h <= 0 || radius <= 0.0f)
+            return;
+
+        float maxR = (std::min)(w, h) * 0.5f;
+        float r = (std::max)(1.0f, (std::min)(radius, maxR));
+        float r2 = r * r;
+        float leftCx = r - 1.0f;
+        float rightCx = (float)w - r;
+        float topCy = r - 1.0f;
+        float bottomCy = (float)h - r;
+
+        for (int y = 0; y < h; ++y)
+        {
+            for (int x = 0; x < w; ++x)
+            {
+                bool inLeft = x < r;
+                bool inRight = x >= (w - r);
+                bool inTop = y < r;
+                bool inBottom = y >= (h - r);
+                if ((!inLeft && !inRight) || (!inTop && !inBottom))
+                    continue;
+
+                float cx = inLeft ? leftCx : rightCx;
+                float cy = inTop ? topCy : bottomCy;
+                float dx = (float)x - cx;
+                float dy = (float)y - cy;
+                float d2 = dx * dx + dy * dy;
+                if (d2 <= r2)
+                    continue;
+
+                size_t idx = ((size_t)y * (size_t)w + (size_t)x) * 4u;
+                unsigned char &a = rgba[idx + 3];
+                if (a == 0)
+                    continue;
+
+                float d = std::sqrt(d2);
+                float coverage = (std::max)(0.0f, (std::min)(1.0f, r + 0.75f - d));
+                a = (unsigned char)(a * coverage + 0.5f);
+            }
+        }
+    }
+
     ID2D1Bitmap *LoadSvgToD2DBitmap(ID2D1RenderTarget *ctx, const std::wstring &path, float desiredW, float desiredH)
     {
         if (!ctx || path.empty())
@@ -815,6 +893,13 @@ namespace
         float ty = (scaledH - image->height * scale) * 0.5f;
 
         nsvgRasterize(rast, image, tx, ty, scale, buffer.data(), scaledW, scaledH, scaledW * 4);
+
+        // NanoSVG ignores some masking/clip features; apply a rounded fallback for common badge-style SVGs.
+        if (SvgHasRoundedCornersHint(path))
+        {
+            float radiusPx = (std::max)(2.0f, targetH * 0.16f) * (float)oversample;
+            ApplyRoundedAlphaMask(buffer, scaledW, scaledH, radiusPx);
+        }
 
         ID2D1Bitmap *bmp = CreateBitmapFromRGBA(ctx, buffer.data(), scaledW, scaledH, 96.0f * (float)oversample);
 
@@ -1438,20 +1523,77 @@ namespace
                 std::wstring t = Trim(raw);
                 if (!t.empty() && t[0] == L'>')
                 {
-                    size_t pos = t.find_first_not_of(L"> ");
-                    std::wstring quoteText = (pos == std::wstring::npos ? L"" : t.substr(pos));
                     flushText();
+                    std::wstring quoteText;
+                    std::vector<MarkdownInlineImage> quoteInlineImages;
+
+                    auto appendQuoteLine = [&](const std::wstring &line, std::vector<MarkdownInlineImage> &lineInlineImages)
+                    {
+                        std::wstring lineTrimmed = Trim(line);
+                        size_t pos = lineTrimmed.find_first_not_of(L"> ");
+                        std::wstring lineText = (pos == std::wstring::npos ? L"" : lineTrimmed.substr(pos));
+                        if (!quoteText.empty())
+                            quoteText.push_back(L'\n');
+                        quoteText.append(lineText);
+                        if (!lineInlineImages.empty())
+                        {
+                            quoteInlineImages.insert(quoteInlineImages.end(),
+                                                     std::make_move_iterator(lineInlineImages.begin()),
+                                                     std::make_move_iterator(lineInlineImages.end()));
+                        }
+                    };
+
+                    appendQuoteLine(raw, inlineImages);
+
+                    while (li + 1 < lines.size())
+                    {
+                        std::wstring nextRaw = lines[li + 1];
+                        std::wstring nextTrim = Trim(nextRaw);
+                        if (nextTrim.empty() || nextTrim[0] != L'>')
+                            break;
+
+                        ++li;
+
+                        std::wstring nextImgPath;
+                        float nextImgW = 0.0f;
+                        float nextImgH = 0.0f;
+                        MarkdownImageAlign nextImgAlign = MarkdownImageAlign::Left;
+                        std::vector<MarkdownInlineImage> nextInlineImages;
+                        while (ExtractInlineMarkdownImage(nextRaw, nextImgPath, nextImgW, nextImgH, nextImgAlign))
+                        {
+                            MarkdownInlineImage img;
+                            img.path = ResolveImagePath(filePath, nextImgPath);
+                            if (img.path.empty())
+                            {
+                                nextRaw = Trim(nextRaw);
+                                if (nextRaw.empty())
+                                    break;
+                                continue;
+                            }
+                            img.width = nextImgW;
+                            img.height = nextImgH;
+                            img.align = nextImgAlign;
+                            nextInlineImages.push_back(std::move(img));
+                            nextRaw = Trim(nextRaw);
+                            if (nextRaw.empty())
+                                break;
+                        }
+
+                        nextRaw = StripMarkdownLinks(nextRaw);
+                        appendQuoteLine(nextRaw, nextInlineImages);
+                    }
+
                     MarkdownBlock quote;
                     quote.type = MarkdownBlock::Type::Text;
                     quote.isQuote = true;
                     ParseInline(quoteText, quote.text, quote.spans, baseSize, isHeading);
                     AddSpan(quote.spans, 0, (UINT32)quote.text.size(),
                             baseSize, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_ITALIC, false);
-                    if (!inlineImages.empty())
+                    if (!quoteInlineImages.empty())
                     {
                         quote.inlineImages.insert(quote.inlineImages.end(),
-                                                  std::make_move_iterator(inlineImages.begin()),
-                                                  std::make_move_iterator(inlineImages.end()));
+                                                  std::make_move_iterator(quoteInlineImages.begin()),
+                                                  std::make_move_iterator(quoteInlineImages.end()));
                     }
                     outBlocks.push_back(std::move(quote));
                     continue;
@@ -1681,15 +1823,41 @@ namespace Orion
         if (previewMode_ == PreviewMode::Markdown)
         {
             D2D1_RECT_F contentRect = D2D1::RectF(
-                state_.leftEdge + 16.0f,
-                state_.topEdge + 12.0f,
-                state_.rightEdge - 16.0f,
-                state_.bottomEdge - 12.0f);
+                state_.leftEdge + 24.0f,
+                state_.topEdge + 18.0f,
+                state_.rightEdge - 24.0f,
+                state_.bottomEdge - 18.0f);
 
             float availableW = contentRect.right - contentRect.left;
             float availableH = contentRect.bottom - contentRect.top;
             if (availableW < 10.0f || availableH < 10.0f)
                 return;
+
+            const float maxReadableWidth = 980.0f;
+            if (availableW > maxReadableWidth)
+            {
+                float inset = (availableW - maxReadableWidth) * 0.5f;
+                contentRect.left += inset;
+                contentRect.right -= inset;
+                availableW = contentRect.right - contentRect.left;
+            }
+
+            const float kFloatGap = 10.0f;
+            const float kImageGap = 16.0f;
+            const float kRuleGap = 18.0f;
+            const float kTableGap = 16.0f;
+            const float kQuotePaddingY = 8.0f;
+            const float kHeadingRuleExtra = 8.0f;
+            auto TextBlockGap = [](const MarkdownBlock &blk) -> float
+            {
+                if (blk.isQuote)
+                    return 16.0f;
+                if (blk.headingLevel == 1)
+                    return 18.0f;
+                if (blk.headingLevel == 2)
+                    return 14.0f;
+                return 12.0f;
+            };
 
             if (previewMarkdownBlocks_.empty())
                 BuildMarkdownBlocks(state_.lines, state_.filePath, previewMarkdownBlocks_);
@@ -1719,7 +1887,7 @@ namespace Orion
                             DWRITE_FONT_WEIGHT_NORMAL,
                             DWRITE_FONT_STYLE_NORMAL,
                             DWRITE_FONT_STRETCH_NORMAL,
-                            14.0f,
+                            15.0f,
                             L"en-us",
                             &format)))
                     {
@@ -1821,13 +1989,13 @@ namespace Orion
 
                     if (measurePendingFloat)
                     {
-                        totalHeight += measurePendingFloatHeight + 8.0f;
+                        totalHeight += measurePendingFloatHeight + kFloatGap;
                         measurePendingFloat = false;
                         measurePendingFloatWidth = 0.0f;
                         measurePendingFloatHeight = 0.0f;
                     }
 
-                    totalHeight += drawH + 12.0f;
+                    totalHeight += drawH + kImageGap;
                     continue;
                 }
 
@@ -1870,12 +2038,14 @@ namespace Orion
                         }
                         h = (std::max)(h, maxImgH);
                     }
-                    if (blk.headingLevel > 0 && blk.headingLevel <= 2)
-                        h += 8.0f;
-                    float advance = h + 8.0f;
+                    if (blk.isQuote)
+                        h += kQuotePaddingY * 2.0f;
+                    if (blk.headingLevel == 1)
+                        h += kHeadingRuleExtra;
+                    float advance = h + TextBlockGap(blk);
                     if (measurePendingFloat)
                     {
-                        advance = (std::max)(advance, measurePendingFloatHeight + 8.0f);
+                        advance = (std::max)(advance, measurePendingFloatHeight + kFloatGap);
                         measurePendingFloat = false;
                         measurePendingFloatWidth = 0.0f;
                         measurePendingFloatHeight = 0.0f;
@@ -1884,10 +2054,10 @@ namespace Orion
                 }
                 else if (blk.type == MarkdownBlock::Type::Rule)
                 {
-                    float advance = 12.0f;
+                    float advance = kRuleGap;
                     if (measurePendingFloat)
                     {
-                        advance = (std::max)(advance, measurePendingFloatHeight + 8.0f);
+                        advance = (std::max)(advance, measurePendingFloatHeight + kFloatGap);
                         measurePendingFloat = false;
                         measurePendingFloatWidth = 0.0f;
                         measurePendingFloatHeight = 0.0f;
@@ -1898,10 +2068,10 @@ namespace Orion
                 {
                     float rowH = 24.0f;
                     float rows = (float)blk.tableRows.size();
-                    float advance = rows * rowH + 16.0f;
+                    float advance = rows * rowH + kTableGap;
                     if (measurePendingFloat)
                     {
-                        advance = (std::max)(advance, measurePendingFloatHeight + 8.0f);
+                        advance = (std::max)(advance, measurePendingFloatHeight + kFloatGap);
                         measurePendingFloat = false;
                         measurePendingFloatWidth = 0.0f;
                         measurePendingFloatHeight = 0.0f;
@@ -1911,14 +2081,33 @@ namespace Orion
             }
 
             if (measurePendingFloat)
-                totalHeight += measurePendingFloatHeight + 8.0f;
+                totalHeight += measurePendingFloatHeight + kFloatGap;
 
-            float contentHeight = (std::max)(totalHeight + 8.0f, availableH);
-            scrollbar_.UpdateLayout(state_.leftEdge, state_.topEdge, state_.rightEdge - state_.leftEdge, state_.bottomEdge - state_.topEdge, contentHeight);
+            float contentHeight = (std::max)(totalHeight + kFloatGap, availableH);
+            scrollbar_.UpdateLayout(
+                state_.leftEdge,
+                contentRect.top,
+                state_.rightEdge - state_.leftEdge,
+                contentRect.bottom - contentRect.top,
+                contentHeight);
             state_.scrollOffsetY = scrollbar_.GetScrollOffset();
 
+            auto saturate = [](float v) -> float
+            {
+                return (std::max)(0.0f, (std::min)(1.0f, v));
+            };
+            D2D1_COLOR_F base = theme_.text;
+            D2D1_COLOR_F bodyColor = D2D1::ColorF(saturate(base.r + 0.02f), saturate(base.g + 0.02f), saturate(base.b + 0.02f), 0.96f);
+            D2D1_COLOR_F headingColor = D2D1::ColorF(saturate(base.r + 0.12f), saturate(base.g + 0.12f), saturate(base.b + 0.12f), 1.0f);
+
             ID2D1SolidColorBrush *textBrush = nullptr;
-            ctx->CreateSolidColorBrush(theme_.text, &textBrush);
+            ID2D1SolidColorBrush *headingBrush = nullptr;
+            ID2D1SolidColorBrush *ruleBrush = nullptr;
+            ID2D1SolidColorBrush *accentBrush = nullptr;
+            ctx->CreateSolidColorBrush(bodyColor, &textBrush);
+            ctx->CreateSolidColorBrush(headingColor, &headingBrush);
+            ctx->CreateSolidColorBrush(D2D1::ColorF(0.66f, 0.74f, 0.86f, 0.42f), &ruleBrush);
+            ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.62f, 1.0f, 0.95f), &accentBrush);
             if (!textBrush)
                 return;
 
@@ -1928,6 +2117,81 @@ namespace Orion
             float pendingFloatWidth = 0.0f;
             float pendingFloatHeight = 0.0f;
             MarkdownImageAlign pendingFloatAlign = MarkdownImageAlign::Right;
+            auto drawSvgTextOverlays = [&](const std::wstring &imagePath, float drawX, float drawY, float drawW, float drawH)
+            {
+                if (drawW <= 0.0f || drawH <= 0.0f)
+                    return;
+                std::wstring ext = ToLower(std::filesystem::path(imagePath).extension().wstring());
+                if (ext != L".svg")
+                    return;
+
+                auto itText = previewSvgTextCache_.find(imagePath);
+                auto itSize = previewSvgSizeCache_.find(imagePath);
+                if (itText == previewSvgTextCache_.end() || itSize == previewSvgSizeCache_.end())
+                {
+                    std::vector<MarkdownSvgText> texts;
+                    float svgW = 0.0f;
+                    float svgH = 0.0f;
+                    ParseSvgTextOverlays(imagePath, texts, svgW, svgH);
+                    previewSvgTextCache_[imagePath] = texts;
+                    previewSvgSizeCache_[imagePath] = D2D1::SizeF(svgW, svgH);
+                    itText = previewSvgTextCache_.find(imagePath);
+                    itSize = previewSvgSizeCache_.find(imagePath);
+                }
+
+                if (itText == previewSvgTextCache_.end() || itSize == previewSvgSizeCache_.end())
+                    return;
+
+                float svgW = itSize->second.width > 0.0f ? itSize->second.width : drawW;
+                float svgH = itSize->second.height > 0.0f ? itSize->second.height : drawH;
+                if (svgW <= 0.0f || svgH <= 0.0f)
+                    return;
+
+                float scaleX = drawW / svgW;
+                float scaleY = drawH / svgH;
+                for (const auto &txt : itText->second)
+                {
+                    float fontSize = txt.fontSize * scaleY;
+                    IDWriteTextFormat *fmt = nullptr;
+                    if (dwrite && SUCCEEDED(dwrite->CreateTextFormat(
+                            L"Segoe UI",
+                            nullptr,
+                            txt.weight,
+                            DWRITE_FONT_STYLE_NORMAL,
+                            DWRITE_FONT_STRETCH_NORMAL,
+                            fontSize,
+                            L"",
+                            &fmt)))
+                    {
+                        fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                        fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                        IDWriteTextLayout *layout = nullptr;
+                        std::wstring textW = txt.text;
+                        float maxW = drawW;
+                        float maxH = drawH;
+                        if (SUCCEEDED(dwrite->CreateTextLayout(textW.c_str(), (UINT32)textW.size(), fmt, maxW, maxH, &layout)))
+                        {
+                            DWRITE_TEXT_METRICS metrics = {};
+                            layout->GetMetrics(&metrics);
+                            float tx = drawX + txt.x * scaleX;
+                            if (txt.anchor == 1)
+                                tx -= metrics.width * 0.5f;
+                            else if (txt.anchor == 2)
+                                tx -= metrics.width;
+                            float ty = drawY + (txt.y * scaleY) - fontSize;
+                            ID2D1SolidColorBrush *svgBrush = nullptr;
+                            ctx->CreateSolidColorBrush(txt.color, &svgBrush);
+                            if (svgBrush)
+                            {
+                                ctx->DrawTextLayout(D2D1::Point2F(tx, ty), layout, svgBrush);
+                                svgBrush->Release();
+                            }
+                            layout->Release();
+                        }
+                        fmt->Release();
+                    }
+                }
+            };
             for (size_t i = 0; i < previewMarkdownBlocks_.size(); ++i)
             {
                 const auto &blk = previewMarkdownBlocks_[i];
@@ -1950,27 +2214,27 @@ namespace Orion
 
                         if (blk.isQuote)
                         {
-                            D2D1_RECT_F quoteRect = D2D1::RectF(localLeft, y, localRight, y + previewMarkdownMetrics_[i].height + 10.0f);
+                            D2D1_RECT_F quoteRect = D2D1::RectF(localLeft, y, localRight, y + previewMarkdownMetrics_[i].height + kQuotePaddingY * 2.0f);
                             ID2D1SolidColorBrush *quoteBg = nullptr;
                             ID2D1SolidColorBrush *quoteBar = nullptr;
-                            ctx->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.10f, 0.12f, 0.8f), &quoteBg);
-                            ctx->CreateSolidColorBrush(D2D1::ColorF(0.35f, 0.55f, 1.0f, 0.9f), &quoteBar);
+                            ctx->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.12f, 0.16f, 0.90f), &quoteBg);
+                            ctx->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.66f, 1.0f, 0.95f), &quoteBar);
                             if (quoteBg)
                             {
-                                ctx->FillRectangle(quoteRect, quoteBg);
+                                ctx->FillRoundedRectangle(D2D1::RoundedRect(quoteRect, 8.0f, 8.0f), quoteBg);
                                 quoteBg->Release();
                             }
                             if (quoteBar)
                             {
-                                D2D1_RECT_F bar = D2D1::RectF(quoteRect.left + 2.0f, quoteRect.top + 4.0f, quoteRect.left + 5.0f, quoteRect.bottom - 4.0f);
+                                D2D1_RECT_F bar = D2D1::RectF(quoteRect.left + 4.0f, quoteRect.top + 5.0f, quoteRect.left + 8.0f, quoteRect.bottom - 5.0f);
                                 ctx->FillRectangle(bar, quoteBar);
                                 quoteBar->Release();
                             }
-                            const float quoteTextX = localLeft + 10.0f;
-                            const float quoteTextY = y + 5.0f;
+                            const float quoteTextX = localLeft + 15.0f;
+                            const float quoteTextY = y + kQuotePaddingY;
                             ctx->DrawTextLayout(D2D1::Point2F(quoteTextX, quoteTextY), previewMarkdownLayouts_[i], textBrush);
 
-                            float blockH = previewMarkdownMetrics_[i].height + 10.0f;
+                            float blockH = previewMarkdownMetrics_[i].height + kQuotePaddingY * 2.0f;
                             if (!blk.inlineImages.empty())
                             {
                                 float maxImgH = 0.0f;
@@ -2028,17 +2292,27 @@ namespace Orion
                                     if (ix < xLeft)
                                         ix = xLeft;
 
-                                    D2D1_RECT_F rect = D2D1::RectF(ix, y, ix + iw, y + ih);
+                                    float iy = y;
+                                    if (hasText)
+                                    {
+                                        float lineH = previewMarkdownMetrics_[i].height;
+                                        float offsetY = (lineH > ih) ? (lineH - ih) * 0.5f : 0.0f;
+                                        iy = quoteTextY + offsetY;
+                                    }
+
+                                    D2D1_RECT_F rect = D2D1::RectF(ix, iy, ix + iw, iy + ih);
                                     ctx->DrawBitmap(bmp, rect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-                                    if (ih > maxImgH)
-                                        maxImgH = ih;
+                                    drawSvgTextOverlays(img.path, ix, iy, iw, ih);
+                                    float consumedH = (iy - y) + ih;
+                                    if (consumedH > maxImgH)
+                                        maxImgH = consumedH;
                                 }
                                 blockH = (std::max)(blockH, maxImgH);
                             }
-                            float advance = blockH + 12.0f;
+                            float advance = blockH + TextBlockGap(blk);
                             if (pendingFloat)
                             {
-                                advance = (std::max)(advance, pendingFloatHeight + 12.0f);
+                                advance = (std::max)(advance, pendingFloatHeight + kFloatGap);
                                 pendingFloat = false;
                                 pendingFloatWidth = 0.0f;
                                 pendingFloatHeight = 0.0f;
@@ -2047,7 +2321,8 @@ namespace Orion
                         }
                         else
                         {
-                            ctx->DrawTextLayout(D2D1::Point2F(localLeft, y), previewMarkdownLayouts_[i], textBrush);
+                            ID2D1SolidColorBrush *blockBrush = (blk.headingLevel > 0 && headingBrush) ? headingBrush : textBrush;
+                            ctx->DrawTextLayout(D2D1::Point2F(localLeft, y), previewMarkdownLayouts_[i], blockBrush);
                             float blockH = previewMarkdownMetrics_[i].height;
                             if (!blk.inlineImages.empty())
                             {
@@ -2096,26 +2371,42 @@ namespace Orion
                                             ix = xRight - iw;
                                         if (ix < xLeft)
                                             ix = xLeft;
-                                        D2D1_RECT_F rect = D2D1::RectF(ix, y, ix + iw, y + ih);
+                                        float iy = y;
+                                        if (hasText)
+                                        {
+                                            float lineH = previewMarkdownMetrics_[i].height;
+                                            float offsetY = (lineH > ih) ? (lineH - ih) * 0.5f : 0.0f;
+                                            iy = y + offsetY;
+                                        }
+                                        D2D1_RECT_F rect = D2D1::RectF(ix, iy, ix + iw, iy + ih);
                                         ctx->DrawBitmap(bmp, rect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-                                        if (ih > maxImgH)
-                                            maxImgH = ih;
+                                        drawSvgTextOverlays(img.path, ix, iy, iw, ih);
+                                        float consumedH = (iy - y) + ih;
+                                        if (consumedH > maxImgH)
+                                            maxImgH = consumedH;
                                     }
                                 }
                                 blockH = (std::max)(blockH, maxImgH);
                             }
-                            if (blk.headingLevel > 0 && blk.headingLevel <= 2)
+                            if (blk.headingLevel == 1)
                             {
                                 float ruleY = y + blockH + 2.0f;
                                 ctx->DrawLine(D2D1::Point2F(localLeft, ruleY),
                                               D2D1::Point2F(localRight, ruleY),
-                                              textBrush, 1.0f);
-                                blockH += 8.0f;
+                                              ruleBrush ? ruleBrush : textBrush, 1.0f);
+                                if (accentBrush)
+                                {
+                                    float accentRight = (std::min)(localRight, localLeft + 88.0f);
+                                    ctx->DrawLine(D2D1::Point2F(localLeft, ruleY),
+                                                  D2D1::Point2F(accentRight, ruleY),
+                                                  accentBrush, 2.0f);
+                                }
+                                blockH += kHeadingRuleExtra;
                             }
-                            float advance = blockH + 8.0f;
+                            float advance = blockH + TextBlockGap(blk);
                             if (pendingFloat)
                             {
-                                advance = (std::max)(advance, pendingFloatHeight + 8.0f);
+                                advance = (std::max)(advance, pendingFloatHeight + kFloatGap);
                                 pendingFloat = false;
                                 pendingFloatWidth = 0.0f;
                                 pendingFloatHeight = 0.0f;
@@ -2135,14 +2426,21 @@ namespace Orion
                         else
                             localRight -= pendingFloatWidth + 12.0f;
                     }
-                    float lineY = y + 6.0f;
+                    float lineY = y + kRuleGap * 0.5f;
                     ctx->DrawLine(D2D1::Point2F(localLeft, lineY),
                                   D2D1::Point2F(localRight, lineY),
-                                  textBrush, 1.0f);
-                    float advance = 12.0f;
+                                  ruleBrush ? ruleBrush : textBrush, 1.0f);
+                    if (accentBrush)
+                    {
+                        float accentRight = (std::min)(localRight, localLeft + 72.0f);
+                        ctx->DrawLine(D2D1::Point2F(localLeft, lineY),
+                                      D2D1::Point2F(accentRight, lineY),
+                                      accentBrush, 2.0f);
+                    }
+                    float advance = kRuleGap;
                     if (pendingFloat)
                     {
-                        advance = (std::max)(advance, pendingFloatHeight + 8.0f);
+                        advance = (std::max)(advance, pendingFloatHeight + kFloatGap);
                         pendingFloat = false;
                         pendingFloatWidth = 0.0f;
                         pendingFloatHeight = 0.0f;
@@ -2153,10 +2451,10 @@ namespace Orion
                 {
                     if (!dwrite || blk.tableRows.empty())
                     {
-                        float advance = 12.0f;
+                        float advance = kTableGap;
                         if (pendingFloat)
                         {
-                            advance = (std::max)(advance, pendingFloatHeight + 8.0f);
+                            advance = (std::max)(advance, pendingFloatHeight + kFloatGap);
                             pendingFloat = false;
                             pendingFloatWidth = 0.0f;
                             pendingFloatHeight = 0.0f;
@@ -2184,10 +2482,10 @@ namespace Orion
                         colCount = (std::max)(colCount, row.size());
                     if (colCount == 0)
                     {
-                        float advance = 12.0f;
+                        float advance = kTableGap;
                         if (pendingFloat)
                         {
-                            advance = (std::max)(advance, pendingFloatHeight + 8.0f);
+                            advance = (std::max)(advance, pendingFloatHeight + kFloatGap);
                             pendingFloat = false;
                             pendingFloatWidth = 0.0f;
                             pendingFloatHeight = 0.0f;
@@ -2247,8 +2545,10 @@ namespace Orion
 
                     ID2D1SolidColorBrush *gridBrush = nullptr;
                     ID2D1SolidColorBrush *headerBg = nullptr;
-                    ctx->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f), &gridBrush);
-                    ctx->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.14f, 0.9f), &headerBg);
+                    ID2D1SolidColorBrush *rowAltBg = nullptr;
+                    ctx->CreateSolidColorBrush(D2D1::ColorF(0.70f, 0.78f, 0.90f, 0.22f), &gridBrush);
+                    ctx->CreateSolidColorBrush(D2D1::ColorF(0.13f, 0.16f, 0.21f, 0.96f), &headerBg);
+                    ctx->CreateSolidColorBrush(D2D1::ColorF(0.11f, 0.13f, 0.17f, 0.58f), &rowAltBg);
 
                     float cy = y0;
                     for (size_t r = 0; r < rowCount; ++r)
@@ -2258,6 +2558,11 @@ namespace Orion
                         {
                             D2D1_RECT_F headerRect = D2D1::RectF(x0, cy, x0 + tableWidth, cy + rowH);
                             ctx->FillRectangle(headerRect, headerBg);
+                        }
+                        else if ((r % 2) == 1 && rowAltBg)
+                        {
+                            D2D1_RECT_F altRect = D2D1::RectF(x0, cy, x0 + tableWidth, cy + rowH);
+                            ctx->FillRectangle(altRect, rowAltBg);
                         }
 
                         float cx = x0;
@@ -2300,11 +2605,13 @@ namespace Orion
                         gridBrush->Release();
                     if (headerBg)
                         headerBg->Release();
+                    if (rowAltBg)
+                        rowAltBg->Release();
 
-                    float advance = (cy - y) + 12.0f;
+                    float advance = (cy - y) + kTableGap;
                     if (pendingFloat)
                     {
-                        advance = (std::max)(advance, pendingFloatHeight + 12.0f);
+                        advance = (std::max)(advance, pendingFloatHeight + kFloatGap);
                         pendingFloat = false;
                         pendingFloatWidth = 0.0f;
                         pendingFloatHeight = 0.0f;
@@ -2316,7 +2623,7 @@ namespace Orion
                     if (pendingFloat && !(blk.imageFloat &&
                                           (blk.imageAlign == MarkdownImageAlign::Right || blk.imageAlign == MarkdownImageAlign::Left)))
                     {
-                        y += pendingFloatHeight + 8.0f;
+                        y += pendingFloatHeight + kFloatGap;
                         pendingFloat = false;
                         pendingFloatWidth = 0.0f;
                         pendingFloatHeight = 0.0f;
@@ -2429,16 +2736,22 @@ namespace Orion
                         }
                         else
                         {
-                            y += h + 12.0f;
+                            y += h + kImageGap;
                         }
                     }
                 }
             }
             if (pendingFloat)
-                y += pendingFloatHeight + 8.0f;
+                y += pendingFloatHeight + kFloatGap;
             ctx->PopAxisAlignedClip();
 
             textBrush->Release();
+            if (headingBrush)
+                headingBrush->Release();
+            if (ruleBrush)
+                ruleBrush->Release();
+            if (accentBrush)
+                accentBrush->Release();
             scrollbar_.Draw(ctx);
             return;
         }

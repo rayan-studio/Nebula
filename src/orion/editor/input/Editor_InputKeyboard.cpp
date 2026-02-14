@@ -36,6 +36,26 @@ namespace Orion
                 return false;
             return true;
         }
+
+        bool IsCtrlSemicolonKey(WPARAM key, bool ctrl, bool alt, bool shift)
+        {
+            if (!ctrl || alt)
+                return false;
+
+            if (key == VK_OEM_1)
+                return true;
+            if ((key == VK_OEM_COMMA || key == VK_OEM_2) && shift)
+                return true;
+
+            BYTE keyState[256] = {};
+            if (shift)
+                keyState[VK_SHIFT] = 0x80;
+            HKL layout = GetKeyboardLayout(0);
+            UINT scanCode = MapVirtualKeyExW((UINT)key, MAPVK_VK_TO_VSC, layout);
+            wchar_t out[4] = {};
+            int rc = ToUnicodeEx((UINT)key, scanCode, keyState, out, 4, 0, layout);
+            return (rc == 1 && out[0] == L';');
+        }
     }
 
     // --- OnChar (complete) ---
@@ -854,9 +874,10 @@ namespace Orion
 
         bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
         bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        bool alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
 
         // Ctrl+; -> apply quick fix if available on caret
-        if (ctrl && !shift && key == VK_OEM_1)
+        if (IsCtrlSemicolonKey(key, ctrl, alt, shift))
         {
             auto diagnostics = GetDiagnostics();
             const Diagnostic *diag = nullptr;

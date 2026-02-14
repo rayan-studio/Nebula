@@ -134,6 +134,20 @@ The script will:
 * compile native code
 * produce the Nebula executable
 
+### Publish a release to AstraCode API
+
+Use the PowerShell helper:
+
+```powershell
+scripts\publish_release.ps1 `
+  -Version 1.2.3 `
+  -NoteVersion "Bug fixes and UI updates" `
+  -PortablePath "dist\Nebula-1.2.3-portable.exe" `
+  -SetupPath "dist\Nebula-1.2.3-setup.exe"
+```
+
+Auth cookie can be passed with `-Cookie` or via environment variable `ASTRACODE_ADMIN_COOKIE`.
+
 ---
 
 ## Project Structure

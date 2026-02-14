@@ -1,6 +1,8 @@
 #include "TitleBar.h"
 #include "helpers/window_helpers.h"
+#include "helpers/path_helpers.h"
 #include "utils/logger/Logger.h"
+#include "utils/auth/GitHubAuth.h"
 #include "core/window/Window.h"
 #include "core/explorer/Explorer.h"
 #include <windows.h>
@@ -8,6 +10,8 @@
 #include <algorithm>
 #include <unordered_map>
 #include <cmath>
+#include <filesystem>
+#include <cwctype>
 
 // Disable min/max macros from Windows headers
 #undef min
@@ -15,6 +19,11 @@
 
 // Cache global pour l'icône
 static ID2D1Bitmap *g_iconBitmap = nullptr;
+static ID2D1Bitmap *g_titlebarGitHubBitmap = nullptr;
+static ID2D1RenderTarget *g_titlebarGitHubCtx = nullptr;
+static bool g_titlebarGitHubConnected = false;
+static bool g_titlebarGitHubInit = false;
+static DWORD g_titlebarGitHubLastCheckTick = 0;
 
 // État global des menus
 static std::vector<MenuItem> g_menuItems;
@@ -132,7 +141,66 @@ static ID2D1Bitmap *GetContextMenuIconBitmap(ID2D1RenderTarget *ctx, const std::
     return bmp;
 }
 
+static bool IsGitHubConnectedForTitleBar()
+{
+    DWORD now = GetTickCount();
+    if (!g_titlebarGitHubInit || (now - g_titlebarGitHubLastCheckTick) >= 1200)
+    {
+        g_titlebarGitHubConnected = GitHubAuth::HasToken();
+        g_titlebarGitHubInit = true;
+        g_titlebarGitHubLastCheckTick = now;
+    }
+    return g_titlebarGitHubConnected;
+}
+
+static ID2D1Bitmap *GetTitleBarGitHubBadgeIcon(ID2D1RenderTarget *ctx, UINT dpi)
+{
+    if (!ctx)
+        return nullptr;
+
+    if (g_titlebarGitHubCtx != ctx)
+    {
+        if (g_titlebarGitHubBitmap)
+        {
+            g_titlebarGitHubBitmap->Release();
+            g_titlebarGitHubBitmap = nullptr;
+        }
+        g_titlebarGitHubCtx = ctx;
+    }
+
+    if (!g_titlebarGitHubBitmap)
+    {
+        int px = win32_dpi_scale(14, dpi);
+        g_titlebarGitHubBitmap = GetExplorerManager().LoadSvgIconPublic(
+            ctx, "assets\\ressource\\icons\\git.svg", px, dpi);
+    }
+    return g_titlebarGitHubBitmap;
+}
+
 // Helper pour charger l'icône
+static std::wstring ResolveUiAssetPath(const wchar_t *filename)
+{
+    if (!filename || !*filename)
+        return L"";
+
+    std::filesystem::path requested(filename);
+    if (requested.is_absolute())
+        return requested.wstring();
+
+    std::wstring generic = requested.generic_wstring();
+    std::wstring lower = generic;
+    for (wchar_t &ch : lower)
+        ch = (wchar_t)towlower(ch);
+
+    if (lower.rfind(L"assets/", 0) == 0)
+    {
+        std::filesystem::path rel = std::filesystem::path(generic).lexically_relative(std::filesystem::path(L"assets"));
+        return NebulaAssetPath(rel).wstring();
+    }
+
+    return (NebulaExeDir() / requested).wstring();
+}
+
 static ID2D1Bitmap *LoadIconBitmap(ID2D1RenderTarget *ctx, const wchar_t *filename)
 {
     if (g_iconBitmap)
@@ -143,8 +211,9 @@ static ID2D1Bitmap *LoadIconBitmap(ID2D1RenderTarget *ctx, const wchar_t *filena
     if (!wicFactory)
         return nullptr;
 
+    std::wstring resolvedPath = ResolveUiAssetPath(filename);
     IWICBitmapDecoder *decoder = nullptr;
-    wicFactory->CreateDecoderFromFilename(filename, NULL, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder);
+    wicFactory->CreateDecoderFromFilename(resolvedPath.c_str(), NULL, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder);
 
     if (decoder)
     {
@@ -317,6 +386,18 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     float aMax = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Maximize) : (hoveredButton == Window::Hovered_Maximize ? 1.0f : 0.0f);
     float aClose = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Close) : (hoveredButton == Window::Hovered_Close ? 1.0f : 0.0f);
     float aRun = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Run) : (hoveredButton == Window::Hovered_Run ? 1.0f : 0.0f);
+    const D2D1_COLOR_F titlebarBg = hasFocus
+                                        ? D2D1::ColorF(0.06f, 0.07f, 0.09f, 1.0f)
+                                        : D2D1::ColorF(0.11f, 0.11f, 0.12f, 1.0f);
+    const D2D1_COLOR_F titlebarBorder = hasFocus
+                                            ? D2D1::ColorF(0.17f, 0.35f, 0.60f, 0.96f)
+                                            : D2D1::ColorF(0.24f, 0.24f, 0.26f, 1.0f);
+    const D2D1_COLOR_F titlebarText = hasFocus
+                                          ? D2D1::ColorF(0.90f, 0.93f, 0.98f, 1.0f)
+                                          : D2D1::ColorF(0.68f, 0.72f, 0.78f, 1.0f);
+    const D2D1_COLOR_F titlebarIcon = hasFocus
+                                          ? D2D1::ColorF(0.95f, 0.97f, 1.0f, 1.0f)
+                                          : D2D1::ColorF(0.75f, 0.78f, 0.84f, 1.0f);
     if (window && window->IsNewProjectOverlayVisible())
     {
         // Minimal titlebar for the new-project screen (no editor menus).
@@ -324,8 +405,8 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
 
         ID2D1SolidColorBrush *bgBrush = nullptr;
         ID2D1SolidColorBrush *bottomBorder = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f), &bgBrush);
-                ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f), &bottomBorder);
+        ctx->CreateSolidColorBrush(titlebarBg, &bgBrush);
+        ctx->CreateSolidColorBrush(titlebarBorder, &bottomBorder);
 
         if (bgBrush)
             ctx->FillRectangle(tb, bgBrush);
@@ -353,7 +434,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
             ctx->FillRectangle(rClose, closeHoverBrush);
 
         ID2D1SolidColorBrush *iconBrush = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &iconBrush);
+        ctx->CreateSolidColorBrush(titlebarIcon, &iconBrush);
         if (iconBrush)
         {
             ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
@@ -400,7 +481,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
                 titleFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
                 D2D1_RECT_F titleRect = D2D1::RectF(currentX, tb.top, rMax.left - 10.0f, tb.bottom);
                 ID2D1SolidColorBrush *titleBrush = nullptr;
-                ctx->CreateSolidColorBrush(D2D1::ColorF(0xe0e0e0), &titleBrush);
+                ctx->CreateSolidColorBrush(titlebarText, &titleBrush);
                 if (titleBrush)
                 {
                     ctx->DrawTextW(L"Nebula - Commencez", 19, titleFmt, titleRect, titleBrush);
@@ -423,12 +504,12 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
 
     // Background - dark theme
     ID2D1SolidColorBrush *bgBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(18.0f / 255.0f, 18.0f / 255.0f, 18.0f / 255.0f), &bgBrush);
+    ctx->CreateSolidColorBrush(titlebarBg, &bgBrush);
     ctx->FillRectangle(tb, bgBrush);
 
     // Bottom border
     ID2D1SolidColorBrush *bottomBorder = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(48.0f / 255.0f, 48.0f / 255.0f, 48.0f / 255.0f), &bottomBorder);
+    ctx->CreateSolidColorBrush(titlebarBorder, &bottomBorder);
     D2D1_POINT_2F leftPt = D2D1::Point2F(tb.left, tb.bottom - 0.5f);
     D2D1_POINT_2F rightPt = D2D1::Point2F(tb.right, tb.bottom - 0.5f);
     ctx->DrawLine(leftPt, rightPt, bottomBorder, 1.0f);
@@ -466,7 +547,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
 
     // Brush pour les icônes
     ID2D1SolidColorBrush *iconBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &iconBrush);
+    ctx->CreateSolidColorBrush(titlebarIcon, &iconBrush);
 
     ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
 
@@ -545,9 +626,8 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
 
     ID2D1SolidColorBrush *menuTextBrush = nullptr;
     ID2D1SolidColorBrush *menuHoverBrush = nullptr;
-    // Couleur légèrement plus claire pour meilleur contraste avec JetBrains Mono
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0xd4d4d4), &menuTextBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0x2a2d2e), &menuHoverBrush);
+    ctx->CreateSolidColorBrush(titlebarText, &menuTextBrush);
+    ctx->CreateSolidColorBrush(hasFocus ? D2D1::ColorF(0x2a2d2e) : D2D1::ColorF(0x232427), &menuHoverBrush);
 
     // Dessiner chaque menu item
     for (size_t i = 0; i < g_menuItems.size(); i++)
@@ -601,8 +681,9 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
             ID2D1SolidColorBrush *textBrushToUse = menuTextBrush;
             if (item.hovered)
             {
-                // Texte en blanc pur quand hover pour contraste maximal
-                ctx->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f), &textBrushToUse);
+                ctx->CreateSolidColorBrush(hasFocus ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f)
+                                                    : D2D1::ColorF(0.86f, 0.89f, 0.95f, 1.0f),
+                                           &textBrushToUse);
             }
 
             ctx->DrawTextW(
@@ -621,13 +702,32 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
         }
     }
 
+    const bool githubConnected = IsGitHubConnectedForTitleBar();
+    D2D1_RECT_F githubBadgeRect = D2D1::RectF(0, 0, 0, 0);
+    if (githubConnected)
+    {
+        float badgeHeight = (float)win32_dpi_scale(22, dpi);
+        float badgeWidth = (float)win32_dpi_scale(114, dpi);
+        float badgeRight = rRun.left - (float)win32_dpi_scale(10, dpi);
+        float badgeTop = std::round((tb.top + tb.bottom - badgeHeight) * 0.5f);
+        githubBadgeRect = D2D1::RectF(
+            std::round(badgeRight - badgeWidth),
+            badgeTop,
+            std::round(badgeRight),
+            std::round(badgeTop + badgeHeight));
+    }
+
     float titleLeft = currentX;
-    float titleRight = rRun.left;
+    float titleRight = githubConnected ? (githubBadgeRect.left - (float)win32_dpi_scale(10, dpi)) : rRun.left;
     float titleWidth = titleRight - titleLeft;
     // Reuse menuFormat to avoid double rendering and keep ClearType
     if (menuFormat && titleWidth > 40.0f)
     {
-        D2D1_RECT_F titleRect = D2D1::RectF(titleLeft, tb.top, titleRight, tb.bottom);
+        D2D1_RECT_F titleRect = D2D1::RectF(
+            std::round(titleLeft),
+            std::round(tb.top),
+            std::round(titleRight),
+            std::round(tb.bottom));
 
         std::wstring displayTitle;
         std::wstring rootPath = GetExplorerManager().GetState().rootPath;
@@ -643,14 +743,17 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
         }
 
         ID2D1SolidColorBrush *titleBrush = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0xb0b0b0), &titleBrush);
+        D2D1_COLOR_F titleColor = hasFocus
+                                      ? D2D1::ColorF(0.95f, 0.97f, 1.0f, 1.0f)
+                                      : D2D1::ColorF(0.82f, 0.86f, 0.92f, 0.96f);
+        ctx->CreateSolidColorBrush(titleColor, &titleBrush);
 
         // Créer un format temporaire avec CENTER alignment
         IDWriteTextFormat *centerFormat = nullptr;
         dwrite->CreateTextFormat(
-            L"JetBrains Mono", NULL,
-            DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-            12.5f, L"en-us", &centerFormat);
+            L"Segoe UI", NULL,
+            DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+            12.0f, L"en-us", &centerFormat);
 
         if (centerFormat)
         {
@@ -658,7 +761,8 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
             centerFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
             D2D1_TEXT_ANTIALIAS_MODE prevTextAA = ctx->GetTextAntialiasMode();
-            ctx->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
+            // Grayscale avoids color fringing on custom titlebars and often looks cleaner.
+            ctx->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
             ctx->DrawTextW(displayTitle.c_str(), (UINT32)displayTitle.size(),
                            centerFormat, titleRect, titleBrush,
                            D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
@@ -670,10 +774,69 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
         if (titleBrush)
             titleBrush->Release();
     }
+
+    if (githubConnected && menuFormat)
+    {
+        float badgeAlpha = hasFocus ? 1.0f : 0.82f;
+        ID2D1SolidColorBrush *badgeBg = nullptr;
+        ID2D1SolidColorBrush *badgeBorder = nullptr;
+        ID2D1SolidColorBrush *badgeText = nullptr;
+        ID2D1SolidColorBrush *badgeDot = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.12f, 0.95f * badgeAlpha), &badgeBg);
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.22f, 0.90f * badgeAlpha), &badgeBorder);
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.86f, 0.86f, 0.86f, badgeAlpha), &badgeText);
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.36f, 0.78f, 0.49f, badgeAlpha), &badgeDot);
+
+        D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(githubBadgeRect, 6.0f, 6.0f);
+        if (badgeBg)
+            ctx->FillRoundedRectangle(rr, badgeBg);
+        if (badgeBorder)
+            ctx->DrawRoundedRectangle(rr, badgeBorder, 1.0f);
+
+        ID2D1Bitmap *ghBmp = GetTitleBarGitHubBadgeIcon(ctx, dpi);
+        if (ghBmp)
+        {
+            float iconSize = (float)win32_dpi_scale(14, dpi);
+            float iconLeft = std::round(githubBadgeRect.left + (float)win32_dpi_scale(8, dpi));
+            float iconTop = std::round((githubBadgeRect.top + githubBadgeRect.bottom - iconSize) * 0.5f);
+            D2D1_RECT_F iconRect = D2D1::RectF(iconLeft, iconTop, iconLeft + iconSize, iconTop + iconSize);
+            ctx->DrawBitmap(ghBmp, iconRect, badgeAlpha, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+        }
+
+        if (badgeText)
+        {
+            D2D1_RECT_F textRect = D2D1::RectF(
+                std::round(githubBadgeRect.left + (float)win32_dpi_scale(28, dpi)),
+                githubBadgeRect.top,
+                std::round(githubBadgeRect.right - (float)win32_dpi_scale(14, dpi)),
+                githubBadgeRect.bottom);
+            ctx->DrawTextW(L"GitHub", 6, menuFormat, textRect, badgeText,
+                           D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+        }
+
+        if (badgeDot)
+        {
+            float cx = std::round(githubBadgeRect.right - (float)win32_dpi_scale(8, dpi));
+            float cy = std::round((githubBadgeRect.top + githubBadgeRect.bottom) * 0.5f);
+            float r = (float)win32_dpi_scale(2, dpi);
+            ctx->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r), badgeDot);
+        }
+
+        if (badgeDot)
+            badgeDot->Release();
+        if (badgeText)
+            badgeText->Release();
+        if (badgeBorder)
+            badgeBorder->Release();
+        if (badgeBg)
+            badgeBg->Release();
+    }
     if (menuHoverBrush)
         menuHoverBrush->Release();
     if (menuTextBrush)
         menuTextBrush->Release();
+    if (menuFormat)
+        menuFormat->Release();
     if (iconBrush)
         iconBrush->Release();
     ctx->SetAntialiasMode(oldAA);
@@ -721,12 +884,16 @@ std::vector<MenuItem> &GetMenuItems()
 void ShowMenuDropdown(HWND hwnd, int menuIndex, D2D1_RECT_F menuRect)
 {
     g_activeDropdown.menuIndex = menuIndex;
+    g_activeDropdown.baseId = 0;
     g_activeDropdown.visible = true;
     g_activeDropdown.hoveredItem = -1;
     g_activeDropdown.shortcuts.clear();
     g_activeDropdown.icons.clear();
     g_activeDropdown.separators.clear();
     g_activeDropdown.hasSubmenu.clear();
+    g_activeDropdown.enabled.clear();
+    g_subDropdown.visible = false;
+    g_subDropdown.hoveredItem = -1;
 
     switch (menuIndex)
     {
@@ -805,6 +972,9 @@ void ShowMenuDropdown(HWND hwnd, int menuIndex, D2D1_RECT_F menuRect)
         g_activeDropdown.hasSubmenu.assign(g_activeDropdown.items.size(), false);
         break;
     }
+
+    if (g_activeDropdown.enabled.size() != g_activeDropdown.items.size())
+        g_activeDropdown.enabled.assign(g_activeDropdown.items.size(), true);
 
     float itemHeight = 28.0f;
     float width = 210.0f;
@@ -1433,6 +1603,8 @@ MenuDropdown &GetActiveDropdown()
 
 void ShowContextMenuDropdown(HWND hwnd, const std::vector<std::wstring> &items, D2D1_POINT_2F position, int baseId)
 {
+    g_subDropdown.visible = false;
+    g_subDropdown.hoveredItem = -1;
     g_activeDropdown.menuIndex = -1;
     g_activeDropdown.visible = true;
     g_activeDropdown.hoveredItem = -1;

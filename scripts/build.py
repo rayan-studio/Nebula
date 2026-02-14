@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import os
@@ -9,36 +9,31 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 
-# ============================================================
-# Colors (works in Windows Terminal / modern consoles)
-# ============================================================
+
 class C:
-    R   = "\033[0m"
-    B   = "\033[1m"
-    D   = "\033[2m"
-    G   = "\033[32m"
-    Y   = "\033[33m"
+    R = "\033[0m"
+    B = "\033[1m"
+    D = "\033[2m"
+    G = "\033[32m"
+    Y = "\033[33m"
     RED = "\033[31m"
-    CY  = "\033[36m"
+    CY = "\033[36m"
+
 
 if sys.platform == "win32":
-    os.system("")  # enable ANSI on modern Windows consoles
+    os.system("")
+
 
 def log(msg, color=""):
     print(f"{color}{msg}{C.R}")
 
-# ============================================================
-# Paths
-# ============================================================
-ROOT  = Path(__file__).resolve().parent.parent
-BUILD = ROOT / "build"
 
-# Default config
+ROOT = Path(__file__).resolve().parent.parent
+BUILD_DEFAULT = ROOT / "build"
+BUILD_FAST = ROOT / "build-ninja"
 DEFAULT_CONFIG = "Release"
 
-# ============================================================
-# Helpers
-# ============================================================
+
 def run(cmd, cwd=None, capture=False):
     return subprocess.run(
         cmd,
@@ -46,10 +41,12 @@ def run(cmd, cwd=None, capture=False):
         text=True,
         encoding="utf-8",
         errors="replace",
-        capture_output=capture
+        capture_output=capture,
     )
 
-def run_stream(cmd, cwd=None, filter_fn=None):
+
+def run_stream(cmd, cwd=None, filter_fn=None, collect=False):
+    collected = []
     proc = subprocess.Popen(
         cmd,
         cwd=cwd,
@@ -58,10 +55,12 @@ def run_stream(cmd, cwd=None, filter_fn=None):
         text=True,
         encoding="utf-8",
         errors="replace",
-        bufsize=1
+        bufsize=1,
     )
     for line in proc.stdout:
         line = line.rstrip("\r\n")
+        if collect:
+            collected.append(line)
         if filter_fn:
             out = filter_fn(line)
             if out:
@@ -69,16 +68,35 @@ def run_stream(cmd, cwd=None, filter_fn=None):
         else:
             print(line)
     proc.wait()
+    if collect:
+        return proc.returncode, collected
     return proc.returncode
 
-def parse_msbuild(line: str):
-    # Skip noise
+
+def has_parallel_lock_error(lines):
+    for line in lines:
+        low = line.lower()
+        if "error c1041" in low:
+            return True
+        if "msb6003" in low and ("en cours d'utilisation" in low or "in use by another process" in low):
+            return True
+        if "error c1083" in low and ".obj" in low and (
+            "permission denied" in low
+            or "acces refuse" in low
+            or "accès refusé" in low
+            or "in use by another process" in low
+        ):
+            return True
+    return False
+
+
+def parse_build_output(line: str):
     skip = [
         "Version MSBuild",
         "Checking File Globs",
         "Checking Build System",
         "Building Custom Rule",
-        "Génération de code",
+        "Generation de code",
         "compiler le fichier source",
         "with [",
         "0 Warning(s)",
@@ -87,29 +105,26 @@ def parse_msbuild(line: str):
     if any(s in line for s in skip):
         return None
 
-    # VS project output lines
     if ".vcxproj ->" in line:
         m = re.search(r"(\w+)\.vcxproj -> .*[/\\]([\w\.\-]+)$", line)
         if m:
             project, output = m.groups()
-            return f"{C.D}→{C.R} {project} {C.D}→{C.R} {output}"
+            return f"{C.D}->{C.R} {project} {C.D}->{C.R} {output}"
 
-    # Compilation progress lines
     if re.match(r"^\s+\w+\.(cpp|c|cc|cxx)$", line):
         return f"{C.D}[building]{C.R} {line.strip()}"
 
-    # Errors
     if "error" in line.lower():
-        return f"{C.RED}✗{C.R} {line}"
+        return f"{C.RED}x{C.R} {line}"
 
-    # Warnings
     if "warning" in line.lower():
         m = re.search(r"\bwarning\s+(C\d+)\b", line)
         if m:
-            return f"{C.Y}⚠{C.R} {m.group(1)}"
-        return f"{C.Y}⚠{C.R} {line}"
+            return f"{C.Y}!{C.R} {m.group(1)}"
+        return f"{C.Y}!{C.R} {line}"
 
     return None
+
 
 def cmake_generators_text():
     r = run(["cmake", "--help"], capture=True)
@@ -117,51 +132,93 @@ def cmake_generators_text():
         return ""
     return r.stdout
 
+
 def has_generator(help_text: str, name: str) -> bool:
-    # Look for generator in cmake --help output
-    # It usually appears in the "Generators" section.
     return name.lower() in help_text.lower()
 
-def pick_generator():
-    help_text = cmake_generators_text()
 
-    # Preference order:
-    # 1) VS 2026 if available
-    # 2) VS 2022 if available
-    # 3) Ninja if available
+def has_ninja_executable() -> bool:
+    return shutil.which("ninja") is not None
+
+
+def pick_generator(force_ninja=False):
+    help_text = cmake_generators_text()
+    ninja_available = has_generator(help_text, "Ninja") and has_ninja_executable()
+
+    if force_ninja and ninja_available:
+        return ("Ninja", ["-G", "Ninja"], False)
+
+    if force_ninja and not ninja_available:
+        log("! --ninja requested but 'ninja' executable is missing, using Visual Studio.", C.Y)
+
+    # Default behavior: prefer Visual Studio.
     if has_generator(help_text, "Visual Studio 18 2026"):
         return ("Visual Studio 18 2026", ["-G", "Visual Studio 18 2026", "-A", "x64"], True)
     if has_generator(help_text, "Visual Studio 17 2022"):
         return ("Visual Studio 17 2022", ["-G", "Visual Studio 17 2022", "-A", "x64"], True)
-    if has_generator(help_text, "Ninja"):
+
+    if ninja_available:
         return ("Ninja", ["-G", "Ninja"], False)
 
-    # If nothing found, let CMake decide (rare)
     return ("(default)", [], False)
 
-def exe_path_for(config: str) -> Path:
-    # With Visual Studio multi-config: build/Release/Nebula.exe
-    # With Ninja single-config: build/Nebula.exe (or build/src/... depending project)
-    # Your CMake adds_executable(Nebula WIN32 ...), so usually it's in build/<config>/Nebula.exe for VS
-    p1 = BUILD / config / "Nebula.exe"
-    p2 = BUILD / "Nebula.exe"
+
+def read_cache_generator(build_dir: Path):
+    cache_file = build_dir / "CMakeCache.txt"
+    if not cache_file.exists():
+        return None
+    try:
+        with cache_file.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("CMAKE_GENERATOR:INTERNAL="):
+                    return line.split("=", 1)[1].strip()
+                if line.startswith("CMAKE_GENERATOR:STRING="):
+                    return line.split("=", 1)[1].strip()
+    except OSError:
+        return None
+    return None
+
+
+def generator_matches(a: str, b: str) -> bool:
+    if not a or not b:
+        return False
+    return a.strip().lower() == b.strip().lower()
+
+
+def is_multi_config_generator(name: str) -> bool:
+    if not name:
+        return False
+    lowered = name.lower()
+    return "visual studio" in lowered or "xcode" in lowered or "multi-config" in lowered
+
+
+def pick_build_dir(force_fast: bool) -> Path:
+    if force_fast:
+        return BUILD_FAST
+    return BUILD_DEFAULT
+
+
+def exe_path_for(build_dir: Path, config: str) -> Path:
+    p1 = build_dir / config / "Nebula.exe"
+    p2 = build_dir / "Nebula.exe"
     return p1 if p1.exists() else p2
 
-# ============================================================
-# Main
-# ============================================================
-def main():
-    args = [a.lower() for a in sys.argv[1:]]
 
-    # Commands:
-    #   python scripts/build.py
-    #   python scripts/build.py clean
-    #   python scripts/build.py debug
-    #   python scripts/build.py release
+def main():
+    raw_args = sys.argv[1:]
+    args = [a.lower() for a in raw_args]
+
+    force_fast = "--fast" in args
+    force_ninja = "--ninja" in args or force_fast
+    skip_configure = "--skip-configure" in args or "--no-configure" in args
+
     if "clean" in args or "--clean" in args or "-c" in args:
-        log(f"{C.D}→ cleaning {BUILD}{C.R}")
-        shutil.rmtree(BUILD, ignore_errors=True)
-        log(f"{C.G}✓ done{C.R}")
+        log(f"-> cleaning {BUILD_DEFAULT}", C.D)
+        shutil.rmtree(BUILD_DEFAULT, ignore_errors=True)
+        log(f"-> cleaning {BUILD_FAST}", C.D)
+        shutil.rmtree(BUILD_FAST, ignore_errors=True)
+        log("ok", C.G)
         return 0
 
     config = DEFAULT_CONFIG
@@ -170,57 +227,134 @@ def main():
     if "release" in args:
         config = "Release"
 
-    log(f"{C.B}nebula{C.R} {C.D}cmake builder{C.R}")
-    log(f"{C.D}{datetime.now().strftime('%H:%M:%S')}{C.R}\n")
+    app_version = None
+    for a in raw_args:
+        if a.startswith("--app-version="):
+            app_version = a.split("=", 1)[1].strip()
+            break
+    if not app_version:
+        app_version = os.environ.get("NEBULA_APP_VERSION", "").strip() or None
 
-    BUILD.mkdir(exist_ok=True)
+    jobs = os.environ.get("NEBULA_BUILD_JOBS", "").strip()
+    if not jobs:
+        jobs = os.environ.get("CMAKE_BUILD_PARALLEL_LEVEL", "").strip()
+    if not jobs:
+        jobs = str(os.cpu_count() or 8)
 
-    gen_name, gen_args, is_multi_config = pick_generator()
-    log(f"{C.D}→ generator: {C.CY}{gen_name}{C.R}")
+    log("nebula cmake builder", C.B)
+    log(datetime.now().strftime("%H:%M:%S"), C.D)
+    log("", C.R)
 
-    # Configure
-    log(f"{C.D}→ configuring{C.R}")
-    r = run(["cmake", "-S", str(ROOT), "-B", str(BUILD), *gen_args,
-             "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"], capture=True)
-    if r.returncode != 0:
-        log(f"{C.RED}✗ cmake configuration failed{C.R}\n")
-        print(r.stdout)
-        print(r.stderr)
-        return r.returncode
+    gen_name, gen_args, is_multi_config = pick_generator(force_ninja=force_ninja)
+    build_dir = pick_build_dir(force_fast)
+    build_dir.mkdir(exist_ok=True)
 
-    # Print useful config lines
-    for line in (r.stdout or "").splitlines():
-        if "Windows SDK" in line or "Using" in line or "libvterm" in line or "ggwave" in line:
-            log(f"{C.D}  {line.strip()}{C.R}")
+    active_gen = gen_name
+    cache_gen = read_cache_generator(build_dir)
+    if cache_gen:
+        active_gen = cache_gen
+        is_multi_config = is_multi_config_generator(cache_gen)
 
-    # Build
-    log(f"\n{C.D}→ building ({config.lower()}){C.R}")
-    build_cmd = ["cmake", "--build", str(BUILD)]
+    if skip_configure and cache_gen and gen_name != "(default)" and not generator_matches(gen_name, cache_gen):
+        log(f"-> cache generator differs, using cached one due --skip-configure: {cache_gen}", C.Y)
+
+    if (not skip_configure) and cache_gen and gen_name != "(default)" and not generator_matches(gen_name, cache_gen):
+        log(f"-> generator mismatch in {build_dir.name}: cache={cache_gen}, requested={gen_name}", C.Y)
+        alt_dir = BUILD_DEFAULT if build_dir == BUILD_FAST else BUILD_FAST
+        alt_dir.mkdir(exist_ok=True)
+        alt_cache_gen = read_cache_generator(alt_dir)
+        if alt_cache_gen and generator_matches(alt_cache_gen, gen_name):
+            build_dir = alt_dir
+            active_gen = alt_cache_gen
+            is_multi_config = is_multi_config_generator(alt_cache_gen)
+            log(f"-> switched build dir: {build_dir}", C.Y)
+        else:
+            cache_file = build_dir / "CMakeCache.txt"
+            cmake_files = build_dir / "CMakeFiles"
+            if cache_file.exists():
+                cache_file.unlink()
+            shutil.rmtree(cmake_files, ignore_errors=True)
+            active_gen = gen_name
+            is_multi_config = is_multi_config_generator(gen_name)
+            log(f"-> cleared stale CMake cache in {build_dir}", C.Y)
+
+    log(f"-> build dir: {build_dir}", C.D)
+    log(f"-> generator: {active_gen}", C.D)
+    log(f"-> parallel jobs: {jobs}", C.D)
+
+    if skip_configure and (build_dir / "CMakeCache.txt").exists():
+        log("-> configuring (skipped)", C.D)
+    else:
+        log("-> configuring", C.D)
+        cmake_configure_cmd = [
+            "cmake",
+            "-S",
+            str(ROOT),
+            "-B",
+            str(build_dir),
+            *gen_args,
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+        ]
+        if app_version:
+            cmake_configure_cmd.append(f"-DNEBULA_APP_VERSION={app_version}")
+            log(f"  app version: {app_version}", C.D)
+
+        r = run(cmake_configure_cmd, capture=True)
+        if r.returncode != 0:
+            log("x cmake configuration failed", C.RED)
+            print(r.stdout)
+            print(r.stderr)
+            return r.returncode
+
+        for line in (r.stdout or "").splitlines():
+            if "Windows SDK" in line or "Using" in line or "libvterm" in line or "ggwave" in line:
+                log(f"  {line.strip()}", C.D)
+
+    log(f"\n-> building ({config.lower()})", C.D)
+    build_cmd = ["cmake", "--build", str(build_dir), "--parallel", jobs, "--target", "Nebula"]
     if is_multi_config:
         build_cmd += ["--config", config]
 
-    ret = run_stream(build_cmd, cwd=BUILD, filter_fn=parse_msbuild)
+    ret, build_lines = run_stream(build_cmd, cwd=build_dir, filter_fn=parse_build_output, collect=True)
     if ret != 0:
-        log(f"\n{C.RED}✗ build failed{C.R}")
-        return ret
-    # Success
-    exe = exe_path_for(config)
+        can_retry_serial = False
+        try:
+            can_retry_serial = int(jobs) > 1
+        except ValueError:
+            can_retry_serial = False
+
+        if can_retry_serial and has_parallel_lock_error(build_lines):
+            log("\n! file lock detected in parallel build, retrying once with jobs=1", C.Y)
+            retry_cmd = ["cmake", "--build", str(build_dir), "--parallel", "1", "--target", "Nebula"]
+            if is_multi_config:
+                retry_cmd += ["--config", config]
+
+            ret_retry, _ = run_stream(retry_cmd, cwd=build_dir, filter_fn=parse_build_output, collect=True)
+            if ret_retry != 0:
+                log("\nx build failed", C.RED)
+                return ret_retry
+        else:
+            log("\nx build failed", C.RED)
+            return ret
+
+    exe = exe_path_for(build_dir, config)
     if exe.exists():
         size_kb = exe.stat().st_size / 1024
-        log(f"\n{C.G}✓{C.R} {exe.name} {C.D}({size_kb:.1f} kb){C.R}")
-        log(f"{C.D}  {exe.resolve()}{C.R}\n")
+        log(f"\nok {exe.name} ({size_kb:.1f} kb)", C.G)
+        log(f"  {exe.resolve()}\n", C.D)
         return 0
 
-    log(f"\n{C.Y}⚠ build completed but Nebula.exe not found{C.R}")
-    log(f"{C.D}  searched: {BUILD / config / 'Nebula.exe'} and {BUILD / 'Nebula.exe'}{C.R}\n")
+    log("\n! build completed but Nebula.exe not found", C.Y)
+    log(f"  searched: {build_dir / config / 'Nebula.exe'} and {build_dir / 'Nebula.exe'}\n", C.D)
     return 0
+
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except KeyboardInterrupt:
-        log(f"\n{C.Y}⚠ interrupted{C.R}\n")
+        log("\n! interrupted\n", C.Y)
         raise SystemExit(1)
     except Exception as e:
-        log(f"\n{C.RED}✗ {e}{C.R}\n")
+        log(f"\nx {e}\n", C.RED)
         raise SystemExit(1)

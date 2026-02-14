@@ -5,6 +5,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+set(NEBULA_APP_VERSION "1.0.0" CACHE STRING "Nebula application version")
+
 # ========================================
 # Configuration libvterm (neovim version)
 # ========================================
@@ -60,9 +62,11 @@ file(GLOB_RECURSE NEBULA_SOURCES CONFIGURE_DEPENDS
 add_executable(Nebula WIN32 ${NEBULA_SOURCES})
 
 target_compile_definitions(Nebula PRIVATE UNICODE _UNICODE)
+target_compile_definitions(Nebula PRIVATE NEBULA_APP_VERSION="${NEBULA_APP_VERSION}")
 
 if (MSVC)
-  target_compile_options(Nebula PRIVATE /W4 /permissive-)
+  # /FS avoids PDB write contention when compiling many files in parallel.
+  target_compile_options(Nebula PRIVATE /W4 /permissive- /FS)
 endif()
 
 target_include_directories(Nebula PRIVATE src)

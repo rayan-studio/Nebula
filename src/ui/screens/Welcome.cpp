@@ -5,6 +5,9 @@
 #include <string>
 #include <algorithm>
 #include "helpers/window_helpers.h"
+#include "helpers/path_helpers.h"
+#include <filesystem>
+#include <cwctype>
 #ifdef min
 #undef min
 #endif
@@ -13,6 +16,29 @@
 #endif
 
 static ID2D1Bitmap *g_welcomeIcon = nullptr;
+
+static std::wstring ResolveUiAssetPath(const wchar_t *filename)
+{
+    if (!filename || !*filename)
+        return L"";
+
+    std::filesystem::path requested(filename);
+    if (requested.is_absolute())
+        return requested.wstring();
+
+    std::wstring generic = requested.generic_wstring();
+    std::wstring lower = generic;
+    for (wchar_t &ch : lower)
+        ch = (wchar_t)towlower(ch);
+
+    if (lower.rfind(L"assets/", 0) == 0)
+    {
+        std::filesystem::path rel = std::filesystem::path(generic).lexically_relative(std::filesystem::path(L"assets"));
+        return NebulaAssetPath(rel).wstring();
+    }
+
+    return (NebulaExeDir() / requested).wstring();
+}
 
 static ID2D1Bitmap *LoadBitmapFromFile(ID2D1RenderTarget *ctx, const wchar_t *filename)
 {
@@ -23,8 +49,9 @@ static ID2D1Bitmap *LoadBitmapFromFile(ID2D1RenderTarget *ctx, const wchar_t *fi
     if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wicFactory))))
         return nullptr;
 
+    std::wstring resolvedPath = ResolveUiAssetPath(filename);
     IWICBitmapDecoder *decoder = nullptr;
-    if (FAILED(wicFactory->CreateDecoderFromFilename(filename, NULL, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder)))
+    if (FAILED(wicFactory->CreateDecoderFromFilename(resolvedPath.c_str(), NULL, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder)))
     {
         wicFactory->Release();
         return nullptr;

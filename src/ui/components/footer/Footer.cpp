@@ -1,16 +1,170 @@
 #include "Footer.h"
 #include "helpers/window_helpers.h"
 #include "core/explorer/Explorer.h"
+#include <git2.h>
 #include <dwrite.h>
 #include <string>
 #include <algorithm>
 #include <vector>
+#include <filesystem>
 
 // Globals for footer hover handling
 static std::vector<D2D1_RECT_F> g_footer_segment_rects;
 static int g_footer_hovered_index = -1;
 static std::wstring g_footer_hint;
 static ULONGLONG g_footer_hint_until = 0;
+static std::wstring g_footer_branch_cache;
+static std::wstring g_footer_branch_probe_path;
+static ULONGLONG g_footer_branch_cache_until = 0;
+static ID2D1Bitmap *g_footer_branch_icon = nullptr;
+static ID2D1RenderTarget *g_footer_branch_icon_ctx = nullptr;
+
+static std::string WideToUtf8(const std::wstring &text)
+{
+    if (text.empty())
+        return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, text.data(), (int)text.size(), nullptr, 0, nullptr, nullptr);
+    if (len <= 0)
+        return {};
+    std::string out((size_t)len, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.data(), (int)text.size(), out.data(), len, nullptr, nullptr);
+    return out;
+}
+
+static std::wstring Utf8ToWide(const char *text)
+{
+    if (!text || !text[0])
+        return {};
+
+    int len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, nullptr, 0);
+    if (len > 0)
+    {
+        std::wstring out((size_t)len, L'\0');
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, out.data(), len);
+        if (!out.empty() && out.back() == L'\0')
+            out.pop_back();
+        return out;
+    }
+
+    len = MultiByteToWideChar(CP_ACP, 0, text, -1, nullptr, 0);
+    if (len <= 0)
+        return {};
+    std::wstring out((size_t)len, L'\0');
+    MultiByteToWideChar(CP_ACP, 0, text, -1, out.data(), len);
+    if (!out.empty() && out.back() == L'\0')
+        out.pop_back();
+    return out;
+}
+
+static std::wstring GuessRepoProbePath(const std::wstring &filePath)
+{
+    std::wstring root = GetExplorerManager().GetState().rootPath;
+    if (!root.empty())
+        return root;
+    if (filePath.empty())
+        return {};
+
+    std::filesystem::path p(filePath);
+    if (p.has_filename())
+        p = p.parent_path();
+    return p.wstring();
+}
+
+static std::wstring ResolveGitBranchName(const std::wstring &probePath)
+{
+    if (probePath.empty())
+        return {};
+
+    git_repository *repo = nullptr;
+    int rc = git_repository_open_ext(&repo, WideToUtf8(probePath).c_str(), GIT_REPOSITORY_OPEN_CROSS_FS, nullptr);
+    if (rc != 0 || !repo)
+        return {};
+
+    std::wstring branch;
+    git_reference *headRef = nullptr;
+    rc = git_repository_head(&headRef, repo);
+    if (rc == 0 && headRef)
+    {
+        if (git_reference_is_branch(headRef))
+        {
+            const char *name = nullptr;
+            if (git_branch_name(&name, headRef) == 0 && name && name[0])
+                branch = Utf8ToWide(name);
+        }
+        else
+        {
+            const git_oid *oid = git_reference_target(headRef);
+            if (oid)
+            {
+                char shortOid[10] = {0};
+                git_oid_tostr(shortOid, sizeof(shortOid), oid);
+                branch = L"detached@" + Utf8ToWide(shortOid);
+            }
+        }
+    }
+    else if (git_repository_head_unborn(repo) == 1)
+    {
+        branch = L"unborn";
+    }
+
+    if (headRef)
+        git_reference_free(headRef);
+    git_repository_free(repo);
+    return branch;
+}
+
+static std::wstring GetFooterBranchText(const std::wstring &filePath)
+{
+    std::wstring probe = GuessRepoProbePath(filePath);
+    ULONGLONG now = GetTickCount64();
+    if (probe != g_footer_branch_probe_path || now >= g_footer_branch_cache_until)
+    {
+        g_footer_branch_probe_path = probe;
+        std::wstring branch = ResolveGitBranchName(probe);
+        g_footer_branch_cache = branch;
+        g_footer_branch_cache_until = now + 1200;
+    }
+    return g_footer_branch_cache;
+}
+
+static ID2D1Bitmap *GetFooterBranchIcon(ID2D1RenderTarget *ctx, UINT dpi)
+{
+    if (!ctx)
+        return nullptr;
+
+    if (g_footer_branch_icon_ctx != ctx)
+    {
+        if (g_footer_branch_icon)
+        {
+            g_footer_branch_icon->Release();
+            g_footer_branch_icon = nullptr;
+        }
+        g_footer_branch_icon_ctx = ctx;
+    }
+
+    if (!g_footer_branch_icon)
+    {
+        int px = win32_dpi_scale(12, dpi);
+        g_footer_branch_icon = GetExplorerManager().LoadSvgIconPublic(ctx, "assets\\ressource\\icons\\git.svg", px, dpi);
+    }
+    return g_footer_branch_icon;
+}
+
+static float MeasureTextWidth(IDWriteFactory *dwrite, IDWriteTextFormat *fmt, const std::wstring &text)
+{
+    if (!dwrite || !fmt || text.empty())
+        return 0.0f;
+
+    IDWriteTextLayout *layout = nullptr;
+    HRESULT hr = dwrite->CreateTextLayout(text.c_str(), (UINT32)text.size(), fmt, 2048.0f, 32.0f, &layout);
+    if (FAILED(hr) || !layout)
+        return 0.0f;
+
+    DWRITE_TEXT_METRICS metrics = {};
+    layout->GetMetrics(&metrics);
+    layout->Release();
+    return metrics.widthIncludingTrailingWhitespace;
+}
 
 static std::wstring DetectLanguageFromPath(const std::wstring &path)
 {
@@ -98,6 +252,7 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
 
     // Prepare right-side status text (line/column + language + encoding)
     std::wstring lang = DetectLanguageFromPath(filePath);
+    std::wstring branchText = GetFooterBranchText(filePath);
     wchar_t buf[256];
     swprintf_s(buf, 256, L"Ln %d, Col %d - %s - %s",
                (line + 1), (column + 1), lang.c_str(), encoding.c_str());
@@ -133,10 +288,27 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
     ID2D1SolidColorBrush *segmentHoverBrush = nullptr;
     ctx->CreateSolidColorBrush(D2D1::ColorF(0x2a2d2e), &segmentHoverBrush);
 
+    float statusTextWidth = 180.0f;
+    if (statusFmt && dwrite)
+    {
+        float measured = MeasureTextWidth(dwrite, statusFmt, buf);
+        if (measured > 0.0f)
+            statusTextWidth = (std::max)(120.0f, (std::min)(340.0f, measured + 14.0f));
+    }
+
+    float branchBlockWidth = branchText.empty() ? 0.0f : 120.0f;
+    if (!branchText.empty() && statusFmt && dwrite)
+    {
+        float measured = MeasureTextWidth(dwrite, statusFmt, branchText);
+        if (measured > 0.0f)
+            branchBlockWidth = (std::max)(72.0f, (std::min)(220.0f, measured + 34.0f));
+    }
+
     if (!filePath.empty() && pathFmt && textBrush)
     {
         float pathLeft = left + 12.0f + (float)(notifR * 2) + 6.0f;
-        float pathRight = right - 160.0f;
+        float rightReserved = statusTextWidth + 24.0f + (branchBlockWidth > 0.0f ? (branchBlockWidth + 12.0f) : 0.0f);
+        float pathRight = right - rightReserved;
         D2D1_RECT_F pathRectF = D2D1::RectF(pathLeft, top, pathRight, bottom);
 
         // Split filePath by backslash
@@ -340,11 +512,31 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
             hintFmt->Release();
     }
 
+    // Draw the right-side branch text
+    float statusRight = right - 12.0f;
+    if (!branchText.empty() && statusFmt && textBrush)
+    {
+        D2D1_RECT_F branchRect = D2D1::RectF(right - 12.0f - branchBlockWidth, top, right - 12.0f, bottom);
+        ID2D1Bitmap *branchIcon = GetFooterBranchIcon(ctx, dpi);
+        if (branchIcon)
+        {
+            float iconPx = (float)win32_dpi_scale(12, dpi);
+            float iconLeft = std::round(branchRect.left + 6.0f);
+            float iconTop = std::round((top + bottom - iconPx) * 0.5f);
+            D2D1_RECT_F iconRect = D2D1::RectF(iconLeft, iconTop, iconLeft + iconPx, iconTop + iconPx);
+            ctx->DrawBitmap(branchIcon, iconRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+        }
+        D2D1_RECT_F branchTextRect = D2D1::RectF(branchRect.left + 22.0f, branchRect.top, branchRect.right, branchRect.bottom);
+        ctx->DrawTextW(branchText.c_str(), (UINT32)branchText.size(), statusFmt, branchTextRect, textBrush,
+                       D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+        statusRight = branchRect.left - 10.0f;
+    }
+
     // Draw the right-side status text
     if (statusFmt && textBrush)
     {
         float textLeft = left + 12.0f + (float)(notifR * 2) + 6.0f;
-        D2D1_RECT_F statusRect = D2D1::RectF(textLeft, top, right - 12.0f, bottom);
+        D2D1_RECT_F statusRect = D2D1::RectF(textLeft, top, statusRight, bottom);
         ctx->DrawTextW(buf, (UINT32)wcslen(buf), statusFmt, statusRect, textBrush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
     }
 

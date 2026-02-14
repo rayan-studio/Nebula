@@ -40,4 +40,3 @@ private:
     void BeginGitHubSignIn();
     void ClearGitHubToken();
 };
-

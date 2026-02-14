@@ -127,6 +127,15 @@ static std::wstring ParentDirW(std::wstring path)
     return path;
 }
 
+static std::wstring FindExeInPathW(const std::wstring& exeName)
+{
+    wchar_t buffer[MAX_PATH] = { 0 };
+    DWORD len = SearchPathW(nullptr, exeName.c_str(), nullptr, MAX_PATH, buffer, nullptr);
+    if (len == 0 || len >= MAX_PATH)
+        return L"";
+    return std::wstring(buffer, buffer + len);
+}
+
 TerminalSession::TerminalSession() {}
 TerminalSession::~TerminalSession() { Shutdown(); }
 
@@ -286,9 +295,13 @@ bool TerminalSession::StartShellProcess(const std::wstring& startDir)
     if (pos != std::wstring::npos) exeDir.resize(pos);
 
     std::wstring shell;
+    bool shellNeedsHpcArg = false;
     auto pickShell = [&](const std::wstring& candidate) {
         if (shell.empty() && FileExistsW(candidate))
+        {
             shell = candidate;
+            shellNeedsHpcArg = true;
+        }
     };
 
     // 1) Même dossier que l'exécutable
@@ -308,15 +321,31 @@ bool TerminalSession::StartShellProcess(const std::wstring& startDir)
 
     if (shell.empty())
     {
-        Logger::Instance().Log(L"[Terminal] NebulaDevShell.exe not found in any search path.");
-        return false;
+        // Keep terminal usable in production even if NebulaDevShell is missing.
+        std::wstring cmd = FindExeInPathW(L"cmd.exe");
+        if (!cmd.empty())
+            shell = cmd;
+        if (shell.empty())
+            shell = FindExeInPathW(L"powershell.exe");
+        if (shell.empty())
+            shell = FindExeInPathW(L"pwsh.exe");
+
+        if (shell.empty())
+        {
+            Logger::Instance().Log(L"[Terminal] NebulaDevShell.exe not found and no system shell available.");
+            return false;
+        }
+        Logger::Instance().Log(L"[Terminal] NebulaDevShell.exe not found. Fallback to system shell: " + shell);
     }
 
     Logger::Instance().Log(L"[Terminal] Using shell: " + shell);
 
-    // NebulaDevShell expects an explicit --hpc= argument.
-    std::wstring hpcArg = L" --hpc=" + std::to_wstring((uintptr_t)hPC_);
-    std::wstring cmdLine = L"\"" + shell + L"\"" + hpcArg;
+    std::wstring cmdLine = L"\"" + shell + L"\"";
+    if (shellNeedsHpcArg)
+    {
+        // NebulaDevShell expects an explicit --hpc= argument.
+        cmdLine += L" --hpc=" + std::to_wstring((uintptr_t)hPC_);
+    }
     Logger::Instance().Log(L"[Terminal] CmdLine: " + cmdLine);
     Logger::Instance().Log(L"[Terminal] WorkDir: " + workDir);
     std::vector<wchar_t> cmdline(cmdLine.begin(), cmdLine.end());

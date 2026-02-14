@@ -2,7 +2,10 @@
 #include "utils/logger/Logger.h"
 #include <windowsx.h>
 #include <dwmapi.h>
+#include <d2d1.h>
+#include <dwrite.h>
 #include <algorithm>
+#include <cmath>
 #include <sstream>
 #include "helpers/window_helpers.h"
 
@@ -10,6 +13,8 @@ static const wchar_t *POPUP_WINDOW_CLASS = L"NebulaPopupWindow";
 static HWND g_activePopup = nullptr;
 static bool g_popupDragging = false;
 static POINT g_popupDragOffset = {0, 0};
+static ID2D1Factory *g_d2dFactory = nullptr;
+static IDWriteFactory *g_dwriteFactory = nullptr;
 
 struct PopupWindowState
 {
@@ -20,51 +25,69 @@ struct PopupWindowState
     bool focused = true;
 };
 
-static RECT GetCloseRect(const RECT &rc)
+template <typename T>
+static void SafeRelease(T *&p)
 {
-    const int headerH = 34;
+    if (p)
+    {
+        p->Release();
+        p = nullptr;
+    }
+}
+
+static int GetHeaderHeightPx(HWND hwnd)
+{
+    UINT dpi = win32_get_dpi_for_window(hwnd);
+    float scale = (float)dpi / 96.0f;
+    int headerH = (int)std::round(36.0f * scale);
+    return (std::max)(30, headerH);
+}
+
+static RECT GetCloseRect(HWND hwnd, const RECT &rc)
+{
+    int headerH = GetHeaderHeightPx(hwnd);
     RECT r = {rc.right - headerH, rc.top, rc.right, rc.top + headerH};
     return r;
 }
 
-static bool PointInRectClient(POINT pt, const RECT &r)
+static void DrawCloseButton(ID2D1HwndRenderTarget *rt, const RECT &r, bool hovered)
 {
-    return pt.x >= r.left && pt.x < r.right && pt.y >= r.top && pt.y < r.bottom;
-}
+    if (!rt)
+        return;
 
-static void DrawCloseButton(HDC hdc, const RECT &r, bool hovered)
-{
+    ID2D1SolidColorBrush *xBrush = nullptr;
+    ID2D1SolidColorBrush *hoverBrush = nullptr;
+    rt->CreateSolidColorBrush(D2D1::ColorF(0.88f, 0.88f, 0.88f, 1.0f), &xBrush);
     if (hovered)
+        rt->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.18f, 0.18f, 1.0f), &hoverBrush);
+    if (hoverBrush)
     {
-        HBRUSH hb = CreateSolidBrush(RGB(45, 45, 45));
-        FillRect(hdc, &r, hb);
-        DeleteObject(hb);
+        rt->FillRectangle(D2D1::RectF((float)r.left, (float)r.top, (float)r.right, (float)r.bottom), hoverBrush);
+        hoverBrush->Release();
     }
 
-    int centerX = (r.left + r.right) / 2;
-    int centerY = (r.top + r.bottom) / 2;
-    int size = 9;
-    int half = size / 2;
-    int left = centerX - half;
-    int right = centerX + half;
-    int top = centerY - half;
-    int bottom = centerY + half;
-
-    HPEN pen = CreatePen(PS_SOLID, 1, RGB(220, 220, 220));
-    HPEN oldPen = (HPEN)SelectObject(hdc, pen);
-    MoveToEx(hdc, left, top, nullptr);
-    LineTo(hdc, right, bottom);
-    MoveToEx(hdc, left, bottom, nullptr);
-    LineTo(hdc, right, top);
-    SelectObject(hdc, oldPen);
-    DeleteObject(pen);
+    if (xBrush)
+    {
+        float centerX = (r.left + r.right) * 0.5f;
+        float centerY = (r.top + r.bottom) * 0.5f;
+        float size = (std::max)(8.0f, (r.bottom - r.top) * 0.30f);
+        float half = size * 0.5f;
+        rt->DrawLine(D2D1::Point2F(centerX - half, centerY - half),
+                     D2D1::Point2F(centerX + half, centerY + half), xBrush, 1.25f);
+        rt->DrawLine(D2D1::Point2F(centerX - half, centerY + half),
+                     D2D1::Point2F(centerX + half, centerY - half), xBrush, 1.25f);
+        xBrush->Release();
+    }
 }
 
 static void ApplyPopupDwmStyle(HWND hwnd, bool focused)
 {
+    (void)focused;
+
+    // Remove native DWM border entirely (avoids bright/white border artifacts).
     const DWORD DWMWA_BORDER_COLOR = 34;
-    COLORREF color = focused ? RGB(61, 143, 242) : RGB(51, 51, 51);
-    DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &color, sizeof(color));
+    COLORREF borderNone = (COLORREF)0xFFFFFFFEu;
+    DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &borderNone, sizeof(borderNone));
 
     const DWORD DWMWA_WINDOW_CORNER_PREFERENCE = 33;
     const int DWMWCP_ROUND = 2;
@@ -140,58 +163,105 @@ static LRESULT CALLBACK PopupWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     {
         if (!s)
             break;
+        if (!g_d2dFactory)
+            D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &g_d2dFactory);
+        if (!g_dwriteFactory)
+            DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), (IUnknown **)&g_dwriteFactory);
+
         PAINTSTRUCT ps;
-        HDC hdc = BeginPaint(hwnd, &ps);
+        BeginPaint(hwnd, &ps);
         RECT rc;
         GetClientRect(hwnd, &rc);
+        UINT dpi = win32_get_dpi_for_window(hwnd);
+        float scale = (float)dpi / 96.0f;
+        int headerH = GetHeaderHeightPx(hwnd);
 
-        // Background
-        HBRUSH bg = CreateSolidBrush(RGB(24, 24, 24));
-        FillRect(hdc, &rc, bg);
-        DeleteObject(bg);
-
-        // Border handled by DWM (thin), avoid double-stroking here.
-
-        // Header line
-        RECT header = rc;
-        header.bottom = header.top + 34;
-        HBRUSH hb = CreateSolidBrush(RGB(28, 28, 28));
-        FillRect(hdc, &header, hb);
-        DeleteObject(hb);
-
-        // Title text
-        if (!s->title.empty())
+        ID2D1HwndRenderTarget *rt = nullptr;
+        if (g_d2dFactory)
         {
-            HFONT f = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
-            HFONT old = (HFONT)SelectObject(hdc, f);
-            SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, RGB(220, 220, 220));
-            RECT tr = header;
-            tr.left += 10;
-            tr.right -= 44;
-            DrawTextW(hdc, s->title.c_str(), (int)s->title.size(), &tr, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
-            SelectObject(hdc, old);
+            D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+                D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                D2D1::PixelFormat(DXGI_FORMAT_UNKNOWN, D2D1_ALPHA_MODE_PREMULTIPLIED),
+                0, 0, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_FEATURE_LEVEL_DEFAULT);
+            D2D1_HWND_RENDER_TARGET_PROPERTIES hwndProps = D2D1::HwndRenderTargetProperties(
+                hwnd, D2D1::SizeU((UINT)(rc.right - rc.left), (UINT)(rc.bottom - rc.top)));
+            g_d2dFactory->CreateHwndRenderTarget(rtProps, hwndProps, &rt);
         }
 
-        if (!s->message.empty())
+        if (rt && g_dwriteFactory)
         {
-            HFONT f = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
-            HFONT old = (HFONT)SelectObject(hdc, f);
-            SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, RGB(190, 190, 190));
-            RECT mr = rc;
-            mr.left += 12;
-            mr.right -= 12;
-            mr.top = header.bottom + 10;
-            DrawTextW(hdc, s->message.c_str(), (int)s->message.size(), &mr,
-                      DT_WORDBREAK | DT_LEFT | DT_TOP);
-            SelectObject(hdc, old);
+            ID2D1SolidColorBrush *bgBrush = nullptr;
+            ID2D1SolidColorBrush *headerBrush = nullptr;
+            ID2D1SolidColorBrush *titleBrush = nullptr;
+            ID2D1SolidColorBrush *bodyBrush = nullptr;
+            rt->CreateSolidColorBrush(D2D1::ColorF(0.09f, 0.10f, 0.11f, 0.98f), &bgBrush);
+            rt->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.13f, 1.0f), &headerBrush);
+            rt->CreateSolidColorBrush(D2D1::ColorF(0.93f, 0.94f, 0.96f, 1.0f), &titleBrush);
+            rt->CreateSolidColorBrush(D2D1::ColorF(0.82f, 0.84f, 0.87f, 1.0f), &bodyBrush);
+
+            IDWriteTextFormat *titleFmt = nullptr;
+            IDWriteTextFormat *bodyFmt = nullptr;
+            g_dwriteFactory->CreateTextFormat(
+                L"Segoe UI Variable Text", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 14.0f * scale, L"fr-fr", &titleFmt);
+            g_dwriteFactory->CreateTextFormat(
+                L"Segoe UI Variable Text", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 13.0f * scale, L"fr-fr", &bodyFmt);
+            if (titleFmt)
+            {
+                titleFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            }
+            if (bodyFmt)
+            {
+                bodyFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                bodyFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+                bodyFmt->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, 20.0f * scale, 16.0f * scale);
+            }
+
+            rt->BeginDraw();
+            rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
+            D2D1_RECT_F bounds = D2D1::RectF((float)rc.left, (float)rc.top, (float)rc.right, (float)rc.bottom);
+            D2D1_RECT_F header = D2D1::RectF(bounds.left, bounds.top, bounds.right, bounds.top + (float)headerH);
+            if (bgBrush)
+                rt->FillRectangle(bounds, bgBrush);
+            if (headerBrush)
+                rt->FillRectangle(header, headerBrush);
+
+            float padX = 12.0f * scale;
+            float padY = 10.0f * scale;
+            if (!s->title.empty() && titleFmt && titleBrush)
+            {
+                D2D1_RECT_F tr = D2D1::RectF(
+                    std::round(bounds.left + padX),
+                    std::round(bounds.top),
+                    std::round(bounds.right - (headerH + 8.0f * scale)),
+                    std::round(bounds.top + (float)headerH));
+                rt->DrawTextW(s->title.c_str(), (UINT32)s->title.size(), titleFmt, tr, titleBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP, DWRITE_MEASURING_MODE_NATURAL);
+            }
+            if (!s->message.empty() && bodyFmt && bodyBrush)
+            {
+                D2D1_RECT_F mr = D2D1::RectF(
+                    std::round(bounds.left + padX),
+                    std::round(bounds.top + (float)headerH + padY),
+                    std::round(bounds.right - padX),
+                    std::round(bounds.bottom - padY));
+                rt->DrawTextW(s->message.c_str(), (UINT32)s->message.size(), bodyFmt, mr, bodyBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP, DWRITE_MEASURING_MODE_NATURAL);
+            }
+
+            s->closeRect = GetCloseRect(hwnd, rc);
+            DrawCloseButton(rt, s->closeRect, s->hoverClose);
+            rt->EndDraw();
+
+            SafeRelease(titleFmt);
+            SafeRelease(bodyFmt);
+            SafeRelease(bgBrush);
+            SafeRelease(headerBrush);
+            SafeRelease(titleBrush);
+            SafeRelease(bodyBrush);
         }
 
-        // Close button
-        s->closeRect = GetCloseRect(rc);
-        DrawCloseButton(hdc, s->closeRect, s->hoverClose);
-
+        SafeRelease(rt);
         EndPaint(hwnd, &ps);
         return 0;
     }
@@ -203,6 +273,7 @@ static LRESULT CALLBACK PopupWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 HWND ShowPopupWindow(HWND owner, int x, int y, int width, int height,
                      const std::wstring &title, const std::wstring &message)
 {
+    (void)owner;
     if (g_activePopup)
     {
         DestroyWindow(g_activePopup);
@@ -225,8 +296,8 @@ HWND ShowPopupWindow(HWND owner, int x, int y, int width, int height,
     s->title = title;
     s->message = message;
 
-    DWORD style = WS_OVERLAPPED | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
-    DWORD exStyle = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT;
+    DWORD style = WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
+    DWORD exStyle = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TRANSPARENT;
 
     HWND hwnd = CreateWindowExW(
         exStyle,
@@ -271,7 +342,7 @@ bool PopupHitTestClose(POINT screenPt)
     RECT rc;
     if (!GetPopupRect(rc))
         return false;
-    RECT closeR = GetCloseRect(rc);
+    RECT closeR = GetCloseRect(g_activePopup, rc);
     return PtInRect(&closeR, screenPt);
 }
 
@@ -281,7 +352,7 @@ bool PopupHitTestHeader(POINT screenPt)
     if (!GetPopupRect(rc))
         return false;
     RECT header = rc;
-    header.bottom = header.top + 34;
+    header.bottom = header.top + GetHeaderHeightPx(g_activePopup);
     return PtInRect(&header, screenPt);
 }
 
@@ -297,7 +368,7 @@ void PopupSetHoverClose(bool hovered)
     s->hoverClose = hovered;
     RECT rc;
     GetClientRect(g_activePopup, &rc);
-    s->closeRect = GetCloseRect(rc);
+    s->closeRect = GetCloseRect(g_activePopup, rc);
     InvalidateRect(g_activePopup, &s->closeRect, FALSE);
 }
 

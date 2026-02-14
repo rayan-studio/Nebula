@@ -1,4 +1,4 @@
-#include "KeyboardManager.h"
+﻿#include "KeyboardManager.h"
 
 #include "core/window/Window.h"
 #include "utils/logger/Logger.h"
@@ -8,6 +8,7 @@
 #include "ui/panels/git/GitPanel.h"
 #include "ui/panels/search/SearchPanel.h"
 #include "ui/panels/terminal/TerminalPanel.h"
+#include "ui/components/titlebar/TitleBar.h"
 #include "ui/components/input/InputTypeFixed.h"
 #include "ui/components/footer/Footer.h"
 #include "lsp/LspManager.h"
@@ -17,6 +18,7 @@
 #include <vector>
 #include <map>
 #include <cwctype>
+#include <cmath>
 
 static bool IsCppLikePath(const std::wstring &path)
 {
@@ -29,6 +31,134 @@ static bool IsCppLikePath(const std::wstring &path)
     for (auto &c : ext) c = (wchar_t)towlower(c);
     return ext == L"c" || ext == L"cpp" || ext == L"cc" || ext == L"cxx" ||
            ext == L"h" || ext == L"hpp" || ext == L"hh" || ext == L"hxx";
+}
+
+static constexpr int kEditorSelectionQuickMenuBaseId = 7050;
+
+static bool IsCtrlSemicolonShortcut(WPARAM wParam, bool ctrl, bool alt, bool shift)
+{
+    if (!ctrl || alt)
+        return false;
+
+    // US layout (;: key)
+    if (wParam == VK_OEM_1)
+        return true;
+
+    // Common FR/AZERTY mapping (';' is often Shift + comma key)
+    if ((wParam == VK_OEM_COMMA || wParam == VK_OEM_2) && shift)
+        return true;
+
+    // Fallback: keyboard-layout aware check.
+    BYTE keyState[256] = {};
+    if (shift)
+        keyState[VK_SHIFT] = 0x80;
+    HKL layout = GetKeyboardLayout(0);
+    UINT scanCode = MapVirtualKeyExW((UINT)wParam, MAPVK_VK_TO_VSC, layout);
+    wchar_t out[4] = {};
+    int rc = ToUnicodeEx((UINT)wParam, scanCode, keyState, out, 4, 0, layout);
+    return (rc == 1 && out[0] == L';');
+}
+
+static int FindNextEnabledMenuIndex(const MenuDropdown &dd, int current, int direction)
+{
+    const int count = (int)dd.items.size();
+    if (count <= 0)
+        return -1;
+    const int dir = (direction >= 0) ? 1 : -1;
+
+    int start = current;
+    if (start < 0 || start >= count)
+        start = (dir > 0) ? -1 : count;
+
+    for (int step = 0; step < count; ++step)
+    {
+        int idx = start + dir * (step + 1);
+        while (idx < 0)
+            idx += count;
+        while (idx >= count)
+            idx -= count;
+
+        bool enabled = true;
+        if (!dd.separators.empty() && idx < (int)dd.separators.size() && dd.separators[(size_t)idx])
+            enabled = false;
+        if (!dd.enabled.empty() && idx < (int)dd.enabled.size() && !dd.enabled[(size_t)idx])
+            enabled = false;
+        if (enabled)
+            return idx;
+    }
+    return -1;
+}
+
+static bool HandleOpenDropdownByKeyboard(HWND hwnd, WPARAM wParam)
+{
+    if (!IsMenuDropdownVisible())
+        return false;
+
+    MenuDropdown &active = GetActiveDropdown();
+    MenuDropdown *target = IsSubmenuDropdownVisible() ? &GetSubmenuDropdown() : &active;
+
+    if (wParam == VK_ESCAPE)
+    {
+        HideSubmenuDropdown(hwnd);
+        HideMenuDropdown(hwnd);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return true;
+    }
+
+    if (wParam == VK_LEFT && IsSubmenuDropdownVisible())
+    {
+        HideSubmenuDropdown(hwnd);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return true;
+    }
+
+    if (wParam == VK_DOWN || wParam == VK_UP || wParam == VK_TAB)
+    {
+        int direction = (wParam == VK_UP) ? -1 : 1;
+        int next = FindNextEnabledMenuIndex(*target, target->hoveredItem, direction);
+        if (next >= 0)
+        {
+            if (target == &active)
+                SetDropdownHoveredItem(next);
+            else
+                SetSubmenuHoveredItem(next);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        return true;
+    }
+
+    if (wParam == VK_RIGHT && !IsSubmenuDropdownVisible())
+    {
+        int idx = active.hoveredItem;
+        if (idx < 0)
+            idx = FindNextEnabledMenuIndex(active, -1, 1);
+        bool hasSub = (idx >= 0 && !active.hasSubmenu.empty() && idx < (int)active.hasSubmenu.size() && active.hasSubmenu[(size_t)idx]);
+        if (hasSub)
+        {
+            const float itemHeight = (active.rect.bottom - active.rect.top) / (active.items.empty() ? 1.0f : (float)active.items.size());
+            const int x = (int)std::lround((active.rect.left + active.rect.right) * 0.5f);
+            const int y = (int)std::lround(active.rect.top + ((float)idx + 0.5f) * itemHeight);
+            SendMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, y));
+        }
+        return true;
+    }
+
+    if (wParam == VK_RETURN || wParam == VK_SPACE)
+    {
+        int idx = target->hoveredItem;
+        if (idx < 0)
+            idx = FindNextEnabledMenuIndex(*target, -1, 1);
+        if (idx < 0)
+            return true;
+
+        const float itemHeight = (target->rect.bottom - target->rect.top) / (target->items.empty() ? 1.0f : (float)target->items.size());
+        const int x = (int)std::lround((target->rect.left + target->rect.right) * 0.5f);
+        const int y = (int)std::lround(target->rect.top + ((float)idx + 0.5f) * itemHeight);
+        SendMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, y));
+        return true;
+    }
+
+    return false;
 }
 
 KeyboardManager::Mods KeyboardManager::GetMods()
@@ -55,6 +185,9 @@ bool KeyboardManager::OnKeyDown(WPARAM wParam)
     if (!window_)
         return false;
 
+    if (HandleOpenDropdownByKeyboard(window_->GetHwnd(), wParam))
+        return true;
+
     const Mods m = GetMods();
 
     if (HandleTamponEditKeyDown(wParam, m))
@@ -77,7 +210,16 @@ bool KeyboardManager::OnChar(WPARAM wParam)
     if (!window_)
         return false;
 
-    // WM_CHAR -> route vers l’input actif
+    if (IsMenuDropdownVisible())
+        return true;
+
+    // Prevent Ctrl-based shortcuts (e.g. Ctrl+;) from injecting printable chars
+    // into focused controls via WM_CHAR.
+    const Mods m = GetMods();
+    if (m.ctrl && !m.alt)
+        return true;
+
+    // WM_CHAR -> route vers l''input actif
     if (HandleTamponEditChar(wParam))
         return true;
     return RouteCharToFocused(wParam);
@@ -314,7 +456,7 @@ void KeyboardManager::CloseActiveTab()
 
     window_->GetTabBar()->CloseTab(active);
 
-    // delete editor + reindex (même logique que ton code)
+    // delete editor + reindex (mÃªme logique que ton code)
     window_->CloseEditorForTabIndex(active);
 
     InvalidateRect(window_->GetHwnd(), nullptr, FALSE);
@@ -355,7 +497,7 @@ void KeyboardManager::SaveActiveTab()
 
                 window_->GetTabBar()->UpdateTabPath(active, chosen, display);
 
-                // ✅ IMPORTANT: enlever le rond
+                // âœ… IMPORTANT: enlever le rond
                 window_->GetTabBar()->SetTabDirty(active, false);
 
                 InvalidateRect(window_->GetHwnd(), nullptr, FALSE);
@@ -366,7 +508,7 @@ void KeyboardManager::SaveActiveTab()
     {
         if (editor->SaveToFile(currentPath))
         {
-            // ✅ IMPORTANT: enlever le rond
+            // âœ… IMPORTANT: enlever le rond
             window_->GetTabBar()->SetTabDirty(active, false);
 
             InvalidateRect(window_->GetHwnd(), nullptr, FALSE);
@@ -380,6 +522,27 @@ void KeyboardManager::SaveActiveTab()
 
 bool KeyboardManager::HandleGlobalShortcuts(WPARAM wParam, const Mods &m)
 {
+    if (IsCtrlSemicolonShortcut(wParam, m.ctrl, m.alt, m.shift))
+    {
+        Orion::Editor *editor = window_->GetEditor();
+        if (editor)
+        {
+            std::wstring selection = editor->GetSelectionText();
+            if (!selection.empty())
+            {
+                POINT pt = {};
+                GetCursorPos(&pt);
+                ScreenToClient(window_->GetHwnd(), &pt);
+                std::vector<std::wstring> items = {
+                    L"Deplacer vers fonction"};
+                ShowContextMenuDropdown(window_->GetHwnd(), items, D2D1::Point2F((float)pt.x + 8.0f, (float)pt.y + 8.0f),
+                                        kEditorSelectionQuickMenuBaseId);
+                InvalidateRect(window_->GetHwnd(), nullptr, FALSE);
+                return true;
+            }
+        }
+    }
+
     if (!m.ctrl && !m.shift && !m.alt && wParam == VK_F12)
     {
         int active = window_->GetTabBar()->GetActiveTabIndex();
@@ -616,7 +779,7 @@ bool KeyboardManager::RouteKeyDownToFocused(WPARAM wParam)
 
 bool KeyboardManager::RouteCharToFocused(WPARAM wParam)
 {
-    // PRIORITÉ 0: Explorer inline input
+    // PRIORITÃ‰ 0: Explorer inline input
     if (GetExplorerManager().IsInlineInputVisible())
     {
         GetExplorerManager().OnCharInline((wchar_t)wParam);
@@ -624,7 +787,7 @@ bool KeyboardManager::RouteCharToFocused(WPARAM wParam)
         return true;
     }
 
-    // PRIORITÉ 0.5: Explorer search mode
+    // PRIORITÃ‰ 0.5: Explorer search mode
     if (GetExplorerManager().IsSearchMode())
     {
         GetExplorerManager().OnCharSearch((wchar_t)wParam);
@@ -632,7 +795,7 @@ bool KeyboardManager::RouteCharToFocused(WPARAM wParam)
         return true;
     }
 
-    // PRIORITÉ 1: SearchPanel input
+    // PRIORITÃ‰ 1: SearchPanel input
     if (GetPanelManager().IsPanelActive(PanelId::Search))
     {
         SearchPanel *searchPanel = GetPanelManager().GetPanelAs<SearchPanel>(PanelId::Search);
@@ -656,7 +819,7 @@ bool KeyboardManager::RouteCharToFocused(WPARAM wParam)
         }
     }
 
-    // PRIORITÉ 1.5: Terminal
+    // PRIORITÃ‰ 1.5: Terminal
     {
         TerminalPanel &terminal = GetTerminalPanel();
         if (terminal.IsVisible() && terminal.IsInitialized() && terminal.IsFocused())
@@ -667,7 +830,7 @@ bool KeyboardManager::RouteCharToFocused(WPARAM wParam)
         }
     }
 
-    // PRIORITÉ 2: Editor
+    // PRIORITÃ‰ 2: Editor
     Orion::Editor *editor = window_->GetEditor();
     if (editor)
     {
@@ -678,3 +841,4 @@ bool KeyboardManager::RouteCharToFocused(WPARAM wParam)
 
     return false;
 }
+

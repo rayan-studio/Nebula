@@ -72,7 +72,8 @@ void SettingsTabView::UpdateLayout(HWND hwnd, float left, float top, float right
     tamponInput_.SetRect(tamponInputRect_);
 
     float githubTop = tamponSectionRect_.bottom + (float)win32_dpi_scale(14, dpi);
-    float githubBottom = (std::max)(githubTop + (float)win32_dpi_scale(138, dpi), bounds_.bottom - padding);
+    float githubHeight = (float)win32_dpi_scale(120, dpi);
+    float githubBottom = githubTop + githubHeight;
     githubSectionRect_ = D2D1::RectF(rowLeft, githubTop, rowRight, githubBottom);
 
     float githubPad = (float)win32_dpi_scale(12, dpi);

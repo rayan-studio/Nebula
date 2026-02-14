@@ -6,3 +6,7 @@
 
 .idea
 /build-ninja
+.env
+out
+.vs
+.idea

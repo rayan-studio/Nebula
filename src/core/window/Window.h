@@ -99,6 +99,11 @@ public:
     Orion::Editor *GetEditor();
     TabBar *GetTabBar() { return &tabBar_; }
     SettingsTabView *GetSettingsTabView() { return settingsTab_.get(); }
+    void SetUpdateToastRect(const D2D1_RECT_F &rect);
+    void ClearUpdateToastRect();
+    bool IsPointInUpdateToast(POINT pt) const;
+    bool SetUpdateToastHovered(bool hovered);
+    bool IsUpdateToastHovered() const { return updateToastHovered_; }
 
     // Gestion multi-éditeurs
     Orion::Editor *GetEditorForTab(int tabIndex);
@@ -147,6 +152,10 @@ public:
     std::map<int, DWORD> pendingDiagTick_;
     bool diagTimerActive_ = false;
     DWORD lastExternalFileCheckTick_ = 0;
+    int lastUpdateStateSnapshot_ = -1;
+    std::wstring lastUpdateStatusMessage_;
+    D2D1_RECT_F updateToastRect_ = D2D1::RectF(0, 0, 0, 0);
+    bool updateToastHovered_ = false;
 
 public:
     float GetTitlebarHoverAlpha(CustomTitleBarHoveredButton btn) const;

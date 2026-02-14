@@ -55,7 +55,7 @@ private:
                                 GitDiffDecorations::SplitViewData &splitData);
 
     void DrawChanges(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd);
-    void DrawQuickActions(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
+    void DrawQuickActions(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd);
 
     bool IsPointInRect(const D2D1_RECT_F &rect, POINT pt) const;
     int HitTestChange(POINT pt) const;
@@ -95,6 +95,8 @@ private:
     bool quickActionMenuOpen_ = false;
     int quickActionHoveredIndex_ = -1;
     int quickActionPrimaryIndex_ = 0; // 0: Commit & Push
+    ID2D1Bitmap *quickChevronRightBmp_ = nullptr;
+    ID2D1Bitmap *quickChevronUpBmp_ = nullptr;
     bool wasVisibleLastLayout_ = false;
     bool hasAutoRefreshed_ = false;
     ULONGLONG lastAutoRefreshTick_ = 0;

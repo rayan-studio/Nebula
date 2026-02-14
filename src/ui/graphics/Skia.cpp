@@ -15,6 +15,7 @@
 #include "ui/screens/SettingsTab.h"
 #include "utils/logger/Logger.h"
 #include "ui/layout/ExplorerLayoutState.h"
+#include "utils/update/UpdateService.h"
 
 static void SafeRelease(IUnknown **p)
 {
@@ -322,6 +323,132 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
             }
         }
         DrawFooterD2D(pRenderTarget_, pDWriteFactory_, hwnd, fp, ln, col, enc);
+    }
+
+    if (window)
+    {
+        if (UpdateService::GetState() == UpdateService::State::UpdateAvailable)
+        {
+            UpdateService::LatestInfo latest = UpdateService::GetLatestInfo();
+            UINT dpi = win32_get_dpi_for_window(hwnd);
+            float margin = (float)win32_dpi_scale(12, dpi);
+            float badgeH = (float)win32_dpi_scale(52, dpi);
+            float footerH = (float)win32_dpi_scale(28, dpi);
+            float sidebarW = (float)win32_dpi_scale(52, dpi);
+            float panelLeftW = 0.0f;
+            Panel *activePanel = GetPanelManager().GetActivePanel();
+            if (activePanel && activePanel->IsVisible())
+            {
+                bool explorerOnRight = activePanel->GetId() == PanelId::Explorer &&
+                                       GetExplorerLayoutState().placement == ExplorerPlacement::Right;
+                if (!explorerOnRight)
+                    panelLeftW = (float)activePanel->GetState().physicalWidth;
+            }
+
+            float badgeLeft = sidebarW + panelLeftW + margin;
+            float badgeBottom = (float)rc.bottom - footerH - margin;
+            float maxBadgeW = (float)rc.right - badgeLeft - margin;
+            bool canDrawBadge = maxBadgeW > (float)win32_dpi_scale(140, dpi);
+            float preferredBadgeW = (float)win32_dpi_scale(380, dpi);
+            float badgeW = 0.0f;
+            if (canDrawBadge)
+            {
+                badgeW = (std::max)((float)win32_dpi_scale(220, dpi), (std::min)(preferredBadgeW, maxBadgeW));
+                if (badgeW > maxBadgeW)
+                {
+                    badgeLeft = margin;
+                    maxBadgeW = (float)rc.right - badgeLeft - margin;
+                    badgeW = (std::min)(badgeW, maxBadgeW);
+                }
+                canDrawBadge = badgeW > (float)win32_dpi_scale(140, dpi);
+            }
+            if (!canDrawBadge)
+            {
+                window->ClearUpdateToastRect();
+            }
+            else
+            {
+                D2D1_RECT_F badgeRect = D2D1::RectF(badgeLeft, badgeBottom - badgeH, badgeLeft + badgeW, badgeBottom);
+                window->SetUpdateToastRect(badgeRect);
+
+                const bool hovered = window->IsUpdateToastHovered();
+                ID2D1SolidColorBrush *bgBrush = nullptr;
+                ID2D1SolidColorBrush *borderBrush = nullptr;
+                ID2D1SolidColorBrush *accentBrush = nullptr;
+                ID2D1SolidColorBrush *textBrush = nullptr;
+                pRenderTarget_->CreateSolidColorBrush(hovered ? D2D1::ColorF(0.16f, 0.31f, 0.22f, 0.97f)
+                                                               : D2D1::ColorF(0.13f, 0.25f, 0.19f, 0.95f),
+                                                      &bgBrush);
+                pRenderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.31f, 0.56f, 0.39f, 1.0f), &borderBrush);
+                pRenderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.45f, 0.82f, 0.54f, 1.0f), &accentBrush);
+                pRenderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.93f, 0.97f, 0.93f), &textBrush);
+
+                if (bgBrush)
+                    pRenderTarget_->FillRoundedRectangle(D2D1::RoundedRect(badgeRect, 8.0f, 8.0f), bgBrush);
+                if (borderBrush)
+                    pRenderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(badgeRect, 8.0f, 8.0f), borderBrush, 1.0f);
+                if (accentBrush)
+                {
+                    D2D1_RECT_F stripe = badgeRect;
+                    stripe.right = stripe.left + (float)win32_dpi_scale(5, dpi);
+                    pRenderTarget_->FillRoundedRectangle(D2D1::RoundedRect(stripe, 8.0f, 8.0f), accentBrush);
+                }
+
+                std::wstring title = L"Mise a jour disponible";
+                if (!latest.version.empty())
+                    title += L" - " + latest.version;
+                std::wstring sub = L"Clique ici pour installer et redemarrer";
+
+                IDWriteTextFormat *titleFmt = nullptr;
+                IDWriteTextFormat *subFmt = nullptr;
+                pDWriteFactory_->CreateTextFormat(L"Segoe UI Variable Text", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                                                  DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                                  12.0f, L"fr-fr", &titleFmt);
+                pDWriteFactory_->CreateTextFormat(L"Segoe UI Variable Text", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                                                  DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                                  11.0f, L"fr-fr", &subFmt);
+                if (titleFmt)
+                {
+                    titleFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                    titleFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                    titleFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                }
+                if (subFmt)
+                {
+                    subFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                    subFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                    subFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                }
+
+                if (textBrush && titleFmt && subFmt)
+                {
+                    float textLeft = badgeRect.left + (float)win32_dpi_scale(14, dpi);
+                    D2D1_RECT_F titleRect = D2D1::RectF(textLeft, badgeRect.top + (float)win32_dpi_scale(8, dpi),
+                                                        badgeRect.right - margin, badgeRect.top + (float)win32_dpi_scale(26, dpi));
+                    D2D1_RECT_F subRect = D2D1::RectF(textLeft, badgeRect.top + (float)win32_dpi_scale(26, dpi),
+                                                      badgeRect.right - margin, badgeRect.bottom - (float)win32_dpi_scale(6, dpi));
+                    pRenderTarget_->DrawTextW(title.c_str(), (UINT32)title.size(), titleFmt, titleRect, textBrush);
+                    pRenderTarget_->DrawTextW(sub.c_str(), (UINT32)sub.size(), subFmt, subRect, textBrush);
+                }
+
+                if (titleFmt)
+                    titleFmt->Release();
+                if (subFmt)
+                    subFmt->Release();
+                if (bgBrush)
+                    bgBrush->Release();
+                if (borderBrush)
+                    borderBrush->Release();
+                if (accentBrush)
+                    accentBrush->Release();
+                if (textBrush)
+                    textBrush->Release();
+            }
+        }
+        else
+        {
+            window->ClearUpdateToastRect();
+        }
     }
 
     // Dessiner le dropdown par-dessus tout

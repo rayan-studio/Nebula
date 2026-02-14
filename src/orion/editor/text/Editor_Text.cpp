@@ -31,6 +31,19 @@ namespace Orion
             if (a.line > b.line || (a.line == b.line && a.column > b.column))
                 std::swap(a, b);
         }
+
+        static std::wstring LeadingIndent(const std::wstring &line)
+        {
+            size_t i = 0;
+            while (i < line.size() && (line[i] == L' ' || line[i] == L'\t'))
+                ++i;
+            return line.substr(0, i);
+        }
+
+        static bool StartsWith(const std::wstring &text, const std::wstring &prefix)
+        {
+            return prefix.size() <= text.size() && text.compare(0, prefix.size(), prefix) == 0;
+        }
     }
 
     std::wstring Editor::GetSelectionText() const
@@ -691,5 +704,86 @@ namespace Orion
             state_.hasSelection = false;
             Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
         }
+    }
+
+    bool Editor::MoveSelectionToFunction()
+    {
+        if (!state_.hasSelection || state_.lines.empty())
+            return false;
+
+        CaretPosition start = state_.selectionStart;
+        CaretPosition end = state_.caret;
+        NormalizeRange(start, end);
+
+        int startLine = (std::max)(0, (std::min)(start.line, (int)state_.lines.size() - 1));
+        int endLine = (std::max)(0, (std::min)(end.line, (int)state_.lines.size() - 1));
+        if (end.column == 0 && endLine > startLine)
+            endLine -= 1;
+        if (endLine < startLine)
+            return false;
+
+        if (undoStack_.empty() || undoStack_.back().lines != state_.lines ||
+            undoStack_.back().caret.line != state_.caret.line ||
+            undoStack_.back().caret.column != state_.caret.column)
+        {
+            undoStack_.push_back(state_);
+            if (undoStack_.size() > maxUndoEntries_)
+                undoStack_.erase(undoStack_.begin());
+        }
+
+        std::vector<std::wstring> selectedLines;
+        selectedLines.reserve((size_t)(endLine - startLine + 1));
+        for (int line = startLine; line <= endLine; ++line)
+            selectedLines.push_back(state_.lines[(size_t)line]);
+        if (selectedLines.empty())
+            return false;
+
+        std::wstring baseIndent = LeadingIndent(state_.lines[(size_t)startLine]);
+        std::wstring bodyIndent = baseIndent + L"    ";
+
+        std::wstring functionName = L"extractedFunction";
+        int suffix = 1;
+        auto nameInUse = [&](const std::wstring &candidate) -> bool
+        {
+            for (const auto &line : state_.lines)
+            {
+                if (line.find(candidate) != std::wstring::npos)
+                    return true;
+            }
+            return false;
+        };
+        while (nameInUse(functionName))
+        {
+            functionName = L"extractedFunction" + std::to_wstring(suffix++);
+        }
+
+        std::vector<std::wstring> replacement;
+        replacement.reserve(selectedLines.size() + 4);
+        replacement.push_back(baseIndent + L"auto " + functionName + L" = [&]()");
+        replacement.push_back(baseIndent + L"{");
+        for (const auto &raw : selectedLines)
+        {
+            std::wstring body = raw;
+            if (!baseIndent.empty() && StartsWith(body, baseIndent))
+                body = body.substr(baseIndent.size());
+            replacement.push_back(bodyIndent + body);
+        }
+        replacement.push_back(baseIndent + L"};");
+        replacement.push_back(baseIndent + functionName + L"();");
+
+        state_.lines.erase(state_.lines.begin() + startLine, state_.lines.begin() + endLine + 1);
+        state_.lines.insert(state_.lines.begin() + startLine, replacement.begin(), replacement.end());
+
+        int callLine = startLine + (int)replacement.size() - 1;
+        state_.selectionStart = {startLine, 0};
+        state_.caret = {callLine, (int)state_.lines[(size_t)callLine].size()};
+        state_.hasSelection = false;
+        selectionExpandHistory_.clear();
+        secondaryCarets_.clear();
+        state_.caretVisible = true;
+        state_.lastBlinkTime = GetTickCount();
+        Orion::Caret::EnsureCaretVisible(state_, metrics_, scrollbar_);
+        MarkDirty();
+        return true;
     }
 }

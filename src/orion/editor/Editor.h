@@ -370,6 +370,7 @@ namespace Orion
         void SelectCurrentLine();
         void ExpandSelection();
         void ShrinkSelection();
+        bool MoveSelectionToFunction();
         void DeleteSelectionPublic();
         void SetSelectionStyle(Rendering::SelectionStyle style);
         void SetSelectionColor(float r, float g, float b, float a);
@@ -502,9 +503,15 @@ namespace Orion
 
         DWORD lastClickTime_ = 0;
         POINT lastClickPos_ = {0, 0};
+        int lastClickTextLine_ = -1;
+        int lastClickTextColumn_ = -1;
         int clickCount_ = 0;
         POINT dragStartPos_ = {0, 0};
         bool dragSelecting_ = false;
+        bool gutterLineDragSelecting_ = false;
+        bool gutterLineDragMoved_ = false;
+        int gutterLineDragAnchorLine_ = -1;
+        int gutterLineDragLastLine_ = -1;
         std::vector<CaretPosition> secondaryCarets_;
 
         bool isPreview_ = false;
