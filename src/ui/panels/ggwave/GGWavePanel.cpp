@@ -1,5 +1,7 @@
 #include "GGWavePanel.h"
 #include "helpers/window_helpers.h"
+#include "ui/components/input/InputTheme.h"
+#include "ui/theme/Theme.h"
 #include <algorithm>
 #include <cmath>
 
@@ -131,17 +133,31 @@ void GGWavePanel::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND hwnd
 }
 
 void GGWavePanel::DrawButton(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite) {
+    const UI::Theme::Palette &themePalette = UI::Theme::GetPalette();
+    auto ScaleRgb = [](D2D1_COLOR_F c, float m) -> D2D1_COLOR_F {
+        c.r = (std::max)(0.0f, (std::min)(1.0f, c.r * m));
+        c.g = (std::max)(0.0f, (std::min)(1.0f, c.g * m));
+        c.b = (std::max)(0.0f, (std::min)(1.0f, c.b * m));
+        return c;
+    };
+
     // Button background
     ID2D1SolidColorBrush* bgBrush = nullptr;
-    
-    DWORD bgColor;
+    D2D1_COLOR_F bgColor = UI::InputTheme::Background();
     if (listening_) {
-        bgColor = buttonPressed_ ? 0x2D7D2D : (buttonHovered_ ? 0x3D8D3D : 0x2D6D2D); // Green when listening
+        bgColor = UI::Theme::Accent();
+        if (buttonPressed_)
+            bgColor = ScaleRgb(bgColor, 0.78f);
+        else if (buttonHovered_)
+            bgColor = ScaleRgb(bgColor, 0.90f);
     } else {
-        bgColor = buttonPressed_ ? 0x3D3D3D : (buttonHovered_ ? 0x4D4D4D : 0x2D2D2D); // Gray when not
+        if (buttonPressed_)
+            bgColor = themePalette.explorerRowActive;
+        else if (buttonHovered_)
+            bgColor = themePalette.explorerRowHover;
     }
-    
-    ctx->CreateSolidColorBrush(D2D1::ColorF(bgColor), &bgBrush);
+
+    ctx->CreateSolidColorBrush(bgColor, &bgBrush);
     
     if (bgBrush) {
         D2D1_ROUNDED_RECT roundedRect = D2D1::RoundedRect(
@@ -162,7 +178,9 @@ void GGWavePanel::DrawButton(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite) {
         float alpha = 0.5f + 0.5f * std::sinf(animPhase_);
         
         ID2D1SolidColorBrush* borderBrush = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0x4CAF50, alpha), &borderBrush);
+        D2D1_COLOR_F pulse = UI::Theme::AccentStrong();
+        pulse.a = alpha;
+        ctx->CreateSolidColorBrush(pulse, &borderBrush);
         
         if (borderBrush) {
             D2D1_ROUNDED_RECT roundedRect = D2D1::RoundedRect(
@@ -185,7 +203,7 @@ void GGWavePanel::DrawButton(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite) {
         iconFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         
         ID2D1SolidColorBrush* iconBrush = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(listening_ ? 0xFFFFFF : 0xAAAAAA), &iconBrush);
+        ctx->CreateSolidColorBrush(listening_ ? UI::Theme::PrimaryText() : UI::Theme::MutedText(), &iconBrush);
         
         if (iconBrush) {
             // \uE767 = Volume, \uE74F = Mute, \uE720 = Microphone
@@ -261,7 +279,9 @@ void GGWavePanel::DrawMessagePopup(ID2D1RenderTarget* ctx, IDWriteFactory* dwrit
 
     // Background
     ID2D1SolidColorBrush* bgBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0x1E1E1E, 0.95f), &bgBrush);
+    D2D1_COLOR_F popupBg = UI::Theme::ChromeBackground();
+    popupBg.a = 0.95f;
+    ctx->CreateSolidColorBrush(popupBg, &bgBrush);
     if (bgBrush) {
         D2D1_ROUNDED_RECT roundedRect = D2D1::RoundedRect(
             D2D1::RectF(popupX, popupY, popupX + popupWidth, popupY + popupHeight),
@@ -273,7 +293,7 @@ void GGWavePanel::DrawMessagePopup(ID2D1RenderTarget* ctx, IDWriteFactory* dwrit
 
     // Border
     ID2D1SolidColorBrush* borderBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0x4CAF50), &borderBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::Accent(), &borderBrush);
     if (borderBrush) {
         D2D1_ROUNDED_RECT roundedRect = D2D1::RoundedRect(
             D2D1::RectF(popupX, popupY, popupX + popupWidth, popupY + popupHeight),
@@ -286,7 +306,7 @@ void GGWavePanel::DrawMessagePopup(ID2D1RenderTarget* ctx, IDWriteFactory* dwrit
     // Title
     if (titleFormat) {
         ID2D1SolidColorBrush* titleBrush = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0x4CAF50), &titleBrush);
+        ctx->CreateSolidColorBrush(UI::Theme::AccentStrong(), &titleBrush);
         if (titleBrush) {
             D2D1_RECT_F titleRect = D2D1::RectF(popupX + 10.0f * scale, popupY + 6.0f * scale,
                                                 popupX + popupWidth - 10.0f * scale, popupY + 6.0f * scale + titleHeight - 4.0f * scale);
@@ -299,7 +319,7 @@ void GGWavePanel::DrawMessagePopup(ID2D1RenderTarget* ctx, IDWriteFactory* dwrit
     // Message (use layout to ensure wrapping and clipping)
     if (textFormat) {
         ID2D1SolidColorBrush* textBrush = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0xCCCCCC), &textBrush);
+        ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &textBrush);
         if (textBrush) {
             if (textLayout) {
                 D2D1_POINT_2F origin = { popupX + 10.0f * scale, popupY + titleHeight + 6.0f * scale };

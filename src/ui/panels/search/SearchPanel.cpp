@@ -3,6 +3,7 @@
 #include "helpers/window_helpers.h"
 #include "core/explorer/Explorer.h"
 #include "ui/components/input/InputTheme.h"
+#include "ui/theme/Theme.h"
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -229,6 +230,16 @@ void SearchPanel::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND /*hw
     // Title
     Panel::DrawTitle(ctx, dwrite);
 
+    // Keep input colors in sync when theme mode changes at runtime.
+    auto &style = searchInput_.GetStyle();
+    style.backgroundColor = UI::InputTheme::Background();
+    style.borderColor = UI::InputTheme::Border();
+    style.focusBorderColor = UI::InputTheme::FocusBorder();
+    style.textColor = UI::InputTheme::Text();
+    style.placeholderColor = UI::InputTheme::Placeholder();
+    style.selectionColor = UI::InputTheme::Selection();
+    style.cursorColor = UI::InputTheme::Caret();
+
     // ✨ SIMPLIFIÉ : Le TextInput gère maintenant tout le style SearchBox
     searchInput_.Draw(ctx, dwrite);
 
@@ -249,6 +260,7 @@ void SearchPanel::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND /*hw
 
 void SearchPanel::DrawResults(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
 {
+    const UI::Theme::Palette &themePalette = UI::Theme::GetPalette();
     if (searchResults_.empty())
     {
         // Draw "No results" or instruction
@@ -262,7 +274,7 @@ void SearchPanel::DrawResults(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
             tf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
             ID2D1SolidColorBrush *textBrush = nullptr;
-            ctx->CreateSolidColorBrush(D2D1::ColorF(0.5f, 0.5f, 0.5f), &textBrush);
+            ctx->CreateSolidColorBrush(UI::Theme::MutedText(), &textBrush);
 
             D2D1_RECT_F rect = D2D1::RectF(
                 state_.leftEdge + state_.leftPadding,
@@ -290,12 +302,14 @@ void SearchPanel::DrawResults(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
     ID2D1SolidColorBrush *selectedBgBrush = nullptr;
     ID2D1SolidColorBrush *separatorBrush = nullptr;
 
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.95f, 0.95f), &fileNameBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.55f, 0.55f, 0.55f), &pathBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.75f, 0.75f, 0.75f), &excerptBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.15f, 0.15f, 0.15f), &hoverBgBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.30f, 0.50f), &selectedBgBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.2f, 0.2f, 0.2f), &separatorBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &fileNameBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::MutedText(), &pathBrush);
+    D2D1_COLOR_F excerptColor = UI::Theme::PrimaryText();
+    excerptColor.a = 0.86f;
+    ctx->CreateSolidColorBrush(excerptColor, &excerptBrush);
+    ctx->CreateSolidColorBrush(themePalette.explorerRowHover, &hoverBgBrush);
+    ctx->CreateSolidColorBrush(themePalette.explorerRowActive, &selectedBgBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &separatorBrush);
 
     // Text formats
     IDWriteTextFormat *fileNameFormat = nullptr;

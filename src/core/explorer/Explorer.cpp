@@ -42,6 +42,84 @@ static std::wstring NormalizePathForCompare(const std::wstring &path)
     return out;
 }
 
+static std::filesystem::path NormalizeFsPathBestEffort(const std::filesystem::path &path)
+{
+    std::error_code ec;
+    std::filesystem::path normalized = std::filesystem::weakly_canonical(path, ec);
+    if (ec)
+        normalized = path.lexically_normal();
+    return normalized;
+}
+
+static bool IsSameOrChildPath(const std::filesystem::path &path, const std::filesystem::path &base)
+{
+    std::wstring pathNorm = NormalizePathForCompare(NormalizeFsPathBestEffort(path).wstring());
+    std::wstring baseNorm = NormalizePathForCompare(NormalizeFsPathBestEffort(base).wstring());
+    if (baseNorm.empty() || pathNorm.size() < baseNorm.size())
+        return false;
+    if (pathNorm.compare(0, baseNorm.size(), baseNorm) != 0)
+        return false;
+    if (pathNorm.size() == baseNorm.size())
+        return true;
+    return pathNorm[baseNorm.size()] == L'\\';
+}
+
+static std::filesystem::path BuildUniqueDropDestination(const std::filesystem::path &desiredPath)
+{
+    std::error_code ec;
+    if (!std::filesystem::exists(desiredPath, ec))
+        return desiredPath;
+
+    std::filesystem::path parent = desiredPath.parent_path();
+    std::wstring stem = desiredPath.stem().wstring();
+    std::wstring ext = desiredPath.extension().wstring();
+    if (stem.empty())
+        stem = desiredPath.filename().wstring();
+
+    for (int index = 1; index < 10000; ++index)
+    {
+        std::wstring candidateName = stem + L" (" + std::to_wstring(index) + L")" + ext;
+        std::filesystem::path candidate = parent / candidateName;
+        if (!std::filesystem::exists(candidate, ec))
+            return candidate;
+    }
+
+    return desiredPath;
+}
+
+static bool CopyPathRecursive(const std::filesystem::path &source, const std::filesystem::path &destination)
+{
+    std::error_code ec;
+    if (std::filesystem::is_directory(source, ec))
+    {
+        ec.clear();
+        std::filesystem::copy(source, destination, std::filesystem::copy_options::recursive, ec);
+        return !ec;
+    }
+
+    ec.clear();
+    std::filesystem::copy_file(source, destination, std::filesystem::copy_options::none, ec);
+    return !ec;
+}
+
+static bool MovePathBestEffort(const std::filesystem::path &source, const std::filesystem::path &destination)
+{
+    std::error_code ec;
+    std::filesystem::rename(source, destination, ec);
+    if (!ec)
+        return true;
+
+    if (!CopyPathRecursive(source, destination))
+        return false;
+
+    ec.clear();
+    if (std::filesystem::is_directory(source, ec))
+        std::filesystem::remove_all(source, ec);
+    else
+        std::filesystem::remove(source, ec);
+    return !ec;
+}
+
 static std::wstring ToClassName(const std::wstring &name)
 {
     std::wstring out;
@@ -1486,6 +1564,76 @@ void ExplorerManager::OnMouseWheel(HWND hwnd, int delta)
         UpdateItemPositions();
         InvalidateRect(hwnd, nullptr, FALSE);
     }
+}
+
+bool ExplorerManager::HandleExternalDrop(HWND hwnd, POINT clientPoint, const std::vector<std::wstring> &droppedPaths)
+{
+    if (droppedPaths.empty() || state_.rootPath.empty())
+        return false;
+
+    std::filesystem::path rootPath = NormalizeFsPathBestEffort(std::filesystem::path(state_.rootPath));
+    std::filesystem::path targetDir = rootPath;
+
+    const int hitIndex = HitTestItem(clientPoint);
+    {
+        std::lock_guard<std::mutex> lk(itemsMutex_);
+        if (hitIndex >= 0 && hitIndex < (int)state_.items.size())
+        {
+            const ExplorerItem &item = state_.items[hitIndex];
+            if (!item.fullPath.empty() && item.fullPath != L"__inline_placeholder__")
+            {
+                targetDir = item.isDirectory
+                                ? std::filesystem::path(item.fullPath)
+                                : std::filesystem::path(item.fullPath).parent_path();
+            }
+        }
+    }
+
+    targetDir = NormalizeFsPathBestEffort(targetDir);
+    std::error_code ec;
+    if (!std::filesystem::exists(targetDir, ec) || !std::filesystem::is_directory(targetDir, ec))
+        targetDir = rootPath;
+
+    bool importedAny = false;
+
+    for (const std::wstring &sourceRaw : droppedPaths)
+    {
+        if (sourceRaw.empty())
+            continue;
+
+        std::filesystem::path sourcePath = NormalizeFsPathBestEffort(std::filesystem::path(sourceRaw));
+        if (!std::filesystem::exists(sourcePath, ec))
+            continue;
+
+        // Guard against dropping a folder into itself/child path.
+        if (std::filesystem::is_directory(sourcePath, ec) && IsSameOrChildPath(targetDir, sourcePath))
+            continue;
+
+        std::filesystem::path destinationPath = BuildUniqueDropDestination(targetDir / sourcePath.filename());
+        if (NormalizePathForCompare(destinationPath.wstring()) == NormalizePathForCompare(sourcePath.wstring()))
+            continue;
+
+        const bool sourceInProject = IsSameOrChildPath(sourcePath, rootPath);
+        const bool destinationInProject = IsSameOrChildPath(destinationPath, rootPath);
+        const bool preferMove = sourceInProject && destinationInProject;
+
+        bool ok = false;
+        if (preferMove)
+            ok = MovePathBestEffort(sourcePath, destinationPath);
+        else
+            ok = CopyPathRecursive(sourcePath, destinationPath);
+
+        if (ok)
+            importedAny = true;
+    }
+
+    if (!importedAny)
+        return false;
+
+    LoadDirectoryContents();
+    UpdateItemPositions();
+    InvalidateRect(hwnd, nullptr, FALSE);
+    return true;
 }
 
 void ExplorerManager::OnLeftButtonUp(HWND hwnd)

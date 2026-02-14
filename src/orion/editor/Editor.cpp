@@ -11,6 +11,7 @@
 #include "orion/rendering/GuideRenderer.h"
 #include "orion/selection/Selection.h"
 #include "orion/caret/Caret.h"
+#include "ui/theme/Theme.h"
 #include <cmath>
 
 // Ensure Windows min/max macros don't interfere with std::min/std::max
@@ -41,6 +42,62 @@ namespace Orion
         return a.line == b.line && a.column == b.column;
     }
 
+    void Editor::ApplyUiTheme(bool lightMode)
+    {
+        const UI::Theme::Palette &palette = UI::Theme::GetPalette();
+
+        theme_.background = UI::Theme::ChromeBackground();
+        theme_.gutterBackground = theme_.background;
+        theme_.text = palette.inputText;
+        theme_.caret = palette.inputCaret;
+        theme_.lineNumberText = UI::Theme::MutedText();
+        theme_.selection = palette.inputSelection;
+
+        if (lightMode)
+        {
+            theme_.activeLineBackground = D2D1::ColorF(0.88f, 0.92f, 0.98f, 1.0f);
+
+            theme_.keyword = D2D1::ColorF(0.16f, 0.34f, 0.74f, 1.0f);
+            theme_.string = D2D1::ColorF(0.66f, 0.28f, 0.12f, 1.0f);
+            theme_.comment = D2D1::ColorF(0.22f, 0.50f, 0.29f, 1.0f);
+            theme_.number = D2D1::ColorF(0.57f, 0.38f, 0.10f, 1.0f);
+            theme_.function = D2D1::ColorF(0.47f, 0.22f, 0.68f, 1.0f);
+            theme_.type = D2D1::ColorF(0.06f, 0.49f, 0.64f, 1.0f);
+            theme_.operator_ = D2D1::ColorF(0.20f, 0.24f, 0.30f, 1.0f);
+            theme_.variable = D2D1::ColorF(0.09f, 0.31f, 0.61f, 1.0f);
+        }
+        else
+        {
+            theme_.activeLineBackground = D2D1::ColorF(0.145098f, 0.145098f, 0.149019f, 1.0f);
+
+            theme_.keyword = D2D1::ColorF(0.384314f, 0.627451f, 0.909804f, 1.0f);
+            theme_.string = D2D1::ColorF(0.874510f, 0.619608f, 0.501961f, 1.0f);
+            theme_.comment = D2D1::ColorF(0.498039f, 0.713725f, 0.415686f, 1.0f);
+            theme_.number = D2D1::ColorF(0.776471f, 0.850980f, 0.690196f, 1.0f);
+            theme_.function = D2D1::ColorF(0.901961f, 0.890196f, 0.603921f, 1.0f);
+            theme_.type = D2D1::ColorF(0.349019f, 0.815686f, 0.737255f, 1.0f);
+            theme_.operator_ = D2D1::ColorF(0.878431f, 0.878431f, 0.878431f, 1.0f);
+            theme_.variable = D2D1::ColorF(0.658824f, 0.878431f, 1.0f, 1.0f);
+        }
+    }
+
+    void Editor::SyncThemeFromUi()
+    {
+        const bool isLight = (UI::Theme::GetMode() == UI::Theme::Mode::Light);
+        if (appliedUiThemeInitialized_ && appliedUiThemeIsLight_ == isLight)
+            return;
+
+        ApplyUiTheme(isLight);
+        appliedUiThemeIsLight_ = isLight;
+        appliedUiThemeInitialized_ = true;
+
+        Rendering::SelectionConfig selectionConfig;
+        selectionConfig.color = theme_.selection;
+        selectionConfig.cornerRadius = 3.0f;
+        selectionConfig.style = Rendering::SelectionStyle::RoundedSmart;
+        selection_ = std::make_unique<Rendering::Selection>(selectionConfig);
+    }
+
     Editor::Editor()
     {
         state_.lastBlinkTime = GetTickCount();
@@ -56,9 +113,15 @@ namespace Orion
         Geometry::IndentConfig indentConfig = Geometry::IndentConfig{4, 8.0f};
         indentHelper_ = std::make_unique<Geometry::IndentationHelper>(indentConfig);
 
+        const bool isLight = (UI::Theme::GetMode() == UI::Theme::Mode::Light);
+        ApplyUiTheme(isLight);
+        appliedUiThemeInitialized_ = true;
+        appliedUiThemeIsLight_ = isLight;
+
         Rendering::GuideStyle guideStyle;
-        guideStyle.normalColor = D2D1::ColorF(0.3f, 0.3f, 0.35f, 0.5f);
-        guideStyle.activeColor = D2D1::ColorF(0.4f, 0.4f, 0.5f, 0.7f);
+        guideStyle.normalColor = D2D1::ColorF(theme_.lineNumberText.r, theme_.lineNumberText.g, theme_.lineNumberText.b, 0.45f);
+        guideStyle.activeColor = D2D1::ColorF(theme_.text.r, theme_.text.g, theme_.text.b, 0.55f);
+        guideStyle.lineWidth = 0.75f;
         guideRenderer_ = std::make_unique<Rendering::GuideRenderer>(indentConfig, guideStyle);
 
         Rendering::SelectionConfig selectionConfig;

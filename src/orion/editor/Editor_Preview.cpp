@@ -1,9 +1,11 @@
 #include "orion/editor/Editor.h"
 #include "core/window/Window.h"
+#include "ui/theme/Theme.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <cwctype>
 #include <cctype>
 #include <filesystem>
@@ -47,6 +49,147 @@ namespace
         return extLower == L".png" || extLower == L".jpg" || extLower == L".jpeg" ||
                extLower == L".gif" || extLower == L".bmp" || extLower == L".tiff" ||
                extLower == L".tif" || extLower == L".webp" || extLower == L".ico";
+    }
+
+    std::wstring ResolvePreviewPath(const std::wstring &filePath)
+    {
+        if (filePath.empty())
+            return filePath;
+
+        std::error_code ec;
+        std::filesystem::path p(filePath);
+        if (p.is_relative())
+            p = std::filesystem::absolute(p, ec);
+        if (ec)
+            return filePath;
+
+        std::filesystem::path canonical = std::filesystem::weakly_canonical(p, ec);
+        if (!ec && !canonical.empty())
+            return canonical.wstring();
+
+        return p.lexically_normal().wstring();
+    }
+
+    bool LoadPreviewWithIconFile(const std::wstring &filePath, HBITMAP &outBitmap, SIZE &outSize)
+    {
+        HICON hIcon = (HICON)LoadImageW(nullptr, filePath.c_str(), IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE);
+        if (!hIcon)
+            return false;
+
+        ICONINFO iconInfo = {};
+        if (!GetIconInfo(hIcon, &iconInfo))
+        {
+            DestroyIcon(hIcon);
+            return false;
+        }
+
+        BITMAP bm = {};
+        int width = GetSystemMetrics(SM_CXICON);
+        int height = GetSystemMetrics(SM_CYICON);
+        if (iconInfo.hbmColor && GetObject(iconInfo.hbmColor, sizeof(BITMAP), &bm) > 0)
+        {
+            width = bm.bmWidth;
+            height = bm.bmHeight;
+        }
+        else if (iconInfo.hbmMask && GetObject(iconInfo.hbmMask, sizeof(BITMAP), &bm) > 0)
+        {
+            width = bm.bmWidth;
+            height = bm.bmHeight / 2;
+        }
+
+        HDC screenDc = GetDC(nullptr);
+        HDC memDc = CreateCompatibleDC(screenDc);
+
+        BITMAPINFO bmi = {};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = width;
+        bmi.bmiHeader.biHeight = -height;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        void *bits = nullptr;
+        HBITMAP hDib = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+        bool success = false;
+
+        if (memDc && hDib)
+        {
+            if (bits)
+                memset(bits, 0, (size_t)width * (size_t)height * 4u);
+            HGDIOBJ oldBmp = SelectObject(memDc, hDib);
+            DrawIconEx(memDc, 0, 0, hIcon, width, height, 0, nullptr, DI_NORMAL);
+            SelectObject(memDc, oldBmp);
+            outBitmap = hDib;
+            outSize.cx = width;
+            outSize.cy = height;
+            success = true;
+        }
+        else if (hDib)
+        {
+            DeleteObject(hDib);
+        }
+
+        if (memDc)
+            DeleteDC(memDc);
+        if (screenDc)
+            ReleaseDC(nullptr, screenDc);
+        if (iconInfo.hbmColor)
+            DeleteObject(iconInfo.hbmColor);
+        if (iconInfo.hbmMask)
+            DeleteObject(iconInfo.hbmMask);
+        DestroyIcon(hIcon);
+        return success;
+    }
+
+    ID2D1Bitmap *CreateD2DBitmapFromHBitmap(ID2D1RenderTarget *ctx, HBITMAP hBitmap)
+    {
+        if (!ctx || !hBitmap)
+            return nullptr;
+
+        BITMAP bm = {};
+        if (GetObject(hBitmap, sizeof(BITMAP), &bm) <= 0 || bm.bmWidth <= 0 || bm.bmHeight <= 0)
+            return nullptr;
+
+        const int width = bm.bmWidth;
+        const int height = bm.bmHeight;
+        BITMAPINFO bmi = {};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = width;
+        bmi.bmiHeader.biHeight = -height; // top-down
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        std::vector<unsigned char> pixels((size_t)width * (size_t)height * 4u);
+        HDC screenDc = GetDC(nullptr);
+        if (!screenDc)
+            return nullptr;
+        int scanLines = GetDIBits(screenDc, hBitmap, 0, (UINT)height, pixels.data(), &bmi, DIB_RGB_COLORS);
+        ReleaseDC(nullptr, screenDc);
+        if (scanLines == 0)
+            return nullptr;
+
+        // Convert straight alpha BGRA -> premultiplied BGRA expected by D2D.
+        for (size_t i = 0; i + 3 < pixels.size(); i += 4)
+        {
+            const unsigned int a = pixels[i + 3];
+            pixels[i + 0] = (unsigned char)((pixels[i + 0] * a + 127) / 255);
+            pixels[i + 1] = (unsigned char)((pixels[i + 1] * a + 127) / 255);
+            pixels[i + 2] = (unsigned char)((pixels[i + 2] * a + 127) / 255);
+        }
+
+        ID2D1Bitmap *bmp = nullptr;
+        D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        if (FAILED(ctx->CreateBitmap(
+                D2D1::SizeU((UINT32)width, (UINT32)height),
+                pixels.data(),
+                width * 4,
+                props,
+                &bmp)))
+            return nullptr;
+
+        return bmp;
     }
 
     HBITMAP CreateHBitmapFromWicSource(IWICBitmapSource *source, SIZE &sizeOut)
@@ -1740,22 +1883,40 @@ namespace Orion
             bool comInitialized = SUCCEEDED(hrCo);
 
             std::wstring extension = ToLower(std::filesystem::path(filePathCopy).extension().wstring());
+            std::wstring resolvedPath = ResolvePreviewPath(filePathCopy);
             HBITMAP previewBitmap = nullptr;
             SIZE previewSize = {0, 0};
             bool loaded = false;
 
-            if (IsImageExtension(extension))
-                loaded = LoadPreviewWithWic(filePathCopy, previewBitmap, previewSize);
+            const std::wstring loadPath = resolvedPath.empty() ? filePathCopy : resolvedPath;
+            std::error_code ec;
+            const bool exists = !loadPath.empty() && std::filesystem::exists(loadPath, ec);
 
-            if (!loaded)
-                loaded = LoadPreviewWithShellThumbnail(filePathCopy, previewBitmap, previewSize);
-            if (!loaded)
-                loaded = LoadPreviewWithThumbnailCache(filePathCopy, previewBitmap, previewSize);
+            if (exists)
+            {
+                if (extension == L".ico")
+                {
+                    loaded = LoadPreviewWithIconFile(loadPath, previewBitmap, previewSize);
+                }
+                else if (extension == L".pdf")
+                {
+                    loaded = LoadPreviewWithShellThumbnail(loadPath, previewBitmap, previewSize);
+                }
+                else if (IsImageExtension(extension))
+                {
+                    loaded = LoadPreviewWithWic(loadPath, previewBitmap, previewSize);
+                }
+            }
 
             result->previewBitmap = previewBitmap;
             result->previewSize = previewSize;
             if (!loaded)
-                result->previewMessage = L"Preview not available.";
+            {
+                if (!exists)
+                    result->previewMessage = L"Preview unavailable: file not found.";
+                else
+                    result->previewMessage = L"Preview not available.";
+            }
 
             if (comInitialized)
                 CoUninitialize();
@@ -2096,9 +2257,15 @@ namespace Orion
             {
                 return (std::max)(0.0f, (std::min)(1.0f, v));
             };
+            const UI::Theme::Palette &previewPalette = UI::Theme::GetPalette();
+            const bool previewLight = (UI::Theme::GetMode() == UI::Theme::Mode::Light);
             D2D1_COLOR_F base = theme_.text;
             D2D1_COLOR_F bodyColor = D2D1::ColorF(saturate(base.r + 0.02f), saturate(base.g + 0.02f), saturate(base.b + 0.02f), 0.96f);
             D2D1_COLOR_F headingColor = D2D1::ColorF(saturate(base.r + 0.12f), saturate(base.g + 0.12f), saturate(base.b + 0.12f), 1.0f);
+            D2D1_COLOR_F ruleColor = UI::Theme::ChromeBorder();
+            ruleColor.a = previewLight ? 0.70f : 0.42f;
+            D2D1_COLOR_F accentColor = UI::Theme::Accent();
+            accentColor.a = 0.95f;
 
             ID2D1SolidColorBrush *textBrush = nullptr;
             ID2D1SolidColorBrush *headingBrush = nullptr;
@@ -2106,8 +2273,8 @@ namespace Orion
             ID2D1SolidColorBrush *accentBrush = nullptr;
             ctx->CreateSolidColorBrush(bodyColor, &textBrush);
             ctx->CreateSolidColorBrush(headingColor, &headingBrush);
-            ctx->CreateSolidColorBrush(D2D1::ColorF(0.66f, 0.74f, 0.86f, 0.42f), &ruleBrush);
-            ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.62f, 1.0f, 0.95f), &accentBrush);
+            ctx->CreateSolidColorBrush(ruleColor, &ruleBrush);
+            ctx->CreateSolidColorBrush(accentColor, &accentBrush);
             if (!textBrush)
                 return;
 
@@ -2217,8 +2384,12 @@ namespace Orion
                             D2D1_RECT_F quoteRect = D2D1::RectF(localLeft, y, localRight, y + previewMarkdownMetrics_[i].height + kQuotePaddingY * 2.0f);
                             ID2D1SolidColorBrush *quoteBg = nullptr;
                             ID2D1SolidColorBrush *quoteBar = nullptr;
-                            ctx->CreateSolidColorBrush(D2D1::ColorF(0.10f, 0.12f, 0.16f, 0.90f), &quoteBg);
-                            ctx->CreateSolidColorBrush(D2D1::ColorF(0.24f, 0.66f, 1.0f, 0.95f), &quoteBar);
+                            D2D1_COLOR_F quoteBgColor = previewPalette.inputBackground;
+                            quoteBgColor.a = previewLight ? 0.82f : 0.90f;
+                            D2D1_COLOR_F quoteBarColor = UI::Theme::Accent();
+                            quoteBarColor.a = 0.95f;
+                            ctx->CreateSolidColorBrush(quoteBgColor, &quoteBg);
+                            ctx->CreateSolidColorBrush(quoteBarColor, &quoteBar);
                             if (quoteBg)
                             {
                                 ctx->FillRoundedRectangle(D2D1::RoundedRect(quoteRect, 8.0f, 8.0f), quoteBg);
@@ -2546,9 +2717,15 @@ namespace Orion
                     ID2D1SolidColorBrush *gridBrush = nullptr;
                     ID2D1SolidColorBrush *headerBg = nullptr;
                     ID2D1SolidColorBrush *rowAltBg = nullptr;
-                    ctx->CreateSolidColorBrush(D2D1::ColorF(0.70f, 0.78f, 0.90f, 0.22f), &gridBrush);
-                    ctx->CreateSolidColorBrush(D2D1::ColorF(0.13f, 0.16f, 0.21f, 0.96f), &headerBg);
-                    ctx->CreateSolidColorBrush(D2D1::ColorF(0.11f, 0.13f, 0.17f, 0.58f), &rowAltBg);
+                    D2D1_COLOR_F tableGridColor = UI::Theme::ChromeBorder();
+                    tableGridColor.a = previewLight ? 0.70f : 0.30f;
+                    D2D1_COLOR_F tableHeaderColor = previewPalette.inputBackground;
+                    tableHeaderColor.a = previewLight ? 0.78f : 0.96f;
+                    D2D1_COLOR_F tableAltColor = previewPalette.explorerRowHover;
+                    tableAltColor.a = previewLight ? 0.65f : 0.58f;
+                    ctx->CreateSolidColorBrush(tableGridColor, &gridBrush);
+                    ctx->CreateSolidColorBrush(tableHeaderColor, &headerBg);
+                    ctx->CreateSolidColorBrush(tableAltColor, &rowAltBg);
 
                     float cy = y0;
                     for (size_t r = 0; r < rowCount; ++r)
@@ -2758,17 +2935,9 @@ namespace Orion
 
         if (previewBitmap_ && !previewD2DBitmap_)
         {
-            IWICImagingFactory *wicFactory = nullptr;
-            if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wicFactory))) && wicFactory)
-            {
-                IWICBitmap *wicBitmap = nullptr;
-                if (SUCCEEDED(wicFactory->CreateBitmapFromHBITMAP(previewBitmap_, nullptr, WICBitmapUseAlpha, &wicBitmap)) && wicBitmap)
-                {
-                    ctx->CreateBitmapFromWicBitmap(wicBitmap, nullptr, &previewD2DBitmap_);
-                    wicBitmap->Release();
-                }
-                wicFactory->Release();
-            }
+            previewD2DBitmap_ = CreateD2DBitmapFromHBitmap(ctx, previewBitmap_);
+            if (!previewD2DBitmap_ && previewMessage_.empty())
+                previewMessage_ = L"Preview decode failed.";
 
             DeleteObject(previewBitmap_);
             previewBitmap_ = nullptr;

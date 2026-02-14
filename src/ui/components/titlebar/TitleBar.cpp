@@ -391,6 +391,8 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     const D2D1_COLOR_F titlebarBorder = UI::Theme::TitlebarBorder(hasFocus);
     const D2D1_COLOR_F titlebarText = UI::Theme::TitlebarText(hasFocus);
     const D2D1_COLOR_F titlebarIcon = UI::Theme::TitlebarIcon(hasFocus);
+    const UI::Theme::Palette &themePalette = UI::Theme::GetPalette();
+    const float titlebarHoverOpacity = (UI::Theme::GetMode() == UI::Theme::Mode::Light) ? 0.88f : 0.75f;
     if (window && window->IsNewProjectOverlayVisible())
     {
         // Minimal titlebar for the new-project screen (no editor menus).
@@ -413,14 +415,18 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
 
         ID2D1SolidColorBrush *hoverBrush = nullptr;
         ID2D1SolidColorBrush *closeHoverBrush = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0x3e3e42, 0.75f * aMin), &hoverBrush);
+        D2D1_COLOR_F hoverColor = themePalette.explorerToolbarHover;
+        hoverColor.a = titlebarHoverOpacity * aMin;
+        ctx->CreateSolidColorBrush(hoverColor, &hoverBrush);
         ctx->CreateSolidColorBrush(D2D1::ColorF(0xe81123, 0.85f * aClose), &closeHoverBrush);
 
         if (hoverBrush && aMin > 0.01f)
             ctx->FillRectangle(rMin, hoverBrush);
         if (hoverBrush && aMax > 0.01f)
         {
-            hoverBrush->SetColor(D2D1::ColorF(0x3e3e42, 0.75f * aMax));
+            D2D1_COLOR_F maxHoverColor = themePalette.explorerToolbarHover;
+            maxHoverColor.a = titlebarHoverOpacity * aMax;
+            hoverBrush->SetColor(maxHoverColor);
             ctx->FillRectangle(rMax, hoverBrush);
         }
         if (closeHoverBrush && aClose > 0.01f)
@@ -515,7 +521,9 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     D2D1_RECT_F rRun = D2D1::RectF((FLOAT)button_rects.run.left, (FLOAT)button_rects.run.top, (FLOAT)button_rects.run.right, (FLOAT)button_rects.run.bottom);
 
     ID2D1SolidColorBrush *hoverBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0x3e3e42, 0.75f * aMin), &hoverBrush);
+    D2D1_COLOR_F hoverColor = themePalette.explorerToolbarHover;
+    hoverColor.a = titlebarHoverOpacity * aMin;
+    ctx->CreateSolidColorBrush(hoverColor, &hoverBrush);
 
     ID2D1SolidColorBrush *closeHoverBrush = nullptr;
     ctx->CreateSolidColorBrush(D2D1::ColorF(0xe81123, 0.85f * aClose), &closeHoverBrush);
@@ -524,12 +532,16 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
         ctx->FillRectangle(rMin, hoverBrush);
     if (hoverBrush && aRun > 0.01f)
     {
-        hoverBrush->SetColor(D2D1::ColorF(0x3e3e42, 0.75f * aRun));
+        D2D1_COLOR_F runHoverColor = themePalette.explorerToolbarHover;
+        runHoverColor.a = titlebarHoverOpacity * aRun;
+        hoverBrush->SetColor(runHoverColor);
         ctx->FillRectangle(rRun, hoverBrush);
     }
     if (hoverBrush && aMax > 0.01f)
     {
-        hoverBrush->SetColor(D2D1::ColorF(0x3e3e42, 0.75f * aMax));
+        D2D1_COLOR_F maxHoverColor = themePalette.explorerToolbarHover;
+        maxHoverColor.a = titlebarHoverOpacity * aMax;
+        hoverBrush->SetColor(maxHoverColor);
         ctx->FillRectangle(rMax, hoverBrush);
     }
     if (closeHoverBrush && aClose > 0.01f)
@@ -620,7 +632,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     ID2D1SolidColorBrush *menuTextBrush = nullptr;
     ID2D1SolidColorBrush *menuHoverBrush = nullptr;
     ctx->CreateSolidColorBrush(titlebarText, &menuTextBrush);
-    ctx->CreateSolidColorBrush(hasFocus ? D2D1::ColorF(0x2a2d2e) : D2D1::ColorF(0x232427), &menuHoverBrush);
+    ctx->CreateSolidColorBrush(themePalette.explorerToolbarHover, &menuHoverBrush);
 
     // Dessiner chaque menu item
     for (size_t i = 0; i < g_menuItems.size(); i++)
@@ -674,9 +686,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
             ID2D1SolidColorBrush *textBrushToUse = menuTextBrush;
             if (item.hovered)
             {
-                ctx->CreateSolidColorBrush(hasFocus ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f)
-                                                    : D2D1::ColorF(0.86f, 0.89f, 0.95f, 1.0f),
-                                           &textBrushToUse);
+                ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &textBrushToUse);
             }
 
             ctx->DrawTextW(
@@ -773,10 +783,18 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
         ID2D1SolidColorBrush *badgeBorder = nullptr;
         ID2D1SolidColorBrush *badgeText = nullptr;
         ID2D1SolidColorBrush *badgeDot = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.12f, 0.95f * badgeAlpha), &badgeBg);
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.22f, 0.90f * badgeAlpha), &badgeBorder);
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.86f, 0.86f, 0.86f, badgeAlpha), &badgeText);
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.36f, 0.78f, 0.49f, badgeAlpha), &badgeDot);
+        D2D1_COLOR_F badgeBgColor = themePalette.inputBackground;
+        badgeBgColor.a = 0.95f * badgeAlpha;
+        D2D1_COLOR_F badgeBorderColor = UI::Theme::ChromeBorder();
+        badgeBorderColor.a = 0.90f * badgeAlpha;
+        D2D1_COLOR_F badgeTextColor = UI::Theme::PrimaryText();
+        badgeTextColor.a = badgeAlpha;
+        D2D1_COLOR_F badgeDotColor = UI::Theme::AccentStrong();
+        badgeDotColor.a = badgeAlpha;
+        ctx->CreateSolidColorBrush(badgeBgColor, &badgeBg);
+        ctx->CreateSolidColorBrush(badgeBorderColor, &badgeBorder);
+        ctx->CreateSolidColorBrush(badgeTextColor, &badgeText);
+        ctx->CreateSolidColorBrush(badgeDotColor, &badgeDot);
 
         D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(githubBadgeRect, 6.0f, 6.0f);
         if (badgeBg)
@@ -1037,6 +1055,13 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
 {
     if (!g_activeDropdown.visible || !ctx)
         return;
+    const UI::Theme::Palette &themePalette = UI::Theme::GetPalette();
+    const D2D1_COLOR_F dropdownBg = themePalette.inputBackground;
+    const D2D1_COLOR_F dropdownBorder = themePalette.inputBorder;
+    const D2D1_COLOR_F dropdownHover = themePalette.explorerToolbarHover;
+    const D2D1_COLOR_F dropdownText = UI::Theme::PrimaryText();
+    const D2D1_COLOR_F dropdownDisabled = UI::Theme::MutedText();
+    const D2D1_COLOR_F dropdownSeparator = UI::Theme::ChromeBorder();
 
     if (g_activeDropdown.menuIndex == -1)
     {
@@ -1047,15 +1072,15 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
         ID2D1SolidColorBrush *shadowBrush = nullptr;
         ctx->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.18f), &shadowBrush);
         ID2D1SolidColorBrush *bgBrush = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0x2b2b2b), &bgBrush);
+        ctx->CreateSolidColorBrush(dropdownBg, &bgBrush);
         ID2D1SolidColorBrush *borderBrush = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0x3a3a3a), &borderBrush);
+        ctx->CreateSolidColorBrush(dropdownBorder, &borderBrush);
         ID2D1SolidColorBrush *hoverBrush = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0x3f3f3f), &hoverBrush);
+        ctx->CreateSolidColorBrush(dropdownHover, &hoverBrush);
         ID2D1SolidColorBrush *textBrush = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0xe8e8e8), &textBrush);
+        ctx->CreateSolidColorBrush(dropdownText, &textBrush);
         ID2D1SolidColorBrush *disabledBrush = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0x8a8a8a), &disabledBrush);
+        ctx->CreateSolidColorBrush(dropdownDisabled, &disabledBrush);
 
         IDWriteTextFormat *textFormat = nullptr;
         if (dwrite)
@@ -1160,7 +1185,7 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
             {
                 float y = std::floor(itemRect.top + itemHeight * 0.5f) + 0.5f;
                 ID2D1SolidColorBrush *sepBrush = nullptr;
-                ctx->CreateSolidColorBrush(D2D1::ColorF(0x3a3a3a), &sepBrush);
+                ctx->CreateSolidColorBrush(dropdownSeparator, &sepBrush);
                 if (sepBrush)
                 {
                     ctx->DrawLine(D2D1::Point2F(itemRect.left + 10.0f, y),
@@ -1250,14 +1275,14 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
 
     D2D1_RECT_F r = g_activeDropdown.rect;
 
-    // VS Code style: flat dark panel, subtle border, minimal radius
+    // Theme-driven dropdown panel.
     ID2D1SolidColorBrush *bgBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0x252526), &bgBrush);
+    ctx->CreateSolidColorBrush(dropdownBg, &bgBrush);
     D2D1_ROUNDED_RECT bgRounded = D2D1::RoundedRect(r, 6.0f, 6.0f);
     ctx->FillRoundedRectangle(bgRounded, bgBrush);
 
     ID2D1SolidColorBrush *borderBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0x2d2d30), &borderBrush);
+    ctx->CreateSolidColorBrush(dropdownBorder, &borderBrush);
     if (borderBrush)
     {
         ctx->DrawRoundedRectangle(bgRounded, borderBrush, 0.8f);
@@ -1265,11 +1290,11 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
     }
 
     ID2D1SolidColorBrush *hoverBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0x2a2a2d), &hoverBrush);
+    ctx->CreateSolidColorBrush(dropdownHover, &hoverBrush);
     ID2D1SolidColorBrush *textBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0xf0f0f0), &textBrush);
+    ctx->CreateSolidColorBrush(dropdownText, &textBrush);
     ID2D1SolidColorBrush *disabledBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0x8a8a8a), &disabledBrush);
+    ctx->CreateSolidColorBrush(dropdownDisabled, &disabledBrush);
     // Icons removed for menu items
 
     IDWriteTextFormat *textFormat = nullptr;
@@ -1335,7 +1360,7 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
         {
             float y = std::floor(itemRect.top + itemHeight * 0.5f) + 0.5f;
             ID2D1SolidColorBrush *sepBrush = nullptr;
-            ctx->CreateSolidColorBrush(D2D1::ColorF(0x3c3c3c), &sepBrush);
+            ctx->CreateSolidColorBrush(dropdownSeparator, &sepBrush);
             if (sepBrush)
             {
                 ctx->DrawLine(D2D1::Point2F(itemRect.left + 10.0f, y),

@@ -104,6 +104,7 @@ public:
     void OnLeftButtonUp(HWND hwnd);
     void OnRightButtonUp(HWND hwnd, POINT clientPoint);
     void OnMouseWheel(HWND hwnd, int delta);
+    bool HandleExternalDrop(HWND hwnd, POINT clientPoint, const std::vector<std::wstring> &droppedPaths);
 
     void HandleContextCommand(int commandId);
     void HandleContextSubmenuCommand(int commandId);

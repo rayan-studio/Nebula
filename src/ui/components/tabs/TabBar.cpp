@@ -5,6 +5,7 @@
 #include <Windows.h>
 #include "core/explorer/Explorer.h"
 #include "helpers/window_helpers.h"
+#include "ui/theme/Theme.h"
 
 TabBar::TabBar() {}
 TabBar::~TabBar() {}
@@ -146,10 +147,11 @@ bool TabBar::IsTabDirty(int index) const
 
 void TabBar::DrawCloseOrDirty(ID2D1RenderTarget *ctx, const D2D1_RECT_F &rect, bool hovered, bool dirty) const
 {
-    // mêmes couleurs que ton X
-    D2D1_COLOR_F normal = D2D1::ColorF(0.5f, 0.5f, 0.5f, 0.6f);
-    D2D1_COLOR_F hover = D2D1::ColorF(0.95f, 0.95f, 0.95f, 1.0f);
-    D2D1_COLOR_F ring = D2D1::ColorF(0.22f, 0.22f, 0.22f, 0.95f);
+    D2D1_COLOR_F normal = UI::Theme::MutedText();
+    normal.a = 0.75f;
+    D2D1_COLOR_F hover = UI::Theme::PrimaryText();
+    D2D1_COLOR_F ring = UI::Theme::GetPalette().explorerToolbarHover;
+    ring.a = 0.95f;
 
     ID2D1SolidColorBrush *ringBrush = nullptr;
     ID2D1SolidColorBrush *fgBrush = nullptr;
@@ -215,10 +217,11 @@ void TabBar::UpdateLayout(float left, float top, float right)
 void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
 {
     (void)hwnd;
+    const UI::Theme::Palette &themePalette = UI::Theme::GetPalette();
 
     // Background de la tab bar
     ID2D1SolidColorBrush *bgBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.08f), &bgBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &bgBrush);
 
     D2D1_RECT_F barRect = D2D1::RectF(leftEdge_, topEdge_, rightEdge_, topEdge_ + GetHeight());
     ctx->FillRectangle(barRect, bgBrush);
@@ -227,7 +230,7 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
     if (!tabs_.empty())
     {
         ID2D1SolidColorBrush *tabBorderBrush = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(48.0f / 255.0f, 48.0f / 255.0f, 48.0f / 255.0f), &tabBorderBrush);
+        ctx->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &tabBorderBrush);
         // draw the border inside the tab bar's rect so layout and hit-tests include it
         D2D1_POINT_2F bl = D2D1::Point2F(leftEdge_, topEdge_ + GetHeight() - 0.5f);
         D2D1_POINT_2F br = D2D1::Point2F(rightEdge_, topEdge_ + GetHeight() - 0.5f);
@@ -248,16 +251,15 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
         ID2D1SolidColorBrush *tabBrush = nullptr;
         if (tab.isActive)
         {
-            // Fond sombre pour l'onglet actif (25, 25, 25)
-            ctx->CreateSolidColorBrush(D2D1::ColorF(0.098f, 0.098f, 0.098f), &tabBrush);
+            ctx->CreateSolidColorBrush(themePalette.explorerRowActive, &tabBrush);
         }
         else if (i == hoveredTabIndex_)
         {
-            ctx->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.18f, 0.18f), &tabBrush);
+            ctx->CreateSolidColorBrush(themePalette.explorerRowHover, &tabBrush);
         }
         else
         {
-            ctx->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.08f), &tabBrush);
+            ctx->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &tabBrush);
         }
         ctx->FillRectangle(tabRect, tabBrush);
         tabBrush->Release();
@@ -266,8 +268,7 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
         if (tab.isActive)
         {
             ID2D1SolidColorBrush *borderBrush = nullptr;
-            // Couleur accent pour la bordure (bleu par exemple, tu peux changer)
-            ctx->CreateSolidColorBrush(D2D1::ColorF(0.3f, 0.6f, 1.0f), &borderBrush);
+            ctx->CreateSolidColorBrush(UI::Theme::Accent(), &borderBrush);
 
             // Ligne avec coins arrondis en bas de l'onglet
             float borderHeight = 2.0f;
@@ -295,14 +296,13 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
             format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
             ID2D1SolidColorBrush *textBrush = nullptr;
-            // Texte plus clair pour l'onglet actif
             if (tab.isActive)
             {
-                ctx->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f), &textBrush);
+                ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &textBrush);
             }
             else
             {
-                ctx->CreateSolidColorBrush(D2D1::ColorF(0.7f, 0.7f, 0.7f), &textBrush);
+                ctx->CreateSolidColorBrush(UI::Theme::MutedText(), &textBrush);
             }
 
             // Determine if we have an icon for this tab (re-use Explorer's icon loader)
@@ -424,7 +424,7 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
                 if (hovered)
                 {
                     ID2D1SolidColorBrush *bg = nullptr;
-                    ctx->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.18f, 0.18f), &bg);
+                    ctx->CreateSolidColorBrush(themePalette.explorerToolbarHover, &bg);
                     if (bg)
                     {
                         D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(previewRect, 3.0f, 3.0f);
@@ -651,10 +651,11 @@ bool TabBar::IsPointInCloseRect(int index, POINT pt) const
 
 void TabBar::DrawCloseButton(ID2D1RenderTarget *ctx, const D2D1_RECT_F &rect, bool hovered) const
 {
-    // ✨ Couleurs optimisées avec transitions douces
-    D2D1_COLOR_F xColorNormal = D2D1::ColorF(0.5f, 0.5f, 0.5f, 0.6f);
-    D2D1_COLOR_F xColorHover = D2D1::ColorF(0.95f, 0.95f, 0.95f, 1.0f);
-    D2D1_COLOR_F ringColor = D2D1::ColorF(0.22f, 0.22f, 0.22f, 0.95f);
+    D2D1_COLOR_F xColorNormal = UI::Theme::MutedText();
+    xColorNormal.a = 0.75f;
+    D2D1_COLOR_F xColorHover = UI::Theme::PrimaryText();
+    D2D1_COLOR_F ringColor = UI::Theme::GetPalette().explorerToolbarHover;
+    ringColor.a = 0.95f;
 
     ID2D1SolidColorBrush *ringBrush = nullptr;
     ID2D1SolidColorBrush *xBrush = nullptr;

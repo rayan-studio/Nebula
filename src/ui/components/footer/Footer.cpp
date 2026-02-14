@@ -1,6 +1,7 @@
 #include "Footer.h"
 #include "helpers/window_helpers.h"
 #include "core/explorer/Explorer.h"
+#include "ui/theme/Theme.h"
 #include <git2.h>
 #include <dwrite.h>
 #include <string>
@@ -198,6 +199,7 @@ static std::wstring DetectLanguageFromPath(const std::wstring &path)
 void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, const std::wstring &filePath, int line, int column, const std::wstring &encoding)
 {
     if (!ctx) return;
+    const UI::Theme::Palette &themePalette = UI::Theme::GetPalette();
 
     if (!g_footer_hint.empty())
     {
@@ -221,22 +223,22 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
     float top = (float)(client.bottom - footerH);
     float bottom = (float)client.bottom;
 
-    // background same as title bar
+    // Footer surface follows the shared chrome theme.
     ID2D1SolidColorBrush *bgBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(18.0f / 255.0f, 18.0f / 255.0f, 18.0f / 255.0f), &bgBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &bgBrush);
     D2D1_RECT_F rect = D2D1::RectF(left, top, right, bottom);
     ctx->FillRectangle(rect, bgBrush);
 
-    // top border (same color as title bar border)
+    // Top border uses the shared chrome border color.
     ID2D1SolidColorBrush *borderBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(48.0f / 255.0f, 48.0f / 255.0f, 48.0f / 255.0f), &borderBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &borderBrush);
     D2D1_POINT_2F l = D2D1::Point2F(left, top + 0.5f);
     D2D1_POINT_2F r = D2D1::Point2F(right, top + 0.5f);
     ctx->DrawLine(l, r, borderBrush, 1.0f);
 
     // Notification icon (simple circular indicator) on the left
     ID2D1SolidColorBrush *notifBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0x4ec9b0), &notifBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::AccentStrong(), &notifBrush);
     int notifLogicalR = 6; // logical radius
     int notifR = win32_dpi_scale(notifLogicalR, dpi);
     float iconCx = left + 12.0f + (float)notifR;
@@ -246,7 +248,7 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
 
     // Small inner dot to create a ring effect (use footer background color)
     ID2D1SolidColorBrush *innerBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(18.0f / 255.0f, 18.0f / 255.0f, 18.0f / 255.0f), &innerBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &innerBrush);
     D2D1_ELLIPSE inner = D2D1::Ellipse(D2D1::Point2F(iconCx, iconCy + 1.0f), (FLOAT)(notifR * 0.45f), (FLOAT)(notifR * 0.45f));
     ctx->FillEllipse(inner, innerBrush);
 
@@ -282,11 +284,11 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
     }
 
     ID2D1SolidColorBrush *textBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.85f, 0.85f, 0.85f), &textBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &textBrush);
 
     // Prepare hover brush early so it's visible in the whole function scope
     ID2D1SolidColorBrush *segmentHoverBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0x2a2d2e), &segmentHoverBrush);
+    ctx->CreateSolidColorBrush(themePalette.explorerToolbarHover, &segmentHoverBrush);
 
     float statusTextWidth = 180.0f;
     if (statusFmt && dwrite)
@@ -490,7 +492,9 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
                         }
 
                         ID2D1SolidColorBrush *hintBg = nullptr;
-                        ctx->CreateSolidColorBrush(D2D1::ColorF(0x2a2d2e, 0.6f), &hintBg);
+                        D2D1_COLOR_F hintBgColor = themePalette.explorerToolbarHover;
+                        hintBgColor.a = 0.6f;
+                        ctx->CreateSolidColorBrush(hintBgColor, &hintBg);
                         if (hintBg)
                         {
                             D2D1_RECT_F pillRect = D2D1::RectF(pillLeft, top + 4.0f, pillRight, bottom - 4.0f);

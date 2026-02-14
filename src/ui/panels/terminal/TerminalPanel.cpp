@@ -2,6 +2,7 @@
 #include "TerminalSession.h"
 #include "core/explorer/Explorer.h"
 #include "helpers/window_helpers.h"
+#include "ui/theme/Theme.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1097,6 +1098,8 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite)
 void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwnd)
 {
     if (!visible_ || !rt || !dwrite) return;
+    const UI::Theme::Palette &themePalette = UI::Theme::GetPalette();
+    const bool lightMode = (UI::Theme::GetMode() == UI::Theme::Mode::Light);
 
     EnsureAtLeastOneSession(NULL);
     SyncTabBar();
@@ -1109,14 +1112,11 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
     ID2D1SolidColorBrush* resizeBg = nullptr;
     ID2D1SolidColorBrush* resizeLine = nullptr;
 
-    rt->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.09f, 1.0f), &bg);
-    rt->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.92f, 0.92f, 1.0f), &fg);
-    rt->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.18f, 0.20f, 1.0f), &border);
-    rt->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.09f, 1.0f), &resizeBg);
-    rt->CreateSolidColorBrush(resizeHover_ || resizing_
-                                  ? D2D1::ColorF(0.40f, 0.40f, 0.45f, 1.0f)
-                                  : D2D1::ColorF(0.22f, 0.22f, 0.26f, 1.0f),
-                              &resizeLine);
+    rt->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &bg);
+    rt->CreateSolidColorBrush(UI::Theme::PrimaryText(), &fg);
+    rt->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &border);
+    rt->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &resizeBg);
+    rt->CreateSolidColorBrush(resizeHover_ || resizing_ ? UI::Theme::Accent() : UI::Theme::ChromeBorder(), &resizeLine);
 
     if (!bg || !fg || !border || !resizeBg || !resizeLine)
     {
@@ -1168,10 +1168,10 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
     ID2D1SolidColorBrush* outputBg = nullptr;
     ID2D1SolidColorBrush* outputBorder = nullptr;
     if (showOutput_)
-        rt->CreateSolidColorBrush(D2D1::ColorF(0.15f, 0.15f, 0.18f, 1.0f), &outputBg);
+        rt->CreateSolidColorBrush(themePalette.explorerRowActive, &outputBg);
     else if (hoveredOutput_)
-        rt->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.14f, 1.0f), &outputBg);
-    rt->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.26f, 1.0f), &outputBorder);
+        rt->CreateSolidColorBrush(themePalette.explorerRowHover, &outputBg);
+    rt->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &outputBorder);
 
     if (outputBg)
     {
@@ -1227,7 +1227,7 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
         if (!showOutput_ && !hoveredOutput_)
         {
             ID2D1SolidColorBrush* muted = nullptr;
-            rt->CreateSolidColorBrush(D2D1::ColorF(0.72f, 0.72f, 0.75f, 1.0f), &muted);
+            rt->CreateSolidColorBrush(UI::Theme::MutedText(), &muted);
             labelBrush = muted ? muted : fg;
             rt->DrawTextW(label.c_str(), (UINT32)label.size(), outputFormat, textRect, labelBrush);
             if (muted) muted->Release();
@@ -1254,10 +1254,10 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
     ID2D1SolidColorBrush* problemsBg = nullptr;
     ID2D1SolidColorBrush* problemsBorder = nullptr;
     if (showProblems_)
-        rt->CreateSolidColorBrush(D2D1::ColorF(0.15f, 0.15f, 0.18f, 1.0f), &problemsBg);
+        rt->CreateSolidColorBrush(themePalette.explorerRowActive, &problemsBg);
     else if (hoveredProblems_)
-        rt->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.14f, 1.0f), &problemsBg);
-    rt->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.22f, 0.26f, 1.0f), &problemsBorder);
+        rt->CreateSolidColorBrush(themePalette.explorerRowHover, &problemsBg);
+    rt->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &problemsBorder);
 
     if (problemsBg)
     {
@@ -1307,7 +1307,7 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
         if (!showProblems_ && !hoveredProblems_)
         {
             ID2D1SolidColorBrush* muted = nullptr;
-            rt->CreateSolidColorBrush(D2D1::ColorF(0.72f, 0.72f, 0.75f, 1.0f), &muted);
+            rt->CreateSolidColorBrush(UI::Theme::MutedText(), &muted);
             labelBrush = muted ? muted : fg;
             rt->DrawTextW(label.c_str(), (UINT32)label.size(), problemsFormat, textRect, labelBrush);
             if (muted) muted->Release();
@@ -1326,11 +1326,8 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
     ID2D1SolidColorBrush* plusBg = nullptr;
     ID2D1SolidColorBrush* plusBorder = nullptr;
     if (hoveredPlus_)
-        rt->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.14f, 1.0f), &plusBg);
-    rt->CreateSolidColorBrush(hoveredPlus_
-                                  ? D2D1::ColorF(0.32f, 0.34f, 0.38f, 1.0f)
-                                  : D2D1::ColorF(0.20f, 0.20f, 0.24f, 1.0f),
-                              &plusBorder);
+        rt->CreateSolidColorBrush(themePalette.explorerRowHover, &plusBg);
+    rt->CreateSolidColorBrush(hoveredPlus_ ? UI::Theme::Accent() : UI::Theme::ChromeBorder(), &plusBorder);
     if (plusBg)
     {
         rt->FillRectangle(plus, plusBg);
@@ -1349,8 +1346,8 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
 
     ID2D1SolidColorBrush* plusStroke = nullptr;
     D2D1_COLOR_F plusStrokeColor = hoveredPlus_
-        ? D2D1::ColorF(0.95f, 0.95f, 0.95f, 1.0f)
-        : D2D1::ColorF(0.70f, 0.70f, 0.70f, 1.0f);
+        ? UI::Theme::PrimaryText()
+        : UI::Theme::MutedText();
     rt->CreateSolidColorBrush(plusStrokeColor, &plusStroke);
     if (plusStroke)
     {
@@ -1372,7 +1369,9 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
     {
         D2D1_RECT_F contentRect = D2D1::RectF(left_, contentTop, right_, contentBottom);
         ID2D1SolidColorBrush* contentBg = nullptr;
-        rt->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.08f, 0.95f), &contentBg);
+        D2D1_COLOR_F problemBg = UI::Theme::ChromeBackground();
+        problemBg.a = 0.96f;
+        rt->CreateSolidColorBrush(problemBg, &contentBg);
         if (contentBg)
         {
             rt->FillRectangle(contentRect, contentBg);
@@ -1400,11 +1399,17 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
             ID2D1SolidColorBrush* rowAlt = nullptr;
             ID2D1SolidColorBrush* rowHover = nullptr;
             ID2D1SolidColorBrush* rowBorder = nullptr;
-            rt->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.35f, 0.35f, 1.0f), &errorBrush);
-            rt->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.70f, 0.30f, 1.0f), &warningBrush);
-            rt->CreateSolidColorBrush(D2D1::ColorF(0.11f, 0.12f, 0.14f, 1.0f), &rowAlt);
-            rt->CreateSolidColorBrush(D2D1::ColorF(0.16f, 0.20f, 0.26f, 1.0f), &rowHover);
-            rt->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.26f, 0.30f, 0.8f), &rowBorder);
+            rt->CreateSolidColorBrush(lightMode ? D2D1::ColorF(0.78f, 0.24f, 0.24f, 1.0f)
+                                                : D2D1::ColorF(0.90f, 0.35f, 0.35f, 1.0f),
+                                      &errorBrush);
+            rt->CreateSolidColorBrush(lightMode ? D2D1::ColorF(0.58f, 0.52f, 0.12f, 1.0f)
+                                                : D2D1::ColorF(0.95f, 0.70f, 0.30f, 1.0f),
+                                      &warningBrush);
+            D2D1_COLOR_F rowAltColor = themePalette.explorerRowHover;
+            rowAltColor.a = lightMode ? 0.70f : 0.45f;
+            rt->CreateSolidColorBrush(rowAltColor, &rowAlt);
+            rt->CreateSolidColorBrush(themePalette.explorerRowActive, &rowHover);
+            rt->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &rowBorder);
 
             float y = contentRect.top + 12.0f;
             float x = contentRect.left + 16.0f;
@@ -1475,7 +1480,9 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
     {
         D2D1_RECT_F contentRect = D2D1::RectF(left_, contentTop, right_, contentBottom);
         ID2D1SolidColorBrush* contentBg = nullptr;
-        rt->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.08f, 0.95f), &contentBg);
+        D2D1_COLOR_F outputBgColor = UI::Theme::ChromeBackground();
+        outputBgColor.a = 0.96f;
+        rt->CreateSolidColorBrush(outputBgColor, &contentBg);
         if (contentBg)
         {
             rt->FillRectangle(contentRect, contentBg);
@@ -1504,12 +1511,18 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
             ID2D1SolidColorBrush* err = nullptr;
             ID2D1SolidColorBrush* cmd = nullptr;
             ID2D1SolidColorBrush* ok = nullptr;
-            rt->CreateSolidColorBrush(D2D1::ColorF(0.28f, 0.63f, 0.95f, 1.0f), &accent);
-            rt->CreateSolidColorBrush(D2D1::ColorF(0.70f, 0.70f, 0.70f, 1.0f), &dim);
-            rt->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.80f, 0.35f, 1.0f), &warn);
-            rt->CreateSolidColorBrush(D2D1::ColorF(0.98f, 0.36f, 0.36f, 1.0f), &err);
-            rt->CreateSolidColorBrush(D2D1::ColorF(0.58f, 0.80f, 1.0f, 1.0f), &cmd);
-            rt->CreateSolidColorBrush(D2D1::ColorF(0.46f, 0.85f, 0.60f, 1.0f), &ok);
+            rt->CreateSolidColorBrush(UI::Theme::Accent(), &accent);
+            rt->CreateSolidColorBrush(UI::Theme::MutedText(), &dim);
+            rt->CreateSolidColorBrush(lightMode ? D2D1::ColorF(0.58f, 0.52f, 0.12f, 1.0f)
+                                                : D2D1::ColorF(0.95f, 0.80f, 0.35f, 1.0f),
+                                      &warn);
+            rt->CreateSolidColorBrush(lightMode ? D2D1::ColorF(0.78f, 0.24f, 0.24f, 1.0f)
+                                                : D2D1::ColorF(0.98f, 0.36f, 0.36f, 1.0f),
+                                      &err);
+            rt->CreateSolidColorBrush(UI::Theme::AccentStrong(), &cmd);
+            rt->CreateSolidColorBrush(lightMode ? D2D1::ColorF(0.18f, 0.58f, 0.24f, 1.0f)
+                                                : D2D1::ColorF(0.46f, 0.85f, 0.60f, 1.0f),
+                                      &ok);
 
             float x = contentRect.left + 16.0f;
             float lineH = (fontSize_ + 6.0f);
@@ -1538,7 +1551,7 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
                 if (hoveredOutputCopy_)
                 {
                     ID2D1SolidColorBrush* hover = nullptr;
-                    rt->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.22f, 0.26f, 1.0f), &hover);
+                    rt->CreateSolidColorBrush(themePalette.explorerRowHover, &hover);
                     if (hover)
                     {
                         rt->FillRoundedRectangle(
@@ -1672,7 +1685,7 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
     // Content border (VS-style) - draw last so it stays visible
     {
         ID2D1SolidColorBrush* panelBorder = nullptr;
-        D2D1_COLOR_F borderColor = D2D1::ColorF(0.30f, 0.50f, 0.80f, 1.0f); // app blue
+        D2D1_COLOR_F borderColor = UI::Theme::Accent();
         rt->CreateSolidColorBrush(borderColor, &panelBorder);
         if (panelBorder)
         {

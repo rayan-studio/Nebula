@@ -4,6 +4,7 @@
 #include "core/explorer/Explorer.h"
 #include "helpers/window_helpers.h"
 #include "ui/components/input/InputTheme.h"
+#include "ui/theme/Theme.h"
 #include "utils/auth/GitHubAuth.h"
 
 #include <git2.h>
@@ -425,6 +426,9 @@ void GitPanel::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
     if (!visible_ || state_.physicalWidth <= 0)
         return;
 
+    // Keep input visuals synced to runtime theme changes.
+    ApplyInputTheme(commitMessageInput_, L"Commit message");
+
     D2D1_RECT_F clipRect = D2D1::RectF(state_.leftEdge, state_.topEdge, state_.rightEdge, state_.bottomEdge);
     ctx->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
@@ -487,8 +491,8 @@ void GitPanel::DrawQuickActions(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
     ID2D1SolidColorBrush *textBrush = nullptr;
     ID2D1SolidColorBrush *hoverBrush = nullptr;
 
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.86f, 0.86f, 0.86f), &textBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(30.0f / 255.0f, 30.0f / 255.0f, 30.0f / 255.0f, 1.0f), &hoverBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &textBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::GetPalette().explorerRowHover, &hoverBrush);
 
     IDWriteTextFormat *buttonFmt = nullptr;
     IDWriteTextFormat *menuFmt = nullptr;
@@ -600,16 +604,18 @@ void GitPanel::DrawQuickActions(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
 
 void GitPanel::DrawChanges(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
 {
+    const UI::Theme::Palette &themePalette = UI::Theme::GetPalette();
+    const bool lightMode = (UI::Theme::GetMode() == UI::Theme::Mode::Light);
+
     ID2D1SolidColorBrush *pathBrush = nullptr;
     ID2D1SolidColorBrush *hoverBrush = nullptr;
     ID2D1SolidColorBrush *selectedBrush = nullptr;
     ID2D1SolidColorBrush *statusBrush = nullptr;
 
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.84f, 0.84f, 0.84f), &pathBrush);
-    // Match Explorer hover/active row tones.
-    ctx->CreateSolidColorBrush(D2D1::ColorF(30.0f / 255.0f, 30.0f / 255.0f, 30.0f / 255.0f, 1.0f), &hoverBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.18f, 0.25f, 1.0f), &selectedBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.42f, 0.78f, 0.38f), &statusBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &pathBrush);
+    ctx->CreateSolidColorBrush(themePalette.explorerRowHover, &hoverBrush);
+    ctx->CreateSolidColorBrush(themePalette.explorerRowActive, &selectedBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::Accent(), &statusBrush);
     IDWriteTextFormat *rowFmt = nullptr;
     dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
                              DWRITE_FONT_STRETCH_NORMAL, 13.0f, L"en-us", &rowFmt);
@@ -684,13 +690,15 @@ void GitPanel::DrawChanges(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
         statusToken.push_back(c.worktreeStatus);
         if (statusBrush)
         {
-            D2D1_COLOR_F color = D2D1::ColorF(0.42f, 0.78f, 0.38f);
+            D2D1_COLOR_F color = lightMode
+                                     ? D2D1::ColorF(0.18f, 0.58f, 0.24f, 1.0f)
+                                     : D2D1::ColorF(0.42f, 0.78f, 0.38f, 1.0f);
             if (c.indexStatus == L'D' || c.worktreeStatus == L'D')
-                color = D2D1::ColorF(0.92f, 0.37f, 0.37f);
+                color = lightMode ? D2D1::ColorF(0.78f, 0.24f, 0.24f, 1.0f) : D2D1::ColorF(0.92f, 0.37f, 0.37f, 1.0f);
             else if (c.indexStatus == L'?' || c.worktreeStatus == L'?')
-                color = D2D1::ColorF(0.73f, 0.84f, 0.40f);
+                color = lightMode ? D2D1::ColorF(0.58f, 0.52f, 0.12f, 1.0f) : D2D1::ColorF(0.73f, 0.84f, 0.40f, 1.0f);
             else if (c.indexStatus == L'M' || c.worktreeStatus == L'M')
-                color = D2D1::ColorF(0.39f, 0.67f, 0.93f);
+                color = lightMode ? D2D1::ColorF(0.17f, 0.45f, 0.82f, 1.0f) : D2D1::ColorF(0.39f, 0.67f, 0.93f, 1.0f);
             statusBrush->SetColor(color);
         }
 

@@ -74,16 +74,17 @@ namespace UI::Theme
 
         void BuildDarkPalette(Palette &p)
         {
-            p.titlebarBgFocused = D2D1::ColorF(0.06f, 0.07f, 0.09f, 1.0f);
-            p.titlebarBgUnfocused = D2D1::ColorF(0.11f, 0.11f, 0.12f, 1.0f);
-            p.titlebarBorderFocused = D2D1::ColorF(0.24f, 0.24f, 0.26f, 1.0f);
-            p.titlebarBorderUnfocused = D2D1::ColorF(0.74f, 0.78f, 0.84f, 1.0f);
-            p.titlebarTextFocused = D2D1::ColorF(0.90f, 0.93f, 0.98f, 1.0f);
-            p.titlebarTextUnfocused = D2D1::ColorF(0.68f, 0.72f, 0.78f, 1.0f);
-            p.titlebarIconFocused = D2D1::ColorF(0.95f, 0.97f, 1.0f, 1.0f);
-            p.titlebarIconUnfocused = D2D1::ColorF(0.75f, 0.78f, 0.84f, 1.0f);
-            p.titlebarCenterTitleFocused = D2D1::ColorF(0.95f, 0.97f, 1.0f, 1.0f);
-            p.titlebarCenterTitleUnfocused = D2D1::ColorF(0.82f, 0.86f, 0.92f, 0.96f);
+            // Keep titlebar in the same dark surface family as the rest of the UI.
+            p.titlebarBgFocused = D2D1::ColorF(18.0f / 255.0f, 18.0f / 255.0f, 18.0f / 255.0f, 1.0f);
+            p.titlebarBgUnfocused = D2D1::ColorF(18.0f / 255.0f, 18.0f / 255.0f, 18.0f / 255.0f, 1.0f);
+            p.titlebarBorderFocused = D2D1::ColorF(48.0f / 255.0f, 48.0f / 255.0f, 48.0f / 255.0f, 1.0f);
+            p.titlebarBorderUnfocused = D2D1::ColorF(48.0f / 255.0f, 48.0f / 255.0f, 48.0f / 255.0f, 1.0f);
+            p.titlebarTextFocused = D2D1::ColorF(204.0f / 255.0f, 204.0f / 255.0f, 204.0f / 255.0f, 1.0f);
+            p.titlebarTextUnfocused = D2D1::ColorF(0.68f, 0.70f, 0.72f, 1.0f);
+            p.titlebarIconFocused = p.titlebarTextFocused;
+            p.titlebarIconUnfocused = p.titlebarTextUnfocused;
+            p.titlebarCenterTitleFocused = p.titlebarTextFocused;
+            p.titlebarCenterTitleUnfocused = p.titlebarTextUnfocused;
 
             // Non-titlebar UI stays stable regardless of focus.
             p.chromeBgFocused = D2D1::ColorF(18.0f / 255.0f, 18.0f / 255.0f, 18.0f / 255.0f, 1.0f);
@@ -122,17 +123,17 @@ namespace UI::Theme
 
         void BuildLightPalette(Palette &p)
         {
-            // Keep titlebar values unchanged for now (explicit user request).
-            p.titlebarBgFocused = D2D1::ColorF(0.06f, 0.07f, 0.09f, 1.0f);
-            p.titlebarBgUnfocused = D2D1::ColorF(0.11f, 0.11f, 0.12f, 1.0f);
+            // Title bar follows the light surface palette to avoid a disconnected dark header.
+            p.titlebarBgFocused = D2D1::ColorF(0.95f, 0.96f, 0.98f, 1.0f);
+            p.titlebarBgUnfocused = D2D1::ColorF(0.93f, 0.94f, 0.96f, 1.0f);
             p.titlebarBorderFocused = D2D1::ColorF(0.74f, 0.78f, 0.84f, 1.0f);
-            p.titlebarBorderUnfocused = D2D1::ColorF(0.24f, 0.24f, 0.26f, 1.0f);
-            p.titlebarTextFocused = D2D1::ColorF(0.90f, 0.93f, 0.98f, 1.0f);
-            p.titlebarTextUnfocused = D2D1::ColorF(0.68f, 0.72f, 0.78f, 1.0f);
-            p.titlebarIconFocused = D2D1::ColorF(0.95f, 0.97f, 1.0f, 1.0f);
-            p.titlebarIconUnfocused = D2D1::ColorF(0.75f, 0.78f, 0.84f, 1.0f);
-            p.titlebarCenterTitleFocused = D2D1::ColorF(0.95f, 0.97f, 1.0f, 1.0f);
-            p.titlebarCenterTitleUnfocused = D2D1::ColorF(0.82f, 0.86f, 0.92f, 0.96f);
+            p.titlebarBorderUnfocused = D2D1::ColorF(0.78f, 0.82f, 0.88f, 1.0f);
+            p.titlebarTextFocused = D2D1::ColorF(0.14f, 0.18f, 0.24f, 1.0f);
+            p.titlebarTextUnfocused = D2D1::ColorF(0.28f, 0.34f, 0.42f, 1.0f);
+            p.titlebarIconFocused = D2D1::ColorF(0.14f, 0.18f, 0.24f, 1.0f);
+            p.titlebarIconUnfocused = D2D1::ColorF(0.30f, 0.36f, 0.44f, 1.0f);
+            p.titlebarCenterTitleFocused = p.titlebarTextFocused;
+            p.titlebarCenterTitleUnfocused = p.titlebarTextUnfocused;
 
             // Non-titlebar UI stays stable regardless of focus.
             p.chromeBgFocused = D2D1::ColorF(0.95f, 0.96f, 0.98f, 1.0f);

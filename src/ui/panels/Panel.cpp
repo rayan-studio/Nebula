@@ -1,6 +1,7 @@
 #include "Panel.h"
 #include "helpers/window_helpers.h"
 #include "utils/logger/Logger.h"
+#include "ui/theme/Theme.h"
 #include <cmath>
 
 Panel::Panel(PanelId id)
@@ -41,7 +42,7 @@ void Panel::UpdateBaseLayout(HWND hwnd, float leftEdge)
 void Panel::DrawBackground(ID2D1RenderTarget *ctx)
 {
     ID2D1SolidColorBrush *bgBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(18.0f / 255.0f, 18.0f / 255.0f, 18.0f / 255.0f), &bgBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &bgBrush);
 
     if (bgBrush)
     {
@@ -65,7 +66,7 @@ void Panel::DrawTitle(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
     }
 
     ID2D1SolidColorBrush *textBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.8f, 0.8f, 0.8f), &textBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &textBrush);
 
     D2D1_RECT_F titleRect = D2D1::RectF(
         state_.leftEdge + state_.leftPadding,
@@ -90,8 +91,8 @@ void Panel::DrawRightBorder(ID2D1RenderTarget *ctx)
 
     D2D1_COLOR_F borderColor =
         (state_.isHoveringResizeZone || state_.isResizing)
-            ? D2D1::ColorF(0x00ccff) // Cyan
-            : D2D1::ColorF(48.0f / 255.0f, 48.0f / 255.0f, 48.0f / 255.0f);
+            ? UI::Theme::Accent()
+            : UI::Theme::ChromeBorder();
 
     ctx->CreateSolidColorBrush(borderColor, &brush);
 

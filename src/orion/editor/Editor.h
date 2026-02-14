@@ -425,6 +425,8 @@ namespace Orion
         void DrawCaret(ID2D1RenderTarget *ctx);
         void ResetPreview();
         void ResetMarkdownPreviewLayout();
+        void SyncThemeFromUi();
+        void ApplyUiTheme(bool lightMode);
 
         D2D1_POINT_2F TextToScreenPosition(CaretPosition pos);
         CaretPosition ScreenToTextPosition(POINT screenPoint);
@@ -445,6 +447,8 @@ namespace Orion
         EditorState state_;
         EditorTheme theme_;
         EditorMetrics metrics_;
+        bool appliedUiThemeInitialized_ = false;
+        bool appliedUiThemeIsLight_ = false;
 
         bool fontMetricsInitialized_ = false;
         float fontAscent_ = 12.0f; // <-- Valeur par défaut

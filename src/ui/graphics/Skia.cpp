@@ -13,6 +13,7 @@
 #include "helpers/window_helpers.h"
 #include "ui/screens/Welcome.h"
 #include "ui/screens/SettingsTab.h"
+#include "ui/theme/Theme.h"
 #include "utils/logger/Logger.h"
 #include "ui/layout/ExplorerLayoutState.h"
 #include "utils/update/UpdateService.h"
@@ -97,7 +98,7 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
     pRenderTarget_->BindDC(localHdc, &rc);
 
     pRenderTarget_->BeginDraw();
-    pRenderTarget_->Clear(D2D1::ColorF(20.0f / 255.0f, 20.0f / 255.0f, 20.0f / 255.0f));
+    pRenderTarget_->Clear(UI::Theme::ChromeBackground());
 
     DrawCustomTitleBarD2D(pRenderTarget_, pDWriteFactory_, hwnd, titlebarHoveredButton, titlebarHasFocus, titleText);
 
@@ -372,16 +373,17 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
                 window->SetUpdateToastRect(badgeRect);
 
                 const bool hovered = window->IsUpdateToastHovered();
+                const UI::Theme::Palette &themePalette = UI::Theme::GetPalette();
                 ID2D1SolidColorBrush *bgBrush = nullptr;
                 ID2D1SolidColorBrush *borderBrush = nullptr;
                 ID2D1SolidColorBrush *accentBrush = nullptr;
                 ID2D1SolidColorBrush *textBrush = nullptr;
-                pRenderTarget_->CreateSolidColorBrush(hovered ? D2D1::ColorF(0.16f, 0.31f, 0.22f, 0.97f)
-                                                               : D2D1::ColorF(0.13f, 0.25f, 0.19f, 0.95f),
-                                                      &bgBrush);
-                pRenderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.31f, 0.56f, 0.39f, 1.0f), &borderBrush);
-                pRenderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.45f, 0.82f, 0.54f, 1.0f), &accentBrush);
-                pRenderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.93f, 0.97f, 0.93f), &textBrush);
+                D2D1_COLOR_F toastBg = hovered ? themePalette.explorerRowActive : themePalette.explorerRowHover;
+                toastBg.a = hovered ? 0.97f : 0.95f;
+                pRenderTarget_->CreateSolidColorBrush(toastBg, &bgBrush);
+                pRenderTarget_->CreateSolidColorBrush(UI::Theme::Accent(), &borderBrush);
+                pRenderTarget_->CreateSolidColorBrush(UI::Theme::AccentStrong(), &accentBrush);
+                pRenderTarget_->CreateSolidColorBrush(UI::Theme::PrimaryText(), &textBrush);
 
                 if (bgBrush)
                     pRenderTarget_->FillRoundedRectangle(D2D1::RoundedRect(badgeRect, 8.0f, 8.0f), bgBrush);

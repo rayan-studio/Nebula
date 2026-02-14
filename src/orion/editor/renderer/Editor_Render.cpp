@@ -389,6 +389,8 @@ namespace Orion
         if (!ctx || !dwrite)
             return;
 
+        SyncThemeFromUi();
+
         pDWriteFactory_ = dwrite;
 
         if (!cachedTextFormat_)

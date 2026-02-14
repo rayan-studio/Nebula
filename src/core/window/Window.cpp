@@ -78,7 +78,6 @@ static void EnableMicaIfAvailable(HWND hwnd)
 
 static void SetDwmBorderColor(HWND hwnd, bool focused)
 {
-    (void)focused;
     HMODULE hDwm = LoadLibraryW(L"dwmapi.dll");
     if (!hDwm)
         return;
@@ -93,7 +92,7 @@ static void SetDwmBorderColor(HWND hwnd, bool focused)
 
     // DWMWA_BORDER_COLOR = 34 (Windows 11+). Use COLORREF (0x00bbggrr).
     const DWORD DWMWA_BORDER_COLOR = 34;
-    COLORREF color = RGB(51, 51, 51);
+    COLORREF color = focused ? RGB(61, 143, 242) : RGB(51, 51, 51);
     pDwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &color, sizeof(color));
 
     FreeLibrary(hDwm);
@@ -552,6 +551,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 
         SetTimer(hwnd_, CARET_TIMER_ID, CARET_TIMER_INTERVAL_MS, nullptr);
         SetTimer(hwnd_, EDITOR_DRAG_TIMER_ID, EDITOR_DRAG_TIMER_INTERVAL_MS, nullptr);
+        DragAcceptFiles(hwnd_, TRUE);
 
         // Initialize ggwave wrapper (will fallback to SAPI if not enabled)
         CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
@@ -965,6 +965,76 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             free(buf);
 
         InvalidateRect(hwnd_, nullptr, FALSE);
+        return 0;
+    }
+    case WM_DROPFILES:
+    {
+        HDROP hDrop = reinterpret_cast<HDROP>(wParam);
+        if (!hDrop)
+            return 0;
+
+        POINT pt = {0, 0};
+        BOOL inClient = DragQueryPoint(hDrop, &pt);
+
+        UINT fileCount = DragQueryFileW(hDrop, 0xFFFFFFFF, nullptr, 0);
+        std::vector<std::wstring> droppedPaths;
+        droppedPaths.reserve(fileCount);
+        for (UINT i = 0; i < fileCount; ++i)
+        {
+            UINT pathLen = DragQueryFileW(hDrop, i, nullptr, 0);
+            if (pathLen == 0)
+                continue;
+
+            std::wstring path;
+            path.resize(pathLen + 1);
+            UINT written = DragQueryFileW(hDrop, i, path.data(), pathLen + 1);
+            if (written == 0)
+                continue;
+
+            path.resize(written);
+            droppedPaths.push_back(std::move(path));
+        }
+        DragFinish(hDrop);
+
+        if (!inClient || droppedPaths.empty())
+            return 0;
+
+        ExplorerManager &explorer = GetExplorerManager();
+        bool handled = false;
+        bool droppedInExplorer = explorer.IsVisible() && explorer.IsPointInExplorer(pt);
+
+        if (droppedInExplorer && !explorer.GetState().rootPath.empty())
+            handled = explorer.HandleExternalDrop(hwnd_, pt, droppedPaths);
+
+        if (!handled)
+        {
+            for (const std::wstring &path : droppedPaths)
+            {
+                std::error_code ec;
+                if (std::filesystem::is_directory(path, ec))
+                {
+                    OpenProjectAtPath(path);
+                    handled = true;
+                    break;
+                }
+            }
+        }
+
+        if (!handled)
+        {
+            for (const std::wstring &path : droppedPaths)
+            {
+                std::error_code ec;
+                if (std::filesystem::is_regular_file(path, ec))
+                {
+                    OpenFileInNewTab(path, -1, -1);
+                    handled = true;
+                }
+            }
+        }
+
+        if (handled)
+            InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
     }
     
@@ -2801,6 +2871,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         CloseActivePopupWindow();
         GetTerminalPanel().CloseAll();
         GetGGWavePanel().Shutdown();
+        DragAcceptFiles(hwnd_, FALSE);
         KillTimer(hwnd_, CARET_TIMER_ID);
         KillTimer(hwnd_, TITLEBAR_HOVER_TIMER_ID);
         KillTimer(hwnd_, DIAG_TIMER_ID);

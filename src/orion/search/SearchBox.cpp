@@ -1,5 +1,6 @@
 #include "./SearchBox.h"
 #include "ui/components/input/InputTheme.h"
+#include "ui/theme/Theme.h"
 #include <algorithm>
 #include <cmath>
 #include <regex>
@@ -149,6 +150,26 @@ namespace Orion
         if (!visible_)
             return;
 
+        // Keep input visuals synced to runtime theme mode changes.
+        auto styleInput = [](TextInput &input)
+        {
+            auto &style = input.GetStyle();
+            style.useSearchBoxStyle = false;
+            style.backgroundColor = UI::InputTheme::Background();
+            style.borderColor = UI::InputTheme::Border();
+            style.focusBorderColor = UI::InputTheme::FocusBorder();
+            style.textColor = UI::InputTheme::Text();
+            style.placeholderColor = UI::InputTheme::Placeholder();
+            style.selectionColor = UI::InputTheme::Selection();
+            style.cursorColor = UI::InputTheme::Caret();
+            style.cornerRadius = UI::InputTheme::kCornerRadius;
+            style.fontFamily = UI::InputTheme::kFontFamily;
+            style.fontSize = UI::InputTheme::kFontSize;
+            style.padding = UI::InputTheme::kHorizontalPadding;
+        };
+        styleInput(searchInput_);
+        styleInput(replaceInput_);
+
         D2D1_RECT_F panelRect = D2D1::RectF(
             std::round(boxRect_.left),
             std::round(boxRect_.top),
@@ -157,8 +178,10 @@ namespace Orion
 
         ID2D1SolidColorBrush *panelBg = nullptr;
         ID2D1SolidColorBrush *panelBorder = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.07f, 0.07f, 0.07f, 0.98f), &panelBg);
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.19f, 0.19f, 0.19f, 1.0f), &panelBorder);
+        D2D1_COLOR_F panelBgColor = UI::Theme::ChromeBackground();
+        panelBgColor.a = 0.98f;
+        ctx->CreateSolidColorBrush(panelBgColor, &panelBg);
+        ctx->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &panelBorder);
 
         const float panelRadius = 8.0f;
         if (panelBg)
@@ -224,15 +247,16 @@ namespace Orion
                                bool active, bool hovered)
     {
         const float radius = UI::InputTheme::kCornerRadius;
+        const UI::Theme::Palette &palette = UI::Theme::GetPalette();
 
         ID2D1SolidColorBrush *bgBrush = nullptr;
         D2D1_COLOR_F bgColor;
         if (active)
             bgColor = UI::InputTheme::FocusBorder();
         else if (hovered)
-            bgColor = D2D1::ColorF(0.20f, 0.20f, 0.20f);
+            bgColor = palette.explorerRowHover;
         else
-            bgColor = D2D1::ColorF(0.14f, 0.14f, 0.14f);
+            bgColor = UI::InputTheme::Background();
 
         ctx->CreateSolidColorBrush(bgColor, &bgBrush);
         if (bgBrush)
@@ -265,7 +289,7 @@ namespace Orion
             iconFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
             ID2D1SolidColorBrush *iconBrush = nullptr;
-            ctx->CreateSolidColorBrush(active ? UI::InputTheme::Text() : D2D1::ColorF(0.74f, 0.74f, 0.74f), &iconBrush);
+            ctx->CreateSolidColorBrush(active ? UI::InputTheme::Text() : UI::Theme::MutedText(), &iconBrush);
             if (iconBrush)
             {
                 ctx->DrawTextW(icon, (UINT32)wcslen(icon), iconFormat, rect, iconBrush);

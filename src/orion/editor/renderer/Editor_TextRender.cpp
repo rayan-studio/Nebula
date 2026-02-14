@@ -281,15 +281,15 @@ namespace Orion
             Rendering::GuideStyle guideStyle;
             if (ext == L".html" || ext == L".htm")
             {
-                guideStyle.normalColor = D2D1::ColorF(0.4f, 0.7f, 1.0f, 0.7f);
-                guideStyle.activeColor = D2D1::ColorF(0.2f, 0.65f, 1.0f, 0.85f);
+                guideStyle.normalColor = D2D1::ColorF(theme_.keyword.r, theme_.keyword.g, theme_.keyword.b, appliedUiThemeIsLight_ ? 0.45f : 0.70f);
+                guideStyle.activeColor = D2D1::ColorF(theme_.type.r, theme_.type.g, theme_.type.b, appliedUiThemeIsLight_ ? 0.60f : 0.85f);
                 guideStyle.topMargin = 0.06f;
                 guideStyle.bottomMargin = 0.06f;
             }
             else
             {
-                guideStyle.normalColor = D2D1::ColorF(0.4f, 0.4f, 0.45f, 0.65f);
-                guideStyle.activeColor = D2D1::ColorF(0.5f, 0.5f, 0.6f, 0.8f);
+                guideStyle.normalColor = D2D1::ColorF(theme_.lineNumberText.r, theme_.lineNumberText.g, theme_.lineNumberText.b, appliedUiThemeIsLight_ ? 0.45f : 0.65f);
+                guideStyle.activeColor = D2D1::ColorF(theme_.text.r, theme_.text.g, theme_.text.b, appliedUiThemeIsLight_ ? 0.50f : 0.80f);
             }
             guideStyle.lineWidth = 0.75f;
 

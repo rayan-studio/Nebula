@@ -6,6 +6,7 @@
 #include <algorithm>
 #include "helpers/window_helpers.h"
 #include "helpers/path_helpers.h"
+#include "ui/theme/Theme.h"
 #include <filesystem>
 #include <cwctype>
 #ifdef min
@@ -142,6 +143,15 @@ void DrawWelcomeD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, c
     if (width <= 0 || height <= 0)
         return;
 
+    // Fill welcome area with the current app theme background.
+    ID2D1SolidColorBrush *bgBrush = nullptr;
+    ctx->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &bgBrush);
+    if (bgBrush)
+    {
+        ctx->FillRectangle(D2D1::RectF(editorLeft, editorTop, editorRight, editorBottom), bgBrush);
+        bgBrush->Release();
+    }
+
     ID2D1Bitmap *icon = LoadBitmapFromFile(ctx, L"assets/favicon.ico");
 
     UINT dpi = win32_get_dpi_for_window(hwnd);
@@ -167,7 +177,7 @@ void DrawWelcomeD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, c
         titleFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
         ID2D1SolidColorBrush *b = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.9f, 0.9f, 0.9f), &b);
+        ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &b);
 
         std::wstring title = L"Nebula";
         D2D1_RECT_F titleRect = D2D1::RectF(editorLeft, iconY + iconSize + 18.0f, editorRight, iconY + iconSize + 18.0f + titleSize * 1.2f);
@@ -214,9 +224,11 @@ void DrawWelcomeD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, c
         ID2D1SolidColorBrush *keyBrush = nullptr;
         ID2D1SolidColorBrush *keyBgBrush = nullptr;
 
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.85f, 0.85f, 0.85f), &labelBrush);
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.95f, 0.95f), &keyBrush);
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.18f, 0.18f, 0.8f), &keyBgBrush);
+        ctx->CreateSolidColorBrush(UI::Theme::MutedText(), &labelBrush);
+        ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &keyBrush);
+        D2D1_COLOR_F keyBgColor = UI::Theme::GetPalette().explorerToolbarHover;
+        keyBgColor.a = 0.8f;
+        ctx->CreateSolidColorBrush(keyBgColor, &keyBgBrush);
 
         for (size_t i = 0; i < shortcuts.size(); ++i)
         {

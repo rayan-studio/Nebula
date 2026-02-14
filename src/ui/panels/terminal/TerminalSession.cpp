@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "utils/logger/Logger.h"
+#include "ui/theme/Theme.h"
 
 #ifdef min
 #undef min
@@ -849,16 +850,19 @@ void TerminalSession::DrawContent(ID2D1RenderTarget* rt, IDWriteFactory* dwrite,
                                  const std::wstring& fontFamily, float fontSizePx, IDWriteFontCollection* fontCollection,
                                  bool resizeHoverOrResizing, bool isFocused)
 {
+    (void)resizeHoverOrResizing;
     if (!rt || !dwrite) return;
 
     // --- Always draw panel background/chrome here (session content area) ---
     ID2D1SolidColorBrush* bg = nullptr;
     ID2D1SolidColorBrush* fg = nullptr;
     ID2D1SolidColorBrush* border = nullptr;
+    D2D1_COLOR_F terminalBg = UI::Theme::ChromeBackground();
+    terminalBg.a = 0.96f;
 
-    HRESULT hr1 = rt->CreateSolidColorBrush(D2D1::ColorF(0.08f, 0.08f, 0.08f, 0.92f), &bg);
-    HRESULT hr2 = rt->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.92f, 0.92f, 1.0f), &fg);
-    HRESULT hr3 = rt->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f), &border);
+    HRESULT hr1 = rt->CreateSolidColorBrush(terminalBg, &bg);
+    HRESULT hr2 = rt->CreateSolidColorBrush(UI::Theme::PrimaryText(), &fg);
+    HRESULT hr3 = rt->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &border);
 
     if (FAILED(hr1) || FAILED(hr2) || FAILED(hr3) || !bg || !fg || !border)
     {
@@ -966,7 +970,11 @@ void TerminalSession::DrawContent(ID2D1RenderTarget* rt, IDWriteFactory* dwrite,
 
     ID2D1SolidColorBrush* selectionBrush = nullptr;
     if (hasSelection_)
-        rt->CreateSolidColorBrush(D2D1::ColorF(0.25f, 0.45f, 0.85f, 0.45f), &selectionBrush);
+    {
+        D2D1_COLOR_F sel = UI::Theme::GetPalette().inputSelection;
+        sel.a = (std::max)(sel.a, 0.30f);
+        rt->CreateSolidColorBrush(sel, &selectionBrush);
+    }
 
     rt->PushAxisAlignedClip(panel, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
@@ -1004,24 +1012,24 @@ void TerminalSession::DrawContent(ID2D1RenderTarget* rt, IDWriteFactory* dwrite,
 
         if (hasSelection_ && selectionBrush)
         {
-            int startRow = selectionStartRow_;
-            int endRow = selectionEndRow_;
-            int startCol = selectionStartCol_;
-            int endCol = selectionEndCol_;
-            if (startRow > endRow || (startRow == endRow && startCol > endCol))
+            int selStartRow = selectionStartRow_;
+            int selEndRow = selectionEndRow_;
+            int selStartCol = selectionStartCol_;
+            int selEndCol = selectionEndCol_;
+            if (selStartRow > selEndRow || (selStartRow == selEndRow && selStartCol > selEndCol))
             {
-                std::swap(startRow, endRow);
-                std::swap(startCol, endCol);
+                std::swap(selStartRow, selEndRow);
+                std::swap(selStartCol, selEndCol);
             }
 
-            if (r >= startRow && r <= endRow)
+            if (r >= selStartRow && r <= selEndRow)
             {
                 int leftCol = 0;
                 int rightCol = cols_;
-                if (r == startRow)
-                    leftCol = startCol;
-                if (r == endRow)
-                    rightCol = endCol + 1;
+                if (r == selStartRow)
+                    leftCol = selStartCol;
+                if (r == selEndRow)
+                    rightCol = selEndCol + 1;
 
                 leftCol = std::max(0, std::min(leftCol, cols_ - 1));
                 rightCol = std::max(leftCol + 1, std::min(rightCol, cols_));
