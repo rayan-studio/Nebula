@@ -128,6 +128,11 @@ From the root directory:
 python scripts/build.py
 ```
 
+Or whith cmake :
+```bash
+cmake --build build --config Debug
+```
+
 The script will:
 
 * configure the project

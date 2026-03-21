@@ -125,57 +125,6 @@ static ID2D1Bitmap *LoadIconBitmap(ID2D1RenderTarget *ctx, const wchar_t *filena
     return g_iconBitmap;
 }
 
-static D2D1_COLOR_F BlendTitlebarColor(D2D1_COLOR_F base, D2D1_COLOR_F tint, float amount)
-{
-    amount = std::clamp(amount, 0.0f, 1.0f);
-    return D2D1::ColorF(
-        base.r + (tint.r - base.r) * amount,
-        base.g + (tint.g - base.g) * amount,
-        base.b + (tint.b - base.b) * amount,
-        1.0f);
-}
-
-static void DrawTitlebarLeftAccent(ID2D1RenderTarget *ctx, D2D1_RECT_F rect, bool hasFocus)
-{
-    if (!ctx)
-        return;
-
-    const float width = rect.right - rect.left;
-    if (width <= 1.0f)
-        return;
-
-    const D2D1_COLOR_F base = UI::Theme::TitlebarBackground(hasFocus);
-    const D2D1_COLOR_F nebulaStart = D2D1::ColorF(44.0f / 255.0f, 138.0f / 255.0f, 245.0f / 255.0f, 1.0f);
-    const D2D1_COLOR_F nebulaMid = D2D1::ColorF(30.0f / 255.0f, 94.0f / 255.0f, 198.0f / 255.0f, 1.0f);
-
-    const D2D1_COLOR_F start = BlendTitlebarColor(base, nebulaStart, hasFocus ? 0.20f : 0.10f);
-    const D2D1_COLOR_F mid = BlendTitlebarColor(base, nebulaMid, hasFocus ? 0.11f : 0.05f);
-    const float shoulderRatio = std::min(112.0f / width, 1.0f);
-    const float fadeRatio = std::min(300.0f / width, 1.0f);
-
-    D2D1_GRADIENT_STOP stops[] = {
-        {0.0f, start},
-        {shoulderRatio, mid},
-        {fadeRatio, base},
-        {1.0f, base},
-    };
-
-    ID2D1GradientStopCollection *stopCollection = nullptr;
-    ID2D1LinearGradientBrush *gradientBrush = nullptr;
-    if (FAILED(ctx->CreateGradientStopCollection(stops, ARRAYSIZE(stops), &stopCollection)) || !stopCollection)
-        return;
-
-    D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES props = {};
-    props.startPoint = D2D1::Point2F(rect.left, rect.top);
-    props.endPoint = D2D1::Point2F(rect.right, rect.top);
-    if (SUCCEEDED(ctx->CreateLinearGradientBrush(props, stopCollection, &gradientBrush)) && gradientBrush)
-    {
-        ctx->FillRectangle(rect, gradientBrush);
-        gradientBrush->Release();
-    }
-    stopCollection->Release();
-}
-
 // Fonction helper pour dessiner l'icône minimize (ligne horizontale)
 static void DrawMinimizeIcon(ID2D1RenderTarget *ctx, ID2D1SolidColorBrush *brush, D2D1_RECT_F rect)
 {
@@ -337,7 +286,6 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
 
         if (bgBrush)
             ctx->FillRectangle(tb, bgBrush);
-        DrawTitlebarLeftAccent(ctx, tb, hasFocus);
 
         CustomTitleBarButtonRects button_rects = win32_get_title_bar_button_rects(hwnd, &title_bar_rect);
         D2D1_RECT_F rMin = D2D1::RectF((FLOAT)button_rects.minimize.left, (FLOAT)button_rects.minimize.top, (FLOAT)button_rects.minimize.right, (FLOAT)button_rects.minimize.bottom);
@@ -435,7 +383,6 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     ID2D1SolidColorBrush *bgBrush = nullptr;
     ctx->CreateSolidColorBrush(titlebarBg, &bgBrush);
     ctx->FillRectangle(tb, bgBrush);
-    DrawTitlebarLeftAccent(ctx, tb, hasFocus);
 
     CustomTitleBarButtonRects button_rects = win32_get_title_bar_button_rects(hwnd, &title_bar_rect);
 
@@ -782,5 +729,3 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     if (bgBrush)
         bgBrush->Release();
 }
-
-
