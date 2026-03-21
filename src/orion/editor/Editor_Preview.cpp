@@ -902,16 +902,16 @@ namespace
                 unsigned char a = data[idx + 3];
                 float af = a / 255.0f;
 
-                premultiplied[idx + 0] = (unsigned char)(r * af + 0.5f);
+                premultiplied[idx + 0] = (unsigned char)(b * af + 0.5f);
                 premultiplied[idx + 1] = (unsigned char)(g * af + 0.5f);
-                premultiplied[idx + 2] = (unsigned char)(b * af + 0.5f);
+                premultiplied[idx + 2] = (unsigned char)(r * af + 0.5f);
                 premultiplied[idx + 3] = a;
             }
         }
 
         D2D1_SIZE_U size = D2D1::SizeU(w, h);
         D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
-            D2D1::PixelFormat(DXGI_FORMAT_R8G8B8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), dpi, dpi);
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), dpi, dpi);
 
         ID2D1Bitmap *bmp = nullptr;
         ctx->CreateBitmap(size, premultiplied.data(), w * 4, props, &bmp);

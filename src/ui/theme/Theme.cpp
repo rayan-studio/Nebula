@@ -74,7 +74,7 @@ namespace UI::Theme
 
         void BuildDarkPalette(Palette &p)
         {
-            // CLion-inspired dark chrome: warm titlebar accent, cooler desaturated work surfaces.
+            // Nebula dark chrome: neutral work surfaces with a blue brand accent.
             p.titlebarBgFocused = D2D1::ColorF(39.0f / 255.0f, 41.0f / 255.0f, 45.0f / 255.0f, 1.0f);
             p.titlebarBgUnfocused = D2D1::ColorF(43.0f / 255.0f, 45.0f / 255.0f, 49.0f / 255.0f, 1.0f);
             p.titlebarBorderFocused = D2D1::ColorF(67.0f / 255.0f, 71.0f / 255.0f, 77.0f / 255.0f, 1.0f);
@@ -96,8 +96,8 @@ namespace UI::Theme
             p.textMutedFocused = D2D1::ColorF(0.66f, 0.69f, 0.73f, 1.0f);
             p.textMutedUnfocused = D2D1::ColorF(0.58f, 0.61f, 0.66f, 1.0f);
 
-            p.accent = D2D1::ColorF(194.0f / 255.0f, 139.0f / 255.0f, 70.0f / 255.0f, 1.0f);
-            p.accentStrong = D2D1::ColorF(224.0f / 255.0f, 164.0f / 255.0f, 92.0f / 255.0f, 1.0f);
+            p.accent = D2D1::ColorF(42.0f / 255.0f, 132.0f / 255.0f, 232.0f / 255.0f, 1.0f);
+            p.accentStrong = D2D1::ColorF(82.0f / 255.0f, 170.0f / 255.0f, 1.0f, 1.0f);
 
             p.sidebarIconNormal = D2D1::ColorF(0.60f, 0.63f, 0.67f, 1.0f);
             p.sidebarIconHover = D2D1::ColorF(0.88f, 0.90f, 0.93f, 1.0f);
@@ -258,25 +258,25 @@ namespace UI::Theme
     D2D1_COLOR_F ChromeBackground()
     {
         const Palette &p = GetPalette();
-        return IsWindowFocused() ? p.chromeBgFocused : p.chromeBgUnfocused;
+        return p.chromeBgFocused;
     }
 
     D2D1_COLOR_F ChromeBorder()
     {
         const Palette &p = GetPalette();
-        return IsWindowFocused() ? p.chromeBorderFocused : p.chromeBorderUnfocused;
+        return p.chromeBorderFocused;
     }
 
     D2D1_COLOR_F PrimaryText()
     {
         const Palette &p = GetPalette();
-        return IsWindowFocused() ? p.textPrimaryFocused : p.textPrimaryUnfocused;
+        return p.textPrimaryFocused;
     }
 
     D2D1_COLOR_F MutedText()
     {
         const Palette &p = GetPalette();
-        return IsWindowFocused() ? p.textMutedFocused : p.textMutedUnfocused;
+        return p.textMutedFocused;
     }
 
     D2D1_COLOR_F Accent()

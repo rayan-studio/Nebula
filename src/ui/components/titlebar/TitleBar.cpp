@@ -261,11 +261,11 @@ static void DrawTitlebarLeftAccent(ID2D1RenderTarget *ctx, D2D1_RECT_F rect, boo
         return;
 
     const D2D1_COLOR_F base = UI::Theme::TitlebarBackground(hasFocus);
-    const D2D1_COLOR_F warmStart = D2D1::ColorF(176.0f / 255.0f, 127.0f / 255.0f, 63.0f / 255.0f, 1.0f);
-    const D2D1_COLOR_F warmMid = D2D1::ColorF(143.0f / 255.0f, 104.0f / 255.0f, 58.0f / 255.0f, 1.0f);
+    const D2D1_COLOR_F nebulaStart = D2D1::ColorF(44.0f / 255.0f, 138.0f / 255.0f, 245.0f / 255.0f, 1.0f);
+    const D2D1_COLOR_F nebulaMid = D2D1::ColorF(30.0f / 255.0f, 94.0f / 255.0f, 198.0f / 255.0f, 1.0f);
 
-    const D2D1_COLOR_F start = BlendTitlebarColor(base, warmStart, hasFocus ? 0.34f : 0.18f);
-    const D2D1_COLOR_F mid = BlendTitlebarColor(base, warmMid, hasFocus ? 0.20f : 0.10f);
+    const D2D1_COLOR_F start = BlendTitlebarColor(base, nebulaStart, hasFocus ? 0.34f : 0.18f);
+    const D2D1_COLOR_F mid = BlendTitlebarColor(base, nebulaMid, hasFocus ? 0.20f : 0.10f);
     const float shoulderRatio = std::min(136.0f / width, 1.0f);
     const float fadeRatio = std::min(420.0f / width, 1.0f);
 
