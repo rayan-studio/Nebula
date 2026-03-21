@@ -225,16 +225,10 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
 
     // Footer surface follows the shared chrome theme.
     ID2D1SolidColorBrush *bgBrush = nullptr;
-    ctx->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &bgBrush);
+    const D2D1_COLOR_F shellBg = UI::Theme::TitlebarBackground(UI::Theme::IsWindowFocused());
+    ctx->CreateSolidColorBrush(shellBg, &bgBrush);
     D2D1_RECT_F rect = D2D1::RectF(left, top, right, bottom);
     ctx->FillRectangle(rect, bgBrush);
-
-    // Top border uses the shared chrome border color.
-    ID2D1SolidColorBrush *borderBrush = nullptr;
-    ctx->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &borderBrush);
-    D2D1_POINT_2F l = D2D1::Point2F(left, top + 0.5f);
-    D2D1_POINT_2F r = D2D1::Point2F(right, top + 0.5f);
-    ctx->DrawLine(l, r, borderBrush, 1.0f);
 
     // Notification icon (simple circular indicator) on the left
     ID2D1SolidColorBrush *notifBrush = nullptr;
@@ -250,7 +244,7 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
 
     // Small inner dot to create a ring effect (use footer background color)
     ID2D1SolidColorBrush *innerBrush = nullptr;
-    ctx->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &innerBrush);
+    ctx->CreateSolidColorBrush(shellBg, &innerBrush);
     D2D1_ELLIPSE inner = D2D1::Ellipse(D2D1::Point2F(iconCx, iconCy + 1.0f), (FLOAT)(notifR * 0.45f), (FLOAT)(notifR * 0.45f));
     ctx->FillEllipse(inner, innerBrush);
 
@@ -549,7 +543,6 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
     if (statusFmt) statusFmt->Release();
     if (pathFmt) pathFmt->Release();
     if (bgBrush) bgBrush->Release();
-    if (borderBrush) borderBrush->Release();
     if (textBrush) textBrush->Release();
 }
 

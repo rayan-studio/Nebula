@@ -68,16 +68,22 @@ namespace Orion
         }
         else
         {
-            theme_.activeLineBackground = D2D1::ColorF(56.0f / 255.0f, 59.0f / 255.0f, 64.0f / 255.0f, 1.0f);
+            theme_.background = D2D1::ColorF(24.0f / 255.0f, 26.0f / 255.0f, 29.0f / 255.0f, 1.0f);
+            theme_.gutterBackground = D2D1::ColorF(22.0f / 255.0f, 24.0f / 255.0f, 27.0f / 255.0f, 1.0f);
+            theme_.text = D2D1::ColorF(0.82f, 0.84f, 0.87f, 1.0f);
+            theme_.caret = D2D1::ColorF(0.90f, 0.91f, 0.93f, 1.0f);
+            theme_.lineNumberText = D2D1::ColorF(0.40f, 0.43f, 0.47f, 1.0f);
+            theme_.selection = D2D1::ColorF(0.28f, 0.34f, 0.42f, 0.32f);
+            theme_.activeLineBackground = D2D1::ColorF(33.0f / 255.0f, 35.0f / 255.0f, 39.0f / 255.0f, 1.0f);
 
-            theme_.keyword = D2D1::ColorF(0.80f, 0.49f, 0.20f, 1.0f);
-            theme_.string = D2D1::ColorF(0.42f, 0.62f, 0.36f, 1.0f);
-            theme_.comment = D2D1::ColorF(0.45f, 0.49f, 0.54f, 1.0f);
-            theme_.number = D2D1::ColorF(0.40f, 0.60f, 0.77f, 1.0f);
-            theme_.function = D2D1::ColorF(0.92f, 0.78f, 0.43f, 1.0f);
-            theme_.type = D2D1::ColorF(0.53f, 0.72f, 0.90f, 1.0f);
-            theme_.operator_ = D2D1::ColorF(0.85f, 0.87f, 0.90f, 1.0f);
-            theme_.variable = D2D1::ColorF(0.78f, 0.82f, 0.88f, 1.0f);
+            theme_.keyword = D2D1::ColorF(0.73f, 0.62f, 0.45f, 1.0f);
+            theme_.string = D2D1::ColorF(0.58f, 0.67f, 0.52f, 1.0f);
+            theme_.comment = D2D1::ColorF(0.42f, 0.45f, 0.49f, 1.0f);
+            theme_.number = D2D1::ColorF(0.56f, 0.64f, 0.72f, 1.0f);
+            theme_.function = D2D1::ColorF(0.76f, 0.71f, 0.58f, 1.0f);
+            theme_.type = D2D1::ColorF(0.60f, 0.68f, 0.75f, 1.0f);
+            theme_.operator_ = D2D1::ColorF(0.72f, 0.75f, 0.79f, 1.0f);
+            theme_.variable = D2D1::ColorF(0.82f, 0.84f, 0.87f, 1.0f);
         }
     }
 
@@ -119,8 +125,8 @@ namespace Orion
         appliedUiThemeIsLight_ = isLight;
 
         Rendering::GuideStyle guideStyle;
-        guideStyle.normalColor = D2D1::ColorF(theme_.lineNumberText.r, theme_.lineNumberText.g, theme_.lineNumberText.b, 0.45f);
-        guideStyle.activeColor = D2D1::ColorF(theme_.text.r, theme_.text.g, theme_.text.b, 0.55f);
+        guideStyle.normalColor = D2D1::ColorF(theme_.lineNumberText.r, theme_.lineNumberText.g, theme_.lineNumberText.b, 0.32f);
+        guideStyle.activeColor = D2D1::ColorF(theme_.text.r, theme_.text.g, theme_.text.b, 0.42f);
         guideStyle.lineWidth = 0.75f;
         guideRenderer_ = std::make_unique<Rendering::GuideRenderer>(indentConfig, guideStyle);
 

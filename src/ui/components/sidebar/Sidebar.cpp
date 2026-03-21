@@ -260,15 +260,11 @@ void SidebarRenderer::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND 
     
     // Background
     ID2D1SolidColorBrush* bgBrush = nullptr;
-    ctx->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &bgBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::TitlebarBackground(UI::Theme::IsWindowFocused()), &bgBrush);
     if (bgBrush) {
         ctx->FillRectangle(sbRect, bgBrush);
         bgBrush->Release();
     }
-    
-    // Border
-    ID2D1SolidColorBrush* borderBrush = nullptr;
-    ctx->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &borderBrush);
     
     // Create brushes
     ID2D1SolidColorBrush* iconNormalBrush = nullptr;
@@ -276,7 +272,6 @@ void SidebarRenderer::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND 
     ID2D1SolidColorBrush* iconActiveBrush = nullptr;
     ID2D1SolidColorBrush* hoverBgBrush = nullptr;
     ID2D1SolidColorBrush* activeBgBrush = nullptr;
-    ID2D1SolidColorBrush* indicatorBrush = nullptr;
     
     const UI::Theme::Palette &palette = UI::Theme::GetPalette();
     ctx->CreateSolidColorBrush(palette.sidebarIconNormal, &iconNormalBrush);
@@ -284,7 +279,6 @@ void SidebarRenderer::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND 
     ctx->CreateSolidColorBrush(palette.sidebarIconActive, &iconActiveBrush);
     ctx->CreateSolidColorBrush(palette.sidebarHoverBg, &hoverBgBrush);
     ctx->CreateSolidColorBrush(palette.sidebarActiveBg, &activeBgBrush);
-    ctx->CreateSolidColorBrush(palette.sidebarIndicator, &indicatorBrush);
     
     // Icon font
     IDWriteTextFormat* iconFormat = nullptr;
@@ -324,21 +318,11 @@ void SidebarRenderer::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND 
         if (state.isActive) {
             Panel* panel = GetPanelManager().GetPanel(state.panelId);
             if (panel && panel->IsVisible()) {
-                D2D1_ROUNDED_RECT roundedBg = D2D1::RoundedRect(state.bgRect, 4.0f, 4.0f);
+                D2D1_ROUNDED_RECT roundedBg = D2D1::RoundedRect(state.bgRect, 8.0f, 8.0f);
                 ctx->FillRoundedRectangle(roundedBg, activeBgBrush);
-                
-                // Active indicator (blue bar on left)
-                D2D1_ROUNDED_RECT indicator = D2D1::RoundedRect(
-                    D2D1::RectF(
-                        state.bgRect.left,
-                        state.bgRect.top + 6.0f,
-                        state.bgRect.left + 2.5f,
-                        state.bgRect.bottom - 6.0f),
-                    1.5f, 1.5f);
-                ctx->FillRoundedRectangle(indicator, indicatorBrush);
             }
         } else if (state.isHovered) {
-            D2D1_ROUNDED_RECT roundedBg = D2D1::RoundedRect(state.bgRect, 4.0f, 4.0f);
+            D2D1_ROUNDED_RECT roundedBg = D2D1::RoundedRect(state.bgRect, 8.0f, 8.0f);
             ctx->FillRoundedRectangle(roundedBg, hoverBgBrush);
         }
         
@@ -383,19 +367,10 @@ void SidebarRenderer::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND 
                                       (outputHovered_ ? iconHoverBrush : iconNormalBrush);
 
         if (isActiveAndVisible) {
-            D2D1_ROUNDED_RECT roundedBg = D2D1::RoundedRect(outputBgRect_, 4.0f, 4.0f);
+            D2D1_ROUNDED_RECT roundedBg = D2D1::RoundedRect(outputBgRect_, 8.0f, 8.0f);
             ctx->FillRoundedRectangle(roundedBg, activeBgBrush);
-
-            D2D1_ROUNDED_RECT indicator = D2D1::RoundedRect(
-                D2D1::RectF(
-                    outputBgRect_.left,
-                    outputBgRect_.top + 6.0f,
-                    outputBgRect_.left + 2.5f,
-                    outputBgRect_.bottom - 6.0f),
-                1.5f, 1.5f);
-            ctx->FillRoundedRectangle(indicator, indicatorBrush);
         } else if (outputHovered_) {
-            D2D1_ROUNDED_RECT roundedBg = D2D1::RoundedRect(outputBgRect_, 4.0f, 4.0f);
+            D2D1_ROUNDED_RECT roundedBg = D2D1::RoundedRect(outputBgRect_, 8.0f, 8.0f);
             ctx->FillRoundedRectangle(roundedBg, hoverBgBrush);
         }
 
@@ -404,27 +379,13 @@ void SidebarRenderer::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND 
                        iconFormat, outputHitRect_, brush);
     }
     
-    // Always draw the right border of sidebar (divider between sidebar and content area)
-    {
-        float borderX = sbRect.right - 1.0f;
-        D2D1_POINT_2F p1 = D2D1::Point2F(borderX, sbRect.top);
-        D2D1_POINT_2F p2 = D2D1::Point2F(borderX, sbRect.bottom);
-        
-        D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
-        ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
-        ctx->DrawLine(p1, p2, borderBrush, 1.0f);
-        ctx->SetAntialiasMode(oldAA);
-    }
-    
     // Cleanup
     if (iconFormat) iconFormat->Release();
-    if (indicatorBrush) indicatorBrush->Release();
     if (activeBgBrush) activeBgBrush->Release();
     if (hoverBgBrush) hoverBgBrush->Release();
     if (iconActiveBrush) iconActiveBrush->Release();
     if (iconHoverBrush) iconHoverBrush->Release();
     if (iconNormalBrush) iconNormalBrush->Release();
-    if (borderBrush) borderBrush->Release();
 }
 
 bool SidebarRenderer::HandleLeftClick(HWND hwnd, POINT clientPoint)

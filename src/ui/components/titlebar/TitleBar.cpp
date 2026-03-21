@@ -439,7 +439,6 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     float aClose = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Close) : (hoveredButton == Window::Hovered_Close ? 1.0f : 0.0f);
     float aRun = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Run) : (hoveredButton == Window::Hovered_Run ? 1.0f : 0.0f);
     const D2D1_COLOR_F titlebarBg = UI::Theme::TitlebarBackground(hasFocus);
-    const D2D1_COLOR_F titlebarBorder = UI::Theme::TitlebarBorder(hasFocus);
     const D2D1_COLOR_F titlebarText = UI::Theme::TitlebarText(hasFocus);
     const D2D1_COLOR_F titlebarIcon = UI::Theme::TitlebarIcon(hasFocus);
     const UI::Theme::Palette &themePalette = UI::Theme::GetPalette();
@@ -450,15 +449,11 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
         ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
         ID2D1SolidColorBrush *bgBrush = nullptr;
-        ID2D1SolidColorBrush *bottomBorder = nullptr;
         ctx->CreateSolidColorBrush(titlebarBg, &bgBrush);
-        ctx->CreateSolidColorBrush(titlebarBorder, &bottomBorder);
 
         if (bgBrush)
             ctx->FillRectangle(tb, bgBrush);
         DrawTitlebarLeftAccent(ctx, tb, hasFocus);
-        if (bottomBorder)
-            ctx->DrawLine(D2D1::Point2F(tb.left, tb.bottom - 0.5f), D2D1::Point2F(tb.right, tb.bottom - 0.5f), bottomBorder, 1.0f);
 
         CustomTitleBarButtonRects button_rects = win32_get_title_bar_button_rects(hwnd, &title_bar_rect);
         D2D1_RECT_F rMin = D2D1::RectF((FLOAT)button_rects.minimize.left, (FLOAT)button_rects.minimize.top, (FLOAT)button_rects.minimize.right, (FLOAT)button_rects.minimize.bottom);
@@ -545,7 +540,6 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
         if (iconBrush) iconBrush->Release();
         if (hoverBrush) hoverBrush->Release();
         if (closeHoverBrush) closeHoverBrush->Release();
-        if (bottomBorder) bottomBorder->Release();
         if (bgBrush) bgBrush->Release();
 
         ctx->SetAntialiasMode(oldAA);
@@ -558,13 +552,6 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     ctx->CreateSolidColorBrush(titlebarBg, &bgBrush);
     ctx->FillRectangle(tb, bgBrush);
     DrawTitlebarLeftAccent(ctx, tb, hasFocus);
-
-    // Bottom border
-    ID2D1SolidColorBrush *bottomBorder = nullptr;
-    ctx->CreateSolidColorBrush(titlebarBorder, &bottomBorder);
-    D2D1_POINT_2F leftPt = D2D1::Point2F(tb.left, tb.bottom - 0.5f);
-    D2D1_POINT_2F rightPt = D2D1::Point2F(tb.right, tb.bottom - 0.5f);
-    ctx->DrawLine(leftPt, rightPt, bottomBorder, 1.0f);
 
     CustomTitleBarButtonRects button_rects = win32_get_title_bar_button_rects(hwnd, &title_bar_rect);
 
@@ -907,8 +894,6 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
         closeHoverBrush->Release();
     if (hoverBrush)
         hoverBrush->Release();
-    if (bottomBorder)
-        bottomBorder->Release();
     if (bgBrush)
         bgBrush->Release();
 }

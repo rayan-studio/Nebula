@@ -980,7 +980,7 @@ namespace Orion
 
         D2D1_POINT_2F caretPos = TextToScreenPosition(state_.caret);
 
-        const float caretHeight = metrics_.lineHeight * 0.9f;
+        const float caretHeight = metrics_.lineHeight * 0.80f;
         const float caretTop = caretPos.y + (metrics_.lineHeight - caretHeight) * 0.5f;
 
         // Pixel-align for crisp 2px caret

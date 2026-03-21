@@ -99,7 +99,7 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
     pRenderTarget_->BindDC(localHdc, &rc);
 
     pRenderTarget_->BeginDraw();
-    pRenderTarget_->Clear(UI::Theme::ChromeBackground());
+    pRenderTarget_->Clear(UI::Theme::TitlebarBackground(titlebarHasFocus));
 
     DrawCustomTitleBarD2D(pRenderTarget_, pDWriteFactory_, hwnd, titlebarHoveredButton, titlebarHasFocus, titleText);
 
@@ -124,9 +124,8 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
     // Sidebar GPU-rendered (sous la titlebar, à gauche)
     DrawSidebarD2D(pRenderTarget_, pDWriteFactory_, hwnd);
 
-    // Panel (file explorer, search, etc.) - uses PanelManager
+    // Panel layout is updated up-front; drawing happens inside the central shell.
     GetPanelManager().UpdateLayout(hwnd);
-    GetPanelManager().DrawActivePanel(pRenderTarget_, pDWriteFactory_, hwnd);
 
     if (window)
     {
@@ -138,6 +137,8 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
         UINT dpi = win32_get_dpi_for_window(hwnd);
         // Use the same sidebar width as Sidebar.cpp (scaled 52 logical px) to avoid overlap/gaps
         float sidebarWidth = static_cast<float>(win32_dpi_scale(52, dpi));
+        int footerLogicalH = 28;
+        int footerH = win32_dpi_scale(footerLogicalH, dpi);
         
         // Get active panel width from PanelManager
         float panelLeftWidth = 0.0f;
@@ -153,6 +154,42 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
             }
         }
 
+        D2D1_RECT_F centralShellRect = D2D1::RectF(
+            sidebarWidth,
+            static_cast<float>(tbRect.bottom),
+            static_cast<float>(client.right),
+            static_cast<float>(client.bottom - footerH));
+        const float centralCornerRadius = static_cast<float>(win32_dpi_scale(12, dpi));
+
+        ID2D1SolidColorBrush *centralBgBrush = nullptr;
+        ID2D1SolidColorBrush *centralBorderBrush = nullptr;
+        ID2D1RoundedRectangleGeometry *centralClipGeometry = nullptr;
+        ID2D1Layer *centralClipLayer = nullptr;
+
+        pRenderTarget_->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &centralBgBrush);
+        D2D1_COLOR_F centralBorderColor = UI::Theme::ChromeBorder();
+        centralBorderColor.a = 0.9f;
+        pRenderTarget_->CreateSolidColorBrush(centralBorderColor, &centralBorderBrush);
+
+        const D2D1_ROUNDED_RECT centralRoundedRect = D2D1::RoundedRect(
+            centralShellRect,
+            centralCornerRadius,
+            centralCornerRadius);
+
+        if (centralBgBrush)
+            pRenderTarget_->FillRoundedRectangle(centralRoundedRect, centralBgBrush);
+        if (centralBorderBrush)
+            pRenderTarget_->DrawRoundedRectangle(centralRoundedRect, centralBorderBrush, 1.0f);
+
+        if (pFactory_)
+            pFactory_->CreateRoundedRectangleGeometry(&centralRoundedRect, &centralClipGeometry);
+        if (centralClipGeometry)
+            pRenderTarget_->CreateLayer(nullptr, &centralClipLayer);
+        if (centralClipLayer && centralClipGeometry)
+            pRenderTarget_->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), centralClipGeometry), centralClipLayer);
+
+        GetPanelManager().DrawActivePanel(pRenderTarget_, pDWriteFactory_, hwnd);
+
         // Dessiner la TabBar
         float tabBarLeft = sidebarWidth + panelLeftWidth;
         float tabBarTop = (float)tbRect.bottom;
@@ -167,8 +204,6 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
         if (activeTabIndex >= 0)
         {
             UINT dpiInner = win32_get_dpi_for_window(hwnd);
-            int footerLogicalH = 28;
-            int footerH = win32_dpi_scale(footerLogicalH, dpiInner);
 
             float editorLeft = tabBarLeft;
             float editorTop = tabBarTop + tabBar->GetHeight();
@@ -258,11 +293,9 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
             float editorLeft = tabBarLeft;
             float editorTop = tabBarTop + tabBar->GetHeight();
             float editorRight = tabBarRight;
-            float editorBottom = (float)client.bottom;
+            float editorBottom = (float)(client.bottom - footerH);
             
             UINT dpiInner = win32_get_dpi_for_window(hwnd);
-            int footerLogicalH = 28;
-            int footerH = win32_dpi_scale(footerLogicalH, dpiInner);
             float footerTop = (float)(client.bottom - footerH);
             
             // If terminal is visible, reserve a fixed terminal height and reduce welcome space
@@ -301,6 +334,14 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
             ggwave.UpdateLayout(hwnd, footerTop, windowWidth);
             ggwave.Draw(pRenderTarget_, pDWriteFactory_, hwnd);
         }
+
+        if (centralClipLayer && centralClipGeometry)
+            pRenderTarget_->PopLayer();
+
+        SafeRelease(reinterpret_cast<IUnknown **>(&centralClipLayer));
+        SafeRelease(reinterpret_cast<IUnknown **>(&centralClipGeometry));
+        SafeRelease(reinterpret_cast<IUnknown **>(&centralBorderBrush));
+        SafeRelease(reinterpret_cast<IUnknown **>(&centralBgBrush));
     }
 
     // Always draw footer (even if no file/editor is open)
@@ -335,7 +376,7 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
             UpdateService::LatestInfo latest = UpdateService::GetLatestInfo();
             UINT dpi = win32_get_dpi_for_window(hwnd);
             float margin = (float)win32_dpi_scale(12, dpi);
-            float badgeH = (float)win32_dpi_scale(52, dpi);
+            float badgeH = (float)win32_dpi_scale(46, dpi);
             float footerH = (float)win32_dpi_scale(28, dpi);
             float sidebarW = (float)win32_dpi_scale(52, dpi);
             float panelLeftW = 0.0f;
@@ -352,7 +393,7 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
             float badgeBottom = (float)rc.bottom - footerH - margin;
             float maxBadgeW = (float)rc.right - badgeLeft - margin;
             bool canDrawBadge = maxBadgeW > (float)win32_dpi_scale(140, dpi);
-            float preferredBadgeW = (float)win32_dpi_scale(380, dpi);
+            float preferredBadgeW = (float)win32_dpi_scale(340, dpi);
             float badgeW = 0.0f;
             if (canDrawBadge)
             {
@@ -380,37 +421,54 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
                 ID2D1SolidColorBrush *borderBrush = nullptr;
                 ID2D1SolidColorBrush *accentBrush = nullptr;
                 ID2D1SolidColorBrush *textBrush = nullptr;
-                D2D1_COLOR_F toastBg = hovered ? themePalette.explorerRowActive : themePalette.explorerRowHover;
-                toastBg.a = hovered ? 0.97f : 0.95f;
+                ID2D1SolidColorBrush *mutedBrush = nullptr;
+                auto blendColor = [](D2D1_COLOR_F a, D2D1_COLOR_F b, float t) -> D2D1_COLOR_F
+                {
+                    t = (std::max)(0.0f, (std::min)(1.0f, t));
+                    return D2D1::ColorF(
+                        a.r + (b.r - a.r) * t,
+                        a.g + (b.g - a.g) * t,
+                        a.b + (b.b - a.b) * t,
+                        1.0f);
+                };
+                D2D1_COLOR_F toastBg = blendColor(UI::Theme::ChromeBackground(), themePalette.inputBackground, hovered ? 0.48f : 0.38f);
+                toastBg.a = 0.985f;
                 pRenderTarget_->CreateSolidColorBrush(toastBg, &bgBrush);
-                pRenderTarget_->CreateSolidColorBrush(UI::Theme::Accent(), &borderBrush);
-                pRenderTarget_->CreateSolidColorBrush(UI::Theme::AccentStrong(), &accentBrush);
+                D2D1_COLOR_F toastBorder = UI::Theme::ChromeBorder();
+                toastBorder.a = hovered ? 0.82f : 0.62f;
+                pRenderTarget_->CreateSolidColorBrush(toastBorder, &borderBrush);
+                D2D1_COLOR_F accentColor = UI::Theme::Accent();
+                accentColor.a = hovered ? 1.0f : 0.92f;
+                pRenderTarget_->CreateSolidColorBrush(accentColor, &accentBrush);
                 pRenderTarget_->CreateSolidColorBrush(UI::Theme::PrimaryText(), &textBrush);
+                pRenderTarget_->CreateSolidColorBrush(UI::Theme::MutedText(), &mutedBrush);
 
+                const float corner = (float)win32_dpi_scale(10, dpi);
                 if (bgBrush)
-                    pRenderTarget_->FillRoundedRectangle(D2D1::RoundedRect(badgeRect, 8.0f, 8.0f), bgBrush);
+                    pRenderTarget_->FillRoundedRectangle(D2D1::RoundedRect(badgeRect, corner, corner), bgBrush);
                 if (borderBrush)
-                    pRenderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(badgeRect, 8.0f, 8.0f), borderBrush, 1.0f);
+                    pRenderTarget_->DrawRoundedRectangle(D2D1::RoundedRect(badgeRect, corner, corner), borderBrush, 1.0f);
                 if (accentBrush)
                 {
-                    D2D1_RECT_F stripe = badgeRect;
-                    stripe.right = stripe.left + (float)win32_dpi_scale(5, dpi);
-                    pRenderTarget_->FillRoundedRectangle(D2D1::RoundedRect(stripe, 8.0f, 8.0f), accentBrush);
+                    const float dotRadius = (float)win32_dpi_scale(4, dpi);
+                    const float dotX = badgeRect.left + (float)win32_dpi_scale(16, dpi);
+                    const float dotY = badgeRect.top + (badgeRect.bottom - badgeRect.top) * 0.5f;
+                    pRenderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(dotX, dotY), dotRadius, dotRadius), accentBrush);
                 }
 
                 std::wstring title = L"Mise a jour disponible";
                 if (!latest.version.empty())
-                    title += L" - " + latest.version;
-                std::wstring sub = L"Clique ici pour installer et redemarrer";
+                    title = L"Version " + latest.version + L" disponible";
+                std::wstring sub = L"Cliquer pour installer et redemarrer";
 
                 IDWriteTextFormat *titleFmt = nullptr;
                 IDWriteTextFormat *subFmt = nullptr;
                 pDWriteFactory_->CreateTextFormat(L"Segoe UI Variable Text", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
                                                   DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                                                  12.0f, L"fr-fr", &titleFmt);
+                                                  11.5f, L"fr-fr", &titleFmt);
                 pDWriteFactory_->CreateTextFormat(L"Segoe UI Variable Text", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
                                                   DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                                                  11.0f, L"fr-fr", &subFmt);
+                                                  10.5f, L"fr-fr", &subFmt);
                 if (titleFmt)
                 {
                     titleFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
@@ -424,15 +482,15 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
                     subFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
                 }
 
-                if (textBrush && titleFmt && subFmt)
+                if (textBrush && mutedBrush && titleFmt && subFmt)
                 {
-                    float textLeft = badgeRect.left + (float)win32_dpi_scale(14, dpi);
-                    D2D1_RECT_F titleRect = D2D1::RectF(textLeft, badgeRect.top + (float)win32_dpi_scale(8, dpi),
-                                                        badgeRect.right - margin, badgeRect.top + (float)win32_dpi_scale(26, dpi));
-                    D2D1_RECT_F subRect = D2D1::RectF(textLeft, badgeRect.top + (float)win32_dpi_scale(26, dpi),
-                                                      badgeRect.right - margin, badgeRect.bottom - (float)win32_dpi_scale(6, dpi));
+                    float textLeft = badgeRect.left + (float)win32_dpi_scale(28, dpi);
+                    D2D1_RECT_F titleRect = D2D1::RectF(textLeft, badgeRect.top + (float)win32_dpi_scale(7, dpi),
+                                                        badgeRect.right - margin, badgeRect.top + (float)win32_dpi_scale(23, dpi));
+                    D2D1_RECT_F subRect = D2D1::RectF(textLeft, badgeRect.top + (float)win32_dpi_scale(21, dpi),
+                                                      badgeRect.right - margin, badgeRect.bottom - (float)win32_dpi_scale(5, dpi));
                     pRenderTarget_->DrawTextW(title.c_str(), (UINT32)title.size(), titleFmt, titleRect, textBrush);
-                    pRenderTarget_->DrawTextW(sub.c_str(), (UINT32)sub.size(), subFmt, subRect, textBrush);
+                    pRenderTarget_->DrawTextW(sub.c_str(), (UINT32)sub.size(), subFmt, subRect, mutedBrush);
                 }
 
                 if (titleFmt)
@@ -447,6 +505,8 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
                     accentBrush->Release();
                 if (textBrush)
                     textBrush->Release();
+                if (mutedBrush)
+                    mutedBrush->Release();
             }
         }
         else

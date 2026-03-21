@@ -34,6 +34,21 @@ namespace Orion
             state.bottomEdge);
 
         ctx->FillRectangle(gutterRect, bgBrush);
+
+        ID2D1SolidColorBrush *borderBrush = nullptr;
+        D2D1_COLOR_F border = theme.lineNumberText;
+        border.a = 0.24f;
+        if (SUCCEEDED(ctx->CreateSolidColorBrush(border, &borderBrush)) && borderBrush)
+        {
+            const float x = std::round(state.leftEdge + metrics.gutterWidth) - 0.5f;
+            ctx->DrawLine(
+                D2D1::Point2F(x, state.topEdge),
+                D2D1::Point2F(x, state.bottomEdge),
+                borderBrush,
+                1.0f);
+            borderBrush->Release();
+        }
+
         bgBrush->Release();
     }
 
@@ -52,7 +67,7 @@ namespace Orion
                                  &format);
         if (format)
         {
-            format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
             format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         }
 
@@ -70,6 +85,8 @@ namespace Orion
         firstVisibleLine = (std::max)(0, firstVisibleLine);
         lastVisibleLine = (std::min)(visibleCount, lastVisibleLine);
 
+        const float leftPadding = 14.0f;
+
         for (int i = firstVisibleLine; i < lastVisibleLine; ++i)
         {
             int actualLine = state.actualLineByVisual.empty() ? i : state.actualLineByVisual[(size_t)i];
@@ -79,7 +96,7 @@ namespace Orion
             swprintf_s(lineNum, 16, L"%d", actualLine + 1);
 
             D2D1_RECT_F rect = D2D1::RectF(
-                state.leftEdge,
+                state.leftEdge + leftPadding,
                 lineY,
                 state.leftEdge + metrics.gutterWidth,
                 lineY + metrics.lineHeight);

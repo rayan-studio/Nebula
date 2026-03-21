@@ -37,7 +37,7 @@ public:
     void SetTabMarkdownPreview(int index, bool enabled);
 
     int GetTabCount() const { return (int)tabs_.size(); }
-    float GetHeight() const { return tabHeight_ + 1.0f; }
+    float GetHeight() const { return tabs_.empty() ? 0.0f : (tabHeight_ + 1.0f); }
     void DrawCloseOrDirty(ID2D1RenderTarget *ctx, const D2D1_RECT_F &rect, bool hovered, bool dirty) const;
 
     // Height of the small path bar shown under the tabs

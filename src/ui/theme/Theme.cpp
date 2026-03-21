@@ -87,38 +87,38 @@ namespace UI::Theme
             p.titlebarCenterTitleUnfocused = p.titlebarTextUnfocused;
 
             // Non-titlebar UI stays stable regardless of focus.
-            p.chromeBgFocused = D2D1::ColorF(42.0f / 255.0f, 44.0f / 255.0f, 48.0f / 255.0f, 1.0f);
-            p.chromeBgUnfocused = D2D1::ColorF(45.0f / 255.0f, 47.0f / 255.0f, 51.0f / 255.0f, 1.0f);
+            p.chromeBgFocused = D2D1::ColorF(28.0f / 255.0f, 30.0f / 255.0f, 33.0f / 255.0f, 1.0f);
+            p.chromeBgUnfocused = D2D1::ColorF(31.0f / 255.0f, 33.0f / 255.0f, 36.0f / 255.0f, 1.0f);
             p.chromeBorderFocused = D2D1::ColorF(67.0f / 255.0f, 71.0f / 255.0f, 77.0f / 255.0f, 1.0f);
             p.chromeBorderUnfocused = p.chromeBorderFocused;
-            p.textPrimaryFocused = D2D1::ColorF(225.0f / 255.0f, 229.0f / 255.0f, 236.0f / 255.0f, 1.0f);
+            p.textPrimaryFocused = D2D1::ColorF(214.0f / 255.0f, 219.0f / 255.0f, 226.0f / 255.0f, 1.0f);
             p.textPrimaryUnfocused = p.textPrimaryFocused;
-            p.textMutedFocused = D2D1::ColorF(0.66f, 0.69f, 0.73f, 1.0f);
-            p.textMutedUnfocused = D2D1::ColorF(0.58f, 0.61f, 0.66f, 1.0f);
+            p.textMutedFocused = D2D1::ColorF(0.56f, 0.59f, 0.64f, 1.0f);
+            p.textMutedUnfocused = D2D1::ColorF(0.50f, 0.53f, 0.58f, 1.0f);
 
             p.accent = D2D1::ColorF(42.0f / 255.0f, 132.0f / 255.0f, 232.0f / 255.0f, 1.0f);
             p.accentStrong = D2D1::ColorF(82.0f / 255.0f, 170.0f / 255.0f, 1.0f, 1.0f);
 
-            p.sidebarIconNormal = D2D1::ColorF(0.60f, 0.63f, 0.67f, 1.0f);
-            p.sidebarIconHover = D2D1::ColorF(0.88f, 0.90f, 0.93f, 1.0f);
-            p.sidebarIconActive = D2D1::ColorF(0.94f, 0.96f, 0.98f, 1.0f);
-            p.sidebarHoverBg = D2D1::ColorF(57.0f / 255.0f, 60.0f / 255.0f, 66.0f / 255.0f, 1.0f);
-            p.sidebarActiveBg = D2D1::ColorF(69.0f / 255.0f, 84.0f / 255.0f, 109.0f / 255.0f, 1.0f);
-            p.sidebarIndicator = D2D1::ColorF(0.42f, 0.58f, 0.82f, 1.0f);
+            p.sidebarIconNormal = D2D1::ColorF(0.62f, 0.65f, 0.69f, 1.0f);
+            p.sidebarIconHover = D2D1::ColorF(0.86f, 0.88f, 0.91f, 1.0f);
+            p.sidebarIconActive = D2D1::ColorF(0.96f, 0.97f, 0.99f, 1.0f);
+            p.sidebarHoverBg = D2D1::ColorF(71.0f / 255.0f, 74.0f / 255.0f, 79.0f / 255.0f, 1.0f);
+            p.sidebarActiveBg = D2D1::ColorF(91.0f / 255.0f, 95.0f / 255.0f, 101.0f / 255.0f, 1.0f);
+            p.sidebarIndicator = p.sidebarActiveBg;
 
-            p.explorerRowHover = D2D1::ColorF(57.0f / 255.0f, 60.0f / 255.0f, 66.0f / 255.0f, 1.0f);
-            p.explorerRowActive = D2D1::ColorF(66.0f / 255.0f, 83.0f / 255.0f, 111.0f / 255.0f, 1.0f);
+            p.explorerRowHover = D2D1::ColorF(44.0f / 255.0f, 47.0f / 255.0f, 52.0f / 255.0f, 1.0f);
+            p.explorerRowActive = D2D1::ColorF(53.0f / 255.0f, 66.0f / 255.0f, 86.0f / 255.0f, 1.0f);
             p.explorerGuide = D2D1::ColorF(83.0f / 255.0f, 87.0f / 255.0f, 95.0f / 255.0f, 0.88f);
-            p.explorerToolbarHover = D2D1::ColorF(62.0f / 255.0f, 66.0f / 255.0f, 73.0f / 255.0f, 1.0f);
+            p.explorerToolbarHover = D2D1::ColorF(48.0f / 255.0f, 51.0f / 255.0f, 56.0f / 255.0f, 1.0f);
             p.explorerPlaceholderText = D2D1::ColorF(0.62f, 0.65f, 0.70f, 1.0f);
 
-            p.inputBackground = D2D1::ColorF(52.0f / 255.0f, 55.0f / 255.0f, 61.0f / 255.0f, 1.0f);
-            p.inputBorder = D2D1::ColorF(79.0f / 255.0f, 84.0f / 255.0f, 92.0f / 255.0f, 1.0f);
+            p.inputBackground = D2D1::ColorF(37.0f / 255.0f, 40.0f / 255.0f, 45.0f / 255.0f, 1.0f);
+            p.inputBorder = D2D1::ColorF(66.0f / 255.0f, 71.0f / 255.0f, 78.0f / 255.0f, 1.0f);
             p.inputFocusBorder = D2D1::ColorF(108.0f / 255.0f, 138.0f / 255.0f, 179.0f / 255.0f, 1.0f);
-            p.inputText = D2D1::ColorF(0.91f, 0.93f, 0.96f, 1.0f);
-            p.inputPlaceholder = D2D1::ColorF(0.60f, 0.63f, 0.68f, 1.0f);
-            p.inputSelection = D2D1::ColorF(0.33f, 0.45f, 0.62f, 0.55f);
-            p.inputCaret = D2D1::ColorF(0.94f, 0.96f, 0.98f, 1.0f);
+            p.inputText = D2D1::ColorF(0.84f, 0.86f, 0.89f, 1.0f);
+            p.inputPlaceholder = D2D1::ColorF(0.52f, 0.55f, 0.60f, 1.0f);
+            p.inputSelection = D2D1::ColorF(0.30f, 0.38f, 0.50f, 0.34f);
+            p.inputCaret = D2D1::ColorF(0.88f, 0.90f, 0.93f, 1.0f);
         }
 
         void BuildLightPalette(Palette &p)
