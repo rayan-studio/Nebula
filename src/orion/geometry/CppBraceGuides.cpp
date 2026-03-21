@@ -239,6 +239,33 @@ namespace Orion::Geometry
                 [](const IndentGuide &g){ return g.endLine < g.startLine; }),
             out.end());
 
+        // Only the deepest containing block should be active.
+        int activeGuideIndex = -1;
+        for (size_t i = 0; i < out.size(); ++i)
+        {
+            const IndentGuide &g = out[i];
+            if (activeLine < g.startLine || activeLine > g.endLine)
+                continue;
+
+            if (activeGuideIndex < 0)
+            {
+                activeGuideIndex = (int)i;
+                continue;
+            }
+
+            const IndentGuide &current = out[(size_t)activeGuideIndex];
+            if (g.visualCol > current.visualCol ||
+                (g.visualCol == current.visualCol && g.startLine > current.startLine) ||
+                (g.visualCol == current.visualCol && g.startLine == current.startLine &&
+                 (g.endLine - g.startLine) < (current.endLine - current.startLine)))
+            {
+                activeGuideIndex = (int)i;
+            }
+        }
+
+        for (size_t i = 0; i < out.size(); ++i)
+            out[i].active = ((int)i == activeGuideIndex);
+
         // no logging here (avoid spamming logs on every render)
 
         return out;

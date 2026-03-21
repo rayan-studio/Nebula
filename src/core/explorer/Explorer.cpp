@@ -16,6 +16,7 @@
 #include <regex>
 #include "ui/components/popups/CustomPopup.h"
 #include <shellapi.h>
+#include "ui/components/menu/DropdownMenu.h"
 #include "ui/components/titlebar/TitleBar.h"
 #include "core/window/Window.h"
 #include "utils/logger/Logger.h"

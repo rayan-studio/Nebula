@@ -26,6 +26,7 @@
 #include <vssym32.h>
 #include <commctrl.h>
 #include "helpers/window_helpers.h"
+#include "ui/components/menu/DropdownMenu.h"
 #include "ui/components/titlebar/TitleBar.h"
 #include "ui/components/popups/CustomPopup.h"
 #include "ui/components/popups/PopupWindow.h"

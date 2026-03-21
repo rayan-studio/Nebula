@@ -2,6 +2,7 @@
 #include <stdexcept>
 #include <cmath>
 #include <sstream>
+#include "ui/components/menu/DropdownMenu.h"
 #include "ui/components/titlebar/TitleBar.h"
 #include "ui/components/sidebar/Sidebar.h"
 #include "core/explorer/Explorer.h"

@@ -17,8 +17,6 @@ static ULONGLONG g_footer_hint_until = 0;
 static std::wstring g_footer_branch_cache;
 static std::wstring g_footer_branch_probe_path;
 static ULONGLONG g_footer_branch_cache_until = 0;
-static ID2D1Bitmap *g_footer_branch_icon = nullptr;
-static ID2D1RenderTarget *g_footer_branch_icon_ctx = nullptr;
 
 static std::string WideToUtf8(const std::wstring &text)
 {
@@ -128,29 +126,6 @@ static std::wstring GetFooterBranchText(const std::wstring &filePath)
     return g_footer_branch_cache;
 }
 
-static ID2D1Bitmap *GetFooterBranchIcon(ID2D1RenderTarget *ctx, UINT dpi)
-{
-    if (!ctx)
-        return nullptr;
-
-    if (g_footer_branch_icon_ctx != ctx)
-    {
-        if (g_footer_branch_icon)
-        {
-            g_footer_branch_icon->Release();
-            g_footer_branch_icon = nullptr;
-        }
-        g_footer_branch_icon_ctx = ctx;
-    }
-
-    if (!g_footer_branch_icon)
-    {
-        int px = win32_dpi_scale(12, dpi);
-        g_footer_branch_icon = GetExplorerManager().LoadSvgIconPublic(ctx, "assets\\ressource\\icons\\git.svg", px, dpi);
-    }
-    return g_footer_branch_icon;
-}
-
 static float MeasureTextWidth(IDWriteFactory *dwrite, IDWriteTextFormat *fmt, const std::wstring &text)
 {
     if (!dwrite || !fmt || text.empty())
@@ -248,22 +223,23 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
     D2D1_ELLIPSE inner = D2D1::Ellipse(D2D1::Point2F(iconCx, iconCy + 1.0f), (FLOAT)(notifR * 0.45f), (FLOAT)(notifR * 0.45f));
     ctx->FillEllipse(inner, innerBrush);
 
-    // Prepare right-side status text (line/column + language + encoding)
-    std::wstring lang = DetectLanguageFromPath(filePath);
+    // Prepare right-side status text with simpler segmented labels.
+    std::wstring lang = filePath.empty() ? L"" : DetectLanguageFromPath(filePath);
     std::wstring branchText = GetFooterBranchText(filePath);
-    wchar_t buf[256];
-    swprintf_s(buf, 256, L"Ln %d, Col %d - %s - %s",
-               (line + 1), (column + 1), lang.c_str(), encoding.c_str());
+    std::wstring encodingText = encoding;
+    wchar_t positionBuf[128];
+    swprintf_s(positionBuf, 128, L"Ln %d, Col %d", (line + 1), (column + 1));
+    std::wstring positionText = positionBuf;
 
-    // Create right-aligned format for status (use JetBrains Mono to match editor)
+    // Use a UI font on the right side: it reads cleaner than monospace in tight space.
     IDWriteTextFormat *statusFmt = nullptr;
     if (dwrite)
     {
-        dwrite->CreateTextFormat(L"JetBrains Mono", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"en-us", &statusFmt);
+        dwrite->CreateTextFormat(L"Segoe UI Variable Text", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"en-us", &statusFmt);
         if (statusFmt)
         {
             statusFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            statusFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+            statusFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         }
     }
 
@@ -281,31 +257,45 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
 
     ID2D1SolidColorBrush *textBrush = nullptr;
     ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &textBrush);
+    ID2D1SolidColorBrush *mutedBrush = nullptr;
+    ctx->CreateSolidColorBrush(UI::Theme::MutedText(), &mutedBrush);
 
     // Prepare hover brush early so it's visible in the whole function scope
     ID2D1SolidColorBrush *segmentHoverBrush = nullptr;
     ctx->CreateSolidColorBrush(themePalette.explorerToolbarHover, &segmentHoverBrush);
 
-    float statusTextWidth = 180.0f;
+    const float rightEdgePadding = 12.0f;
+    const float statusGap = 14.0f;
+    const float branchGap = 18.0f;
+    float positionWidth = 96.0f;
+    float langWidth = 48.0f;
+    float encodingWidth = 54.0f;
+    float branchWidth = 0.0f;
     if (statusFmt && dwrite)
     {
-        float measured = MeasureTextWidth(dwrite, statusFmt, buf);
-        if (measured > 0.0f)
-            statusTextWidth = (std::max)(120.0f, (std::min)(340.0f, measured + 14.0f));
-    }
-
-    float branchBlockWidth = branchText.empty() ? 0.0f : 120.0f;
-    if (!branchText.empty() && statusFmt && dwrite)
-    {
-        float measured = MeasureTextWidth(dwrite, statusFmt, branchText);
-        if (measured > 0.0f)
-            branchBlockWidth = (std::max)(72.0f, (std::min)(220.0f, measured + 34.0f));
+        positionWidth = (std::max)(72.0f, MeasureTextWidth(dwrite, statusFmt, positionText));
+        if (!lang.empty())
+            langWidth = (std::max)(32.0f, MeasureTextWidth(dwrite, statusFmt, lang));
+        else
+            langWidth = 0.0f;
+        if (!encodingText.empty())
+            encodingWidth = (std::max)(40.0f, MeasureTextWidth(dwrite, statusFmt, encodingText));
+        else
+            encodingWidth = 0.0f;
+        if (!branchText.empty())
+            branchWidth = (std::min)(180.0f, (std::max)(36.0f, MeasureTextWidth(dwrite, statusFmt, branchText)));
     }
 
     if (!filePath.empty() && pathFmt && textBrush)
     {
         float pathLeft = left + 12.0f + (float)(notifR * 2) + 6.0f;
-        float rightReserved = statusTextWidth + 24.0f + (branchBlockWidth > 0.0f ? (branchBlockWidth + 12.0f) : 0.0f);
+        float rightReserved = rightEdgePadding + positionWidth;
+        if (langWidth > 0.0f)
+            rightReserved += statusGap + langWidth;
+        if (encodingWidth > 0.0f)
+            rightReserved += statusGap + encodingWidth;
+        if (branchWidth > 0.0f)
+            rightReserved += branchGap + branchWidth;
         float pathRight = right - rightReserved;
         D2D1_RECT_F pathRectF = D2D1::RectF(pathLeft, top, pathRight, bottom);
 
@@ -512,37 +502,46 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
             hintFmt->Release();
     }
 
-    // Draw the right-side branch text
-    float statusRight = right - 12.0f;
-    if (!branchText.empty() && statusFmt && textBrush)
-    {
-        D2D1_RECT_F branchRect = D2D1::RectF(right - 12.0f - branchBlockWidth, top, right - 12.0f, bottom);
-        ID2D1Bitmap *branchIcon = GetFooterBranchIcon(ctx, dpi);
-        if (branchIcon)
-        {
-            float iconPx = (float)win32_dpi_scale(12, dpi);
-            float iconLeft = std::round(branchRect.left + 6.0f);
-            float iconTop = std::round((top + bottom - iconPx) * 0.5f);
-            D2D1_RECT_F iconRect = D2D1::RectF(iconLeft, iconTop, iconLeft + iconPx, iconTop + iconPx);
-            ctx->DrawBitmap(branchIcon, iconRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
-        }
-        D2D1_RECT_F branchTextRect = D2D1::RectF(branchRect.left + 22.0f, branchRect.top, branchRect.right, branchRect.bottom);
-        ctx->DrawTextW(branchText.c_str(), (UINT32)branchText.size(), statusFmt, branchTextRect, textBrush,
-                       D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
-        statusRight = branchRect.left - 10.0f;
-    }
-
-    // Draw the right-side status text
     if (statusFmt && textBrush)
     {
-        float textLeft = left + 12.0f + (float)(notifR * 2) + 6.0f;
-        D2D1_RECT_F statusRect = D2D1::RectF(textLeft, top, statusRight, bottom);
-        ctx->DrawTextW(buf, (UINT32)wcslen(buf), statusFmt, statusRect, textBrush, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+        float cursorRight = right - rightEdgePadding;
+
+        if (!branchText.empty())
+        {
+            D2D1_RECT_F branchRect = D2D1::RectF(cursorRight - branchWidth, top, cursorRight, bottom);
+            ctx->DrawTextW(branchText.c_str(), (UINT32)branchText.size(), statusFmt, branchRect,
+                           mutedBrush ? mutedBrush : textBrush,
+                           D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            cursorRight = branchRect.left - branchGap;
+        }
+
+        if (encodingWidth > 0.0f)
+        {
+            D2D1_RECT_F encodingRect = D2D1::RectF(cursorRight - encodingWidth, top, cursorRight, bottom);
+            ctx->DrawTextW(encodingText.c_str(), (UINT32)encodingText.size(), statusFmt, encodingRect,
+                           mutedBrush ? mutedBrush : textBrush,
+                           D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            cursorRight = encodingRect.left - statusGap;
+        }
+
+        if (langWidth > 0.0f)
+        {
+            D2D1_RECT_F langRect = D2D1::RectF(cursorRight - langWidth, top, cursorRight, bottom);
+            ctx->DrawTextW(lang.c_str(), (UINT32)lang.size(), statusFmt, langRect,
+                           mutedBrush ? mutedBrush : textBrush,
+                           D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            cursorRight = langRect.left - statusGap;
+        }
+
+        D2D1_RECT_F positionRect = D2D1::RectF(cursorRight - positionWidth, top, cursorRight, bottom);
+        ctx->DrawTextW(positionText.c_str(), (UINT32)positionText.size(), statusFmt, positionRect, textBrush,
+                       D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
     }
 
     if (statusFmt) statusFmt->Release();
     if (pathFmt) pathFmt->Release();
     if (bgBrush) bgBrush->Release();
+    if (mutedBrush) mutedBrush->Release();
     if (textBrush) textBrush->Release();
 }
 

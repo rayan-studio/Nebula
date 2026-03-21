@@ -8,7 +8,7 @@
 #include "ui/panels/git/GitPanel.h"
 #include "ui/panels/search/SearchPanel.h"
 #include "ui/panels/terminal/TerminalPanel.h"
-#include "ui/components/titlebar/TitleBar.h"
+#include "ui/components/menu/DropdownMenu.h"
 #include "ui/components/input/InputTypeFixed.h"
 #include "ui/components/footer/Footer.h"
 #include "lsp/LspManager.h"
