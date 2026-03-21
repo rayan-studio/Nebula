@@ -164,12 +164,12 @@ void DrawWelcomeD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, c
     if (icon)
     {
         D2D1_RECT_F iconRect = D2D1::RectF(iconX, iconY, iconX + iconSize, iconY + iconSize);
-        ctx->DrawBitmap(icon, iconRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        ctx->DrawBitmap(icon, iconRect, 0.84f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
     }
 
     // Title
     IDWriteTextFormat *titleFmt = nullptr;
-    float titleSize = std::clamp(static_cast<float>(win32_dpi_scale(36, dpi)), static_cast<float>(win32_dpi_scale(24, dpi)), static_cast<float>(win32_dpi_scale(48, dpi)));
+    float titleSize = std::clamp(static_cast<float>(win32_dpi_scale(34, dpi)), static_cast<float>(win32_dpi_scale(24, dpi)), static_cast<float>(win32_dpi_scale(44, dpi)));
     dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, titleSize, L"en-us", &titleFmt);
     if (titleFmt)
     {

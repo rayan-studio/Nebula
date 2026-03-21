@@ -88,6 +88,16 @@ ID2D1Bitmap *GetCachedSidebarSvg(ID2D1RenderTarget *ctx, const std::wstring &pat
     cache.push_back(entry);
     return bitmap;
 }
+
+void DrawSidebarBitmapMasked(ID2D1RenderTarget *ctx, ID2D1Bitmap *bitmap, const D2D1_RECT_F &dst, ID2D1SolidColorBrush *brush)
+{
+    if (!ctx || !bitmap || !brush)
+        return;
+
+    D2D1_SIZE_F srcSize = bitmap->GetSize();
+    D2D1_RECT_F srcRect = D2D1::RectF(0.0f, 0.0f, srcSize.width, srcSize.height);
+    ctx->FillOpacityMask(bitmap, brush, D2D1_OPACITY_MASK_CONTENT_GRAPHICS, dst, srcRect);
+}
 }
 
 // ============================================================================
@@ -362,8 +372,9 @@ void SidebarRenderer::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND 
                     cy - (iconSize_ * 0.5f),
                     cx + (iconSize_ * 0.5f),
                     cy + (iconSize_ * 0.5f));
-                float alpha = isActiveAndVisible ? 1.0f : (state.isHovered ? 0.94f : 0.80f);
-                ctx->DrawBitmap(bitmap, dst, alpha, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+                ID2D1SolidColorBrush *iconBrush = isActiveAndVisible ? iconActiveBrush :
+                                                  (state.isHovered ? iconHoverBrush : iconNormalBrush);
+                DrawSidebarBitmapMasked(ctx, bitmap, dst, iconBrush);
                 drawnSvg = true;
             }
         }

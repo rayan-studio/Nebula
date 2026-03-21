@@ -85,22 +85,52 @@ if not exist "%EXTERNAL_DIR%" (
 
 echo [Nebula] Cloning external dependencies...
 
-if not exist "%EXTERNAL_DIR%\libvterm" (
-  git clone https://github.com/neovim/libvterm.git "%EXTERNAL_DIR%\libvterm"
-) else (
-  echo [Nebula] libvterm already exists.
+call :clone_repo "libvterm" "https://github.com/neovim/libvterm.git" "%EXTERNAL_DIR%\libvterm" "%EXTERNAL_DIR%\libvterm\include\vterm.h"
+if not %errorlevel%==0 exit /b 1
+
+call :clone_repo "ggwave" "https://github.com/ggerganov/ggwave.git" "%EXTERNAL_DIR%\ggwave" "%EXTERNAL_DIR%\ggwave\include\ggwave\ggwave.h"
+if not %errorlevel%==0 exit /b 1
+
+call :clone_repo "nanosvg" "https://github.com/memononen/nanosvg.git" "%EXTERNAL_DIR%\nanosvg" "%EXTERNAL_DIR%\nanosvg\src\nanosvg.h"
+if not %errorlevel%==0 exit /b 1
+
+call :clone_repo "libgit2" "https://github.com/libgit2/libgit2.git" "%EXTERNAL_DIR%\libgit2" "%EXTERNAL_DIR%\libgit2\include\git2.h"
+if not %errorlevel%==0 exit /b 1
+
+goto :eof
+
+:clone_repo
+set "DEP_NAME=%~1"
+set "DEP_URL=%~2"
+set "DEP_DIR=%~3"
+set "DEP_MARKER=%~4"
+
+if exist "%DEP_MARKER%" (
+  echo [Nebula] %DEP_NAME% already exists.
+  goto :eof
 )
 
-if not exist "%EXTERNAL_DIR%\ggwave" (
-  git clone https://github.com/ggerganov/ggwave.git "%EXTERNAL_DIR%\ggwave"
+if exist "%DEP_DIR%" (
+  dir /b "%DEP_DIR%" >nul 2>&1
+  if not errorlevel 1 (
+    echo [Error] %DEP_NAME% is present but incomplete at %DEP_DIR%.
+    echo Remove the folder and rerun the script.
+    exit /b 1
+  )
 ) else (
-  echo [Nebula] ggwave already exists.
+  mkdir "%DEP_DIR%" >nul 2>&1
 )
 
-if not exist "%EXTERNAL_DIR%\nanosvg" (
-  git clone https://github.com/memononen/nanosvg.git "%EXTERNAL_DIR%\nanosvg"
-) else (
-  echo [Nebula] nanosvg already exists.
+echo [Nebula] Cloning %DEP_NAME%...
+git clone "%DEP_URL%" "%DEP_DIR%"
+if not %errorlevel%==0 (
+  echo [Error] Failed to clone %DEP_NAME%.
+  exit /b 1
+)
+
+if not exist "%DEP_MARKER%" (
+  echo [Error] %DEP_NAME% was cloned but expected files are missing.
+  exit /b 1
 )
 
 goto :eof

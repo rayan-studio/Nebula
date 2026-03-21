@@ -32,6 +32,32 @@ ROOT = Path(__file__).resolve().parent.parent
 BUILD_DEFAULT = ROOT / "build"
 BUILD_FAST = ROOT / "build-ninja"
 DEFAULT_CONFIG = "Release"
+EXTERNAL_DEPS = [
+    {
+        "name": "libvterm",
+        "path": ROOT / "external" / "libvterm",
+        "marker": ROOT / "external" / "libvterm" / "include" / "vterm.h",
+        "url": "https://github.com/neovim/libvterm.git",
+    },
+    {
+        "name": "ggwave",
+        "path": ROOT / "external" / "ggwave",
+        "marker": ROOT / "external" / "ggwave" / "include" / "ggwave" / "ggwave.h",
+        "url": "https://github.com/ggerganov/ggwave.git",
+    },
+    {
+        "name": "nanosvg",
+        "path": ROOT / "external" / "nanosvg",
+        "marker": ROOT / "external" / "nanosvg" / "src" / "nanosvg.h",
+        "url": "https://github.com/memononen/nanosvg.git",
+    },
+    {
+        "name": "libgit2",
+        "path": ROOT / "external" / "libgit2",
+        "marker": ROOT / "external" / "libgit2" / "include" / "git2.h",
+        "url": "https://github.com/libgit2/libgit2.git",
+    },
+]
 
 
 def run(cmd, cwd=None, capture=False):
@@ -139,6 +165,90 @@ def has_generator(help_text: str, name: str) -> bool:
 
 def has_ninja_executable() -> bool:
     return shutil.which("ninja") is not None
+
+
+def path_has_entries(path: Path) -> bool:
+    try:
+        next(path.iterdir())
+        return True
+    except StopIteration:
+        return False
+    except OSError:
+        return False
+
+
+def gitlink_commit_for(path: Path):
+    rel = path.relative_to(ROOT).as_posix()
+    r = run(["git", "ls-tree", "HEAD", rel], cwd=ROOT, capture=True)
+    if r.returncode != 0:
+        return None
+
+    line = (r.stdout or "").strip()
+    if not line:
+        return None
+
+    m = re.match(r"160000 commit ([0-9a-fA-F]{40})\t", line)
+    if not m:
+        return None
+    return m.group(1)
+
+
+def repo_head_commit(path: Path):
+    r = run(["git", "-C", str(path), "rev-parse", "HEAD"], capture=True)
+    if r.returncode != 0:
+        return None
+    return (r.stdout or "").strip() or None
+
+
+def checkout_repo_commit(path: Path, commit: str, name: str):
+    current = repo_head_commit(path)
+    if current and current.lower() == commit.lower():
+        return
+
+    log(f"-> syncing {name} to {commit[:12]}", C.D)
+    r = run(["git", "-C", str(path), "checkout", commit], capture=True)
+    if r.returncode != 0:
+        details = "\n".join(x for x in [r.stdout, r.stderr] if x)
+        raise RuntimeError(f"failed to checkout {name} to {commit}\n{details}")
+
+
+def ensure_external_dependencies():
+    git = shutil.which("git")
+    if not git:
+        raise RuntimeError("git is required to clone external dependencies automatically")
+
+    external_root = ROOT / "external"
+    external_root.mkdir(exist_ok=True)
+
+    for dep in EXTERNAL_DEPS:
+        dep_dir = dep["path"]
+        pinned_commit = gitlink_commit_for(dep_dir)
+
+        if dep["marker"].exists():
+            if pinned_commit and (dep_dir / ".git").exists():
+                checkout_repo_commit(dep_dir, pinned_commit, dep["name"])
+            continue
+
+        dep_dir.parent.mkdir(parents=True, exist_ok=True)
+
+        if dep_dir.exists() and path_has_entries(dep_dir):
+            raise RuntimeError(
+                f"{dep['name']} is present but incomplete at {dep_dir}. "
+                f"Remove the folder and rerun the build."
+            )
+
+        log(f"-> fetching {dep['name']}", C.D)
+        clone_cmd = [git, "clone", dep["url"], str(dep_dir)]
+        r = run(clone_cmd, capture=True)
+        if r.returncode != 0:
+            details = "\n".join(x for x in [r.stdout, r.stderr] if x)
+            raise RuntimeError(f"failed to clone {dep['name']} from {dep['url']}\n{details}")
+
+        if pinned_commit:
+            checkout_repo_commit(dep_dir, pinned_commit, dep["name"])
+
+        if not dep["marker"].exists():
+            raise RuntimeError(f"{dep['name']} clone completed but expected files are still missing in {dep_dir}")
 
 
 def pick_generator(force_ninja=False):
@@ -281,6 +391,8 @@ def main():
     log(f"-> build dir: {build_dir}", C.D)
     log(f"-> generator: {active_gen}", C.D)
     log(f"-> parallel jobs: {jobs}", C.D)
+
+    ensure_external_dependencies()
 
     if skip_configure and (build_dir / "CMakeCache.txt").exists():
         log("-> configuring (skipped)", C.D)

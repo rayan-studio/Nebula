@@ -1,5 +1,6 @@
 #include "ui/screens/NewProjectOverlay.h"
 #include "core/window/Window.h"
+#include "ui/theme/Theme.h"
 #include <cmath>
 
 namespace UI
@@ -18,6 +19,7 @@ static D2D1_RECT_F PixelSnapRect(const D2D1_RECT_F &rect, float scale)
 
 void NewProjectCreateView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, const NewProjectRenderContext &rc)
 {
+    const UI::Theme::Palette &palette = UI::Theme::GetPalette();
     const D2D1_RECT_F &rightPanel = rc.rightPanel;
 
     float backH = 30.0f * rc.scale;
@@ -70,7 +72,7 @@ void NewProjectCreateView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteF
     auto &styleName = window.newProjNameInput_.GetStyle();
     styleName.backgroundColor = D2D1::ColorF(0.15f, 0.15f, 0.15f, 1.0f);
     styleName.borderColor = D2D1::ColorF(0.24f, 0.24f, 0.24f, 1.0f);
-    styleName.focusBorderColor = D2D1::ColorF(0.29f, 0.62f, 0.92f, 1.0f);
+    styleName.focusBorderColor = palette.inputFocusBorder;
     styleName.cornerRadius = 8.0f * rc.scale;
     styleName.fontSize = 12.0f * rc.scale;
     styleName.padding = 9.0f * rc.scale;
@@ -126,7 +128,7 @@ void NewProjectCreateView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteF
         bool hovered = (i == window.newProjTemplateHover_);
         ID2D1SolidColorBrush *selBg = nullptr;
         if (selected)
-            ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.28f, 0.42f, 1.0f), &selBg);
+            ctx->CreateSolidColorBrush(palette.explorerRowActive, &selBg);
         else if (hovered)
             ctx->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.18f, 0.18f, 1.0f), &selBg);
         if (selBg)
@@ -158,8 +160,8 @@ void NewProjectCreateView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteF
 
     ID2D1SolidColorBrush *createBrush = nullptr;
     ID2D1SolidColorBrush *btnText = nullptr;
-    ctx->CreateSolidColorBrush(window.newProjCreateHover_ ? D2D1::ColorF(0.24f, 0.56f, 0.95f, 1.0f)
-                                                          : D2D1::ColorF(0.18f, 0.46f, 0.86f, 1.0f), &createBrush);
+    D2D1_COLOR_F createColor = window.newProjCreateHover_ ? palette.accentStrong : palette.accent;
+    ctx->CreateSolidColorBrush(createColor, &createBrush);
     ctx->CreateSolidColorBrush(D2D1::ColorF(0.96f, 0.96f, 0.96f, 1.0f), &btnText);
     if (createBrush)
     {

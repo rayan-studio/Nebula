@@ -1,6 +1,7 @@
 #include "SettingsPanel.h"
 #include "helpers/window_helpers.h"
 #include "ui/layout/ExplorerLayoutState.h"
+#include "ui/theme/Theme.h"
 
 SettingsPanel::SettingsPanel()
     : Panel(PanelId::Settings)
@@ -51,6 +52,8 @@ void SettingsPanel::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND /*
     if (!visible_ || state_.physicalWidth <= 0)
         return;
 
+    const UI::Theme::Palette &palette = UI::Theme::GetPalette();
+
     D2D1_RECT_F clipRect = D2D1::RectF(
         state_.leftEdge,
         state_.topEdge,
@@ -68,11 +71,11 @@ void SettingsPanel::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND /*
     ID2D1SolidColorBrush *toggleBgBrush = nullptr;
     ID2D1SolidColorBrush *toggleTextBrush = nullptr;
 
-    D2D1_COLOR_F rowBg = rowHovered_ ? D2D1::ColorF(0.16f, 0.16f, 0.16f) : D2D1::ColorF(0.13f, 0.13f, 0.13f);
+    D2D1_COLOR_F rowBg = rowHovered_ ? palette.explorerToolbarHover : palette.inputBackground;
     ctx->CreateSolidColorBrush(rowBg, &rowBgBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.25f, 0.25f, 0.25f), &rowBorderBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.85f, 0.85f, 0.85f), &labelBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.45f, 0.80f), &toggleBgBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &rowBorderBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &labelBrush);
+    ctx->CreateSolidColorBrush(palette.accent, &toggleBgBrush);
     ctx->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f), &toggleTextBrush);
 
     if (rowBgBrush)

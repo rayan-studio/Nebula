@@ -7,6 +7,19 @@
 #include "helpers/window_helpers.h"
 #include "ui/theme/Theme.h"
 
+namespace
+{
+D2D1_COLOR_F BlendTabColor(D2D1_COLOR_F a, D2D1_COLOR_F b, float t)
+{
+    t = (std::max)(0.0f, (std::min)(1.0f, t));
+    return D2D1::ColorF(
+        a.r + (b.r - a.r) * t,
+        a.g + (b.g - a.g) * t,
+        a.b + (b.b - a.b) * t,
+        1.0f);
+}
+}
+
 TabBar::TabBar() {}
 TabBar::~TabBar() {}
 
@@ -218,10 +231,13 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
 {
     (void)hwnd;
     const UI::Theme::Palette &themePalette = UI::Theme::GetPalette();
+    const D2D1_COLOR_F baseBg = UI::Theme::ChromeBackground();
+    const D2D1_COLOR_F hoverBg = BlendTabColor(baseBg, themePalette.explorerToolbarHover, 0.88f);
+    const D2D1_COLOR_F activeBg = BlendTabColor(baseBg, themePalette.explorerToolbarHover, 1.0f);
 
     // Background de la tab bar
     ID2D1SolidColorBrush *bgBrush = nullptr;
-    ctx->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &bgBrush);
+    ctx->CreateSolidColorBrush(baseBg, &bgBrush);
 
     D2D1_RECT_F barRect = D2D1::RectF(leftEdge_, topEdge_, rightEdge_, topEdge_ + GetHeight());
     ctx->FillRectangle(barRect, bgBrush);
@@ -251,15 +267,15 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
         ID2D1SolidColorBrush *tabBrush = nullptr;
         if (tab.isActive)
         {
-            ctx->CreateSolidColorBrush(themePalette.explorerRowActive, &tabBrush);
+            ctx->CreateSolidColorBrush(activeBg, &tabBrush);
         }
         else if (i == hoveredTabIndex_)
         {
-            ctx->CreateSolidColorBrush(themePalette.explorerRowHover, &tabBrush);
+            ctx->CreateSolidColorBrush(hoverBg, &tabBrush);
         }
         else
         {
-            ctx->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &tabBrush);
+            ctx->CreateSolidColorBrush(baseBg, &tabBrush);
         }
         ctx->FillRectangle(tabRect, tabBrush);
         tabBrush->Release();
@@ -280,6 +296,29 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
             D2D1_ROUNDED_RECT roundedBorder = D2D1::RoundedRect(borderRect, 1.5f, 1.5f);
             ctx->FillRoundedRectangle(roundedBorder, borderBrush);
             borderBrush->Release();
+        }
+
+        if (tab.isActive)
+        {
+            ID2D1SolidColorBrush *activeCoverBrush = nullptr;
+            ctx->CreateSolidColorBrush(activeBg, &activeCoverBrush);
+            if (activeCoverBrush)
+            {
+                ctx->FillRectangle(
+                    D2D1::RectF(x + 3.0f, topEdge_ + tabHeight_ - 2.0f, x + tabWidth_ - 3.0f, topEdge_ + tabHeight_),
+                    activeCoverBrush);
+                activeCoverBrush->Release();
+            }
+
+            ID2D1SolidColorBrush *topLineBrush = nullptr;
+            D2D1_COLOR_F outline = UI::Theme::ChromeBorder();
+            outline.a = 0.95f;
+            ctx->CreateSolidColorBrush(outline, &topLineBrush);
+            if (topLineBrush)
+            {
+                ctx->FillRectangle(D2D1::RectF(x, topEdge_, x + tabWidth_, topEdge_ + 1.0f), topLineBrush);
+                topLineBrush->Release();
+            }
         }
 
         // Texte de la tab

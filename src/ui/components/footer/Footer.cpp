@@ -238,7 +238,9 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
 
     // Notification icon (simple circular indicator) on the left
     ID2D1SolidColorBrush *notifBrush = nullptr;
-    ctx->CreateSolidColorBrush(UI::Theme::AccentStrong(), &notifBrush);
+    D2D1_COLOR_F notifColor = themePalette.sidebarIndicator;
+    notifColor.a = 0.92f;
+    ctx->CreateSolidColorBrush(notifColor, &notifBrush);
     int notifLogicalR = 6; // logical radius
     int notifR = win32_dpi_scale(notifLogicalR, dpi);
     float iconCx = left + 12.0f + (float)notifR;

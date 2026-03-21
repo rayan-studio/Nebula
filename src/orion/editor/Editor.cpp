@@ -68,16 +68,16 @@ namespace Orion
         }
         else
         {
-            theme_.activeLineBackground = D2D1::ColorF(0.145098f, 0.145098f, 0.149019f, 1.0f);
+            theme_.activeLineBackground = D2D1::ColorF(56.0f / 255.0f, 59.0f / 255.0f, 64.0f / 255.0f, 1.0f);
 
-            theme_.keyword = D2D1::ColorF(0.384314f, 0.627451f, 0.909804f, 1.0f);
-            theme_.string = D2D1::ColorF(0.874510f, 0.619608f, 0.501961f, 1.0f);
-            theme_.comment = D2D1::ColorF(0.498039f, 0.713725f, 0.415686f, 1.0f);
-            theme_.number = D2D1::ColorF(0.776471f, 0.850980f, 0.690196f, 1.0f);
-            theme_.function = D2D1::ColorF(0.901961f, 0.890196f, 0.603921f, 1.0f);
-            theme_.type = D2D1::ColorF(0.349019f, 0.815686f, 0.737255f, 1.0f);
-            theme_.operator_ = D2D1::ColorF(0.878431f, 0.878431f, 0.878431f, 1.0f);
-            theme_.variable = D2D1::ColorF(0.658824f, 0.878431f, 1.0f, 1.0f);
+            theme_.keyword = D2D1::ColorF(0.80f, 0.49f, 0.20f, 1.0f);
+            theme_.string = D2D1::ColorF(0.42f, 0.62f, 0.36f, 1.0f);
+            theme_.comment = D2D1::ColorF(0.45f, 0.49f, 0.54f, 1.0f);
+            theme_.number = D2D1::ColorF(0.40f, 0.60f, 0.77f, 1.0f);
+            theme_.function = D2D1::ColorF(0.92f, 0.78f, 0.43f, 1.0f);
+            theme_.type = D2D1::ColorF(0.53f, 0.72f, 0.90f, 1.0f);
+            theme_.operator_ = D2D1::ColorF(0.85f, 0.87f, 0.90f, 1.0f);
+            theme_.variable = D2D1::ColorF(0.78f, 0.82f, 0.88f, 1.0f);
         }
     }
 

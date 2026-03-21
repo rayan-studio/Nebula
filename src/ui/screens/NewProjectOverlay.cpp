@@ -2,6 +2,7 @@
 #include "core/window/Window.h"
 #include "helpers/window_helpers.h"
 #include "core/explorer/Explorer.h"
+#include "ui/theme/Theme.h"
 #include <filesystem>
 #include <shlobj.h>
 #include <shellapi.h>
@@ -65,6 +66,8 @@ void NewProjectOverlay::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFact
     if (!window.newProjectVisible_ || !ctx || !dwrite)
         return;
 
+    const UI::Theme::Palette &palette = UI::Theme::GetPalette();
+
     D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
     D2D1_TEXT_ANTIALIAS_MODE oldTextAA = ctx->GetTextAntialiasMode();
     ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -77,7 +80,7 @@ void NewProjectOverlay::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFact
     D2D1_RECT_F full = D2D1::RectF((float)clientRect.left, (float)tbRect.bottom, (float)clientRect.right, (float)clientRect.bottom);
 
     ID2D1SolidColorBrush *bg = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.12f, 0.12f, 0.12f, 1.0f), &bg);
+    ctx->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &bg);
     if (bg)
     {
         ctx->FillRectangle(full, bg);
@@ -119,12 +122,12 @@ void NewProjectOverlay::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFact
     rc.iconFont = iconFont;
     rc.uiCollection = uiCollection;
 
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.14f, 0.14f, 0.14f, 1.0f), &rc.panelBg);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f), &rc.panelBorder);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f), &rc.divider);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.60f, 0.60f, 0.60f, 1.0f), &rc.muted);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0xE0E0E0), &rc.text);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.18f, 0.18f, 1.0f), &rc.subtle);
+    ctx->CreateSolidColorBrush(palette.inputBackground, &rc.panelBg);
+    ctx->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &rc.panelBorder);
+    ctx->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &rc.divider);
+    ctx->CreateSolidColorBrush(UI::Theme::MutedText(), &rc.muted);
+    ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &rc.text);
+    ctx->CreateSolidColorBrush(palette.explorerToolbarHover, &rc.subtle);
 
     if (rc.panelBg)
         ctx->FillRoundedRectangle(D2D1::RoundedRect(rightPanel, 8.0f * scale, 8.0f * scale), rc.panelBg);
@@ -177,7 +180,7 @@ void NewProjectOverlay::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFact
         auto &searchStyle = window.newProjLocationInput_.GetStyle();
         searchStyle.backgroundColor = D2D1::ColorF(0.15f, 0.15f, 0.15f, 1.0f);
         searchStyle.borderColor = D2D1::ColorF(0.24f, 0.24f, 0.24f, 1.0f);
-        searchStyle.focusBorderColor = D2D1::ColorF(0.29f, 0.62f, 0.92f, 1.0f);
+        searchStyle.focusBorderColor = palette.inputFocusBorder;
         searchStyle.cornerRadius = 8.0f * scale;
         searchStyle.fontSize = 12.0f * scale;
         searchStyle.padding = 9.0f * scale;

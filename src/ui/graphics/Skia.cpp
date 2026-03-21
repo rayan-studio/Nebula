@@ -1,6 +1,7 @@
 #include "Skia.h"
 #include <stdexcept>
 #include <cmath>
+#include <sstream>
 #include "ui/components/titlebar/TitleBar.h"
 #include "ui/components/sidebar/Sidebar.h"
 #include "core/explorer/Explorer.h"
@@ -57,7 +58,7 @@ bool Skia::Init(HWND hwnd)
     // Create a software DCRenderTarget (CPU raster) and bind to HDC at paint time
     D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE),
         96.0f,
         96.0f);
 
@@ -103,8 +104,37 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
     DrawCustomTitleBarD2D(pRenderTarget_, pDWriteFactory_, hwnd, titlebarHoveredButton, titlebarHasFocus, titleText);
 
     Window* window = GetWindowFromHwnd(hwnd);
+    static std::wstring s_lastRenderState;
+    auto logRenderState = [&](const std::wstring &state)
+    {
+        if (state != s_lastRenderState)
+        {
+            s_lastRenderState = state;
+            Logger::Instance().Log(L"[Skia] " + state);
+        }
+    };
+
+    if (!window)
+    {
+        RECT clientNull;
+        GetClientRect(hwnd, &clientNull);
+        std::wstringstream ss;
+        ss << L"window=null client=("
+           << clientNull.left << L"," << clientNull.top << L","
+           << clientNull.right << L"," << clientNull.bottom << L")";
+        logRenderState(ss.str());
+    }
+
     if (window && window->IsNewProjectOverlayVisible())
     {
+        RECT clientOverlayLog;
+        GetClientRect(hwnd, &clientOverlayLog);
+        std::wstringstream ss;
+        ss << L"overlay=visible client=("
+           << clientOverlayLog.left << L"," << clientOverlayLog.top << L","
+           << clientOverlayLog.right << L"," << clientOverlayLog.bottom << L")";
+        logRenderState(ss.str());
+
         RECT clientOverlay;
         GetClientRect(hwnd, &clientOverlay);
         window->DrawNewProjectOverlay(pRenderTarget_, pDWriteFactory_, clientOverlay);
@@ -161,6 +191,37 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
 
         // Dessiner l'éditeur actif
         int activeTabIndex = tabBar->GetActiveTabIndex();
+        {
+            const wchar_t *panelName = L"none";
+            if (activePanel)
+            {
+                switch (activePanel->GetId())
+                {
+                case PanelId::Explorer: panelName = L"explorer"; break;
+                case PanelId::Search: panelName = L"search"; break;
+                case PanelId::Git: panelName = L"git"; break;
+                case PanelId::Settings: panelName = L"settings"; break;
+                default: break;
+                }
+            }
+
+            std::wstringstream ss;
+            ss << L"overlay=hidden client=("
+               << client.left << L"," << client.top << L"," << client.right << L"," << client.bottom << L")"
+               << L" tb=(" << tbRect.left << L"," << tbRect.top << L"," << tbRect.right << L"," << tbRect.bottom << L")"
+               << L" sidebarW=" << sidebarWidth
+               << L" panel=" << panelName
+               << L" panelVisible=" << (activePanel && activePanel->IsVisible() ? 1 : 0)
+               << L" panelLeftW=" << panelLeftWidth
+               << L" panelRightW=" << panelRightWidth
+               << L" tabCount=" << (tabBar ? tabBar->GetTabCount() : -1)
+               << L" activeTab=" << activeTabIndex
+               << L" explorerVisible=" << (GetExplorerManager().IsVisible() ? 1 : 0)
+               << L" rootEmpty=" << (GetExplorerManager().GetState().rootPath.empty() ? 1 : 0)
+               << L" terminalVisible=" << (GetTerminalPanel().IsVisible() ? 1 : 0)
+               << L" terminalHeight=" << GetTerminalPanel().GetHeightPx();
+            logRenderState(ss.str());
+        }
 
         if (activeTabIndex >= 0)
         {
@@ -461,7 +522,9 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
     HRESULT hr = pRenderTarget_->EndDraw();
     if (FAILED(hr))
     {
-        // ignore for now
+        std::wstringstream ss;
+        ss << L"EndDraw failed hr=0x" << std::hex << (unsigned long)hr;
+        Logger::Instance().Log(L"[Skia] " + ss.str());
     }
 
     // Welcome icon drawing is handled by the D2D welcome renderer earlier.

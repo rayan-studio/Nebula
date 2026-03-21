@@ -12,6 +12,7 @@
 #include "orion/geometry/TextColumns.h"
 #include "orion/geometry/IndentationHelper.h"
 #include "orion/rendering/GuideRenderer.h"
+#include "ui/theme/Theme.h"
 
 // Ensure Windows min/max macros don't interfere with std::min/std::max
 #ifdef max
@@ -468,7 +469,7 @@ namespace Orion
                             std::vector<DWRITE_HIT_TEST_METRICS> metrics(count);
                             layout->HitTestTextRange((UINT32)defHoverStart_, length, drawX, drawY, metrics.data(), count, &count);
 
-                            D2D1_COLOR_F linkColor = D2D1::ColorF(0.29f, 0.62f, 0.92f, 1.0f);
+                            D2D1_COLOR_F linkColor = UI::Theme::GetPalette().sidebarIndicator;
                             ID2D1SolidColorBrush *linkBrush = nullptr;
                             ctx->CreateSolidColorBrush(linkColor, &linkBrush);
                             if (linkBrush)
