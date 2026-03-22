@@ -27,6 +27,7 @@
 #include <vector>
 #include <exception>
 
+
 // Disable min/max macros from Windows headers
 #undef min
 #undef max

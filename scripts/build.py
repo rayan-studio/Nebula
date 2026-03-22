@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import os
@@ -8,7 +8,6 @@ import shutil
 import subprocess
 from pathlib import Path
 from datetime import datetime
-
 
 class C:
     R = "\033[0m"

@@ -564,11 +564,13 @@ namespace Orion
                             std::wstring finalLine = baseIndent + right;
                             if (!closingExists)
                                 finalLine += std::wstring(1, expectedClose);
-                            state_.lines.insert(state_.lines.begin() + state_.caret.line + 3, finalLine);
+                            if (!closingExists || !right.empty())
+                                state_.lines.insert(state_.lines.begin() + state_.caret.line + 3, finalLine);
 
                             state_.caret.line += 2;
                             state_.caret.column = (int)innerIndent.size();
                             didSpecial = true;
+                            contentChanged = true;
                         }
                         else
                         {
@@ -579,11 +581,13 @@ namespace Orion
                             std::wstring finalLine = baseIndent + right;
                             if (!closingExists)
                                 finalLine += std::wstring(1, expectedClose);
-                            state_.lines.insert(state_.lines.begin() + state_.caret.line + 2, finalLine);
+                            if (!closingExists || !right.empty())
+                                state_.lines.insert(state_.lines.begin() + state_.caret.line + 2, finalLine);
 
                             state_.caret.line++;
                             state_.caret.column = (int)innerIndent.size();
                             didSpecial = true;
+                            contentChanged = true;
                         }
                     }
                 }

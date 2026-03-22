@@ -192,8 +192,17 @@ void TabBar::DrawCloseOrDirty(ID2D1RenderTarget *ctx, const D2D1_RECT_F &rect, b
 
     if (dirty)
     {
-        const float radius = (rect.right - rect.left) * 0.22f;
-        ctx->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), radius, radius), fgBrush);
+        const float diameter = 5.0f;
+        const float radius = diameter * 0.5f;
+        const D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
+        ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        ctx->FillEllipse(
+            D2D1::Ellipse(
+                D2D1::Point2F(std::round(cx), std::round(cy)),
+                radius,
+                radius),
+            fgBrush);
+        ctx->SetAntialiasMode(oldAA);
     }
     else
     {

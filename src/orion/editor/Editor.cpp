@@ -69,10 +69,9 @@ namespace Orion
         }
         else
         {
-            theme_.background = D2D1::ColorF(24.0f / 255.0f, 26.0f / 255.0f, 29.0f / 255.0f, 1.0f);
             // Match JetBrains expUI dark editor palette more closely.
-            theme_.background = D2D1::ColorF(30.0f / 255.0f, 31.0f / 255.0f, 34.0f / 255.0f, 1.0f);          // 1e1f22
-            theme_.gutterBackground = theme_.background;
+            theme_.background = D2D1::ColorF(24.0f / 255.0f, 26.0f / 255.0f, 29.0f / 255.0f, 1.0f);
+            theme_.gutterBackground = D2D1::ColorF(22.0f / 255.0f, 24.0f / 255.0f, 27.0f / 255.0f, 1.0f);
             theme_.text = D2D1::ColorF(188.0f / 255.0f, 190.0f / 255.0f, 196.0f / 255.0f, 1.0f);             // bcbec4
             theme_.caret = D2D1::ColorF(206.0f / 255.0f, 208.0f / 255.0f, 214.0f / 255.0f, 1.0f);            // ced0d6
             theme_.lineNumberText = D2D1::ColorF(75.0f / 255.0f, 80.0f / 255.0f, 89.0f / 255.0f, 1.0f);      // 4b5059
