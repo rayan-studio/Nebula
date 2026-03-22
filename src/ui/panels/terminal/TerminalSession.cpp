@@ -874,10 +874,6 @@ void TerminalSession::DrawContent(ID2D1RenderTarget* rt, IDWriteFactory* dwrite,
 
     const D2D1_RECT_F panel = D2D1::RectF(left_, top_, right_, bottom_);
     rt->FillRectangle(panel, bg);
-    // Draw border without top edge (tabs already provide a separator)
-    rt->DrawLine(D2D1::Point2F(left_, bottom_), D2D1::Point2F(right_, bottom_), border, 1.0f);
-    rt->DrawLine(D2D1::Point2F(left_, top_), D2D1::Point2F(left_, bottom_), border, 1.0f);
-    rt->DrawLine(D2D1::Point2F(right_, top_), D2D1::Point2F(right_, bottom_), border, 1.0f);
 
     // If not ready: stop after chrome (no empty reserved zone)
     if (!vt_ || !screen_)

@@ -27,7 +27,6 @@
 #include <vector>
 #include <exception>
 
-
 // Disable min/max macros from Windows headers
 #undef min
 #undef max
@@ -849,8 +848,6 @@ void ExplorerManager::CreateNewFolderAt(const std::wstring &parentDir, const std
         MessageBoxW(nullptr, L"Erreur lors de la creation du dossier.", L"Erreur", MB_OK | MB_ICONERROR);
     }
 }
-
-
 
 std::wstring ExplorerManager::GetActiveDirectory() const
 {

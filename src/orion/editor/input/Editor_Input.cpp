@@ -325,8 +325,18 @@ namespace Orion
         if (isPreview_ || isGitSplitDiffView_)
             return std::nullopt;
 
+        if (markdownViewMode_ == MarkdownViewMode::Split)
+        {
+            const float leftPaneRight = GetGitSplitDividerX() - 5.0f;
+            if ((float)pt.x > leftPaneRight)
+                return std::nullopt;
+        }
+
         float contentLeft = state_.leftEdge + metrics_.gutterWidth + metrics_.leftPadding;
-        if (pt.x < (int)contentLeft || pt.x > (int)state_.rightEdge || pt.y < (int)state_.topEdge || pt.y > (int)state_.bottomEdge)
+        float contentRight = state_.rightEdge;
+        if (markdownViewMode_ == MarkdownViewMode::Split)
+            contentRight = GetGitSplitDividerX() - 5.0f;
+        if (pt.x < (int)contentLeft || pt.x > (int)contentRight || pt.y < (int)state_.topEdge || pt.y > (int)state_.bottomEdge)
             return std::nullopt;
 
         if (state_.lines.empty())
@@ -379,6 +389,19 @@ namespace Orion
             if (scrollbar_.OnLeftButtonDown(pt))
                 SetCapture(hwnd);
             return;
+        }
+        if (markdownViewMode_ == MarkdownViewMode::Split)
+        {
+            if (IsPointOnGitSplitDivider(pt))
+            {
+                gitSplitDividerDragging_ = true;
+                SetCapture(hwnd);
+                return;
+            }
+
+            const float leftPaneRight = GetGitSplitDividerX() - 5.0f;
+            if ((float)pt.x > leftPaneRight)
+                return;
         }
         if (isPreview_)
         {
@@ -789,6 +812,31 @@ namespace Orion
             }
             return;
         }
+        if (markdownViewMode_ == MarkdownViewMode::Split)
+        {
+            if (gitSplitDividerDragging_)
+            {
+                const float contentLeft = state_.leftEdge;
+                const float contentRight = GetGitSplitContentRight();
+                const float fullWidth = contentRight - contentLeft;
+                if (fullWidth > 0.0f)
+                {
+                    const float minX = contentLeft + 140.0f;
+                    const float maxX = contentRight - 140.0f;
+                    float clampedX = (float)pt.x;
+                    if (maxX > minX)
+                        clampedX = (std::max)(minX, (std::min)(maxX, clampedX));
+                    gitSplitDividerRatio_ = (clampedX - contentLeft) / fullWidth;
+                    gitSplitDividerRatio_ = (std::max)(0.1f, (std::min)(0.9f, gitSplitDividerRatio_));
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                return;
+            }
+
+            const float leftPaneRight = GetGitSplitDividerX() - 5.0f;
+            if ((float)pt.x > leftPaneRight)
+                return;
+        }
         if (isPreview_)
         {
             if (previewMode_ == PreviewMode::Markdown)
@@ -921,7 +969,10 @@ namespace Orion
 
         // editor area check
         float contentLeft = state_.leftEdge + metrics_.gutterWidth + metrics_.leftPadding;
-        bool isInEditorArea = !(pt.x < contentLeft || pt.x > state_.rightEdge || pt.y < state_.topEdge || pt.y > state_.bottomEdge);
+        float contentRight = state_.rightEdge;
+        if (markdownViewMode_ == MarkdownViewMode::Split)
+            contentRight = GetGitSplitDividerX() - 5.0f;
+        bool isInEditorArea = !(pt.x < contentLeft || pt.x > contentRight || pt.y < state_.topEdge || pt.y > state_.bottomEdge);
 
         if (!isInEditorArea && !isInGutterArea && !leftButtonDown)
             return;
@@ -968,7 +1019,10 @@ namespace Orion
                 needsRedraw = true;
             }
 
-            CaretPosition newPos = ScreenToTextPosition(pt);
+            POINT effectivePoint = pt;
+            if (markdownViewMode_ == MarkdownViewMode::Split && (float)effectivePoint.x > contentRight)
+                effectivePoint.x = (LONG)contentRight;
+            CaretPosition newPos = ScreenToTextPosition(effectivePoint);
 
             if (newPos.line < 0) newPos.line = 0;
             if (newPos.line >= (int)state_.lines.size()) newPos.line = (int)state_.lines.size() - 1;
@@ -998,32 +1052,35 @@ namespace Orion
             bool prevVisible = diagHoverVisible_;
             std::wstring newText;
 
-            CaretPosition hoverPos = ScreenToTextPosition(pt);
-            if (hoverPos.line >= 0 && hoverPos.line < (int)state_.lines.size())
+            if (isInEditorArea)
             {
-                auto diagnostics = GetDiagnostics();
-                for (const auto &d : diagnostics)
+                CaretPosition hoverPos = ScreenToTextPosition(pt);
+                if (hoverPos.line >= 0 && hoverPos.line < (int)state_.lines.size())
                 {
-                    if (d.line != hoverPos.line)
-                        continue;
-                    int start = d.startCol;
-                    int end = d.endCol;
-                    if (end <= start)
-                        end = start + 1;
-
-                    float x1 = contentLeft + (float)start * metrics_.characterWidth - state_.scrollOffsetX;
-                    float x2 = contentLeft + (float)end * metrics_.characterWidth - state_.scrollOffsetX;
-                    float y1 = state_.topEdge + (float)hoverPos.line * metrics_.lineHeight - state_.scrollOffsetY;
-                    float y2 = y1 + metrics_.lineHeight;
-
-                    if (pt.x >= (int)x1 && pt.x <= (int)x2 && pt.y >= (int)y1 && pt.y <= (int)y2)
+                    auto diagnostics = GetDiagnostics();
+                    for (const auto &d : diagnostics)
                     {
-                        newText = d.message;
-                        if (!d.suggestion.empty())
+                        if (d.line != hoverPos.line)
+                            continue;
+                        int start = d.startCol;
+                        int end = d.endCol;
+                        if (end <= start)
+                            end = start + 1;
+
+                        float x1 = contentLeft + (float)start * metrics_.characterWidth - state_.scrollOffsetX;
+                        float x2 = contentLeft + (float)end * metrics_.characterWidth - state_.scrollOffsetX;
+                        float y1 = state_.topEdge + (float)hoverPos.line * metrics_.lineHeight - state_.scrollOffsetY;
+                        float y2 = y1 + metrics_.lineHeight;
+
+                        if (pt.x >= (int)x1 && pt.x <= (int)x2 && pt.y >= (int)y1 && pt.y <= (int)y2)
                         {
-                            newText += L"\nSuggestion: " + d.suggestion;
+                            newText = d.message;
+                            if (!d.suggestion.empty())
+                            {
+                                newText += L"\nSuggestion: " + d.suggestion;
+                            }
+                            break;
                         }
-                        break;
                     }
                 }
             }
@@ -1170,6 +1227,14 @@ namespace Orion
                 ReleaseCapture();
             return;
         }
+        if (markdownViewMode_ == MarkdownViewMode::Split)
+        {
+            if (gitSplitDividerDragging_)
+            {
+                gitSplitDividerDragging_ = false;
+                ReleaseCapture();
+            }
+        }
         if (isPreview_)
         {
             if (previewMode_ == PreviewMode::Markdown)
@@ -1218,6 +1283,16 @@ namespace Orion
     void Editor::OnMouseWheel(HWND hwnd, int delta, bool ctrlPressed)
     {
         if (isGitSplitDiffView_)
+        {
+            if (scrollbar_.OnMouseWheel(delta))
+            {
+                state_.scrollOffsetY = scrollbar_.GetScrollOffset();
+                if (hwnd)
+                    InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return;
+        }
+        if (markdownViewMode_ == MarkdownViewMode::Split)
         {
             if (scrollbar_.OnMouseWheel(delta))
             {
@@ -1289,7 +1364,7 @@ namespace Orion
 
     void Editor::OnHorizontalWheel(HWND hwnd, int delta)
     {
-        if (isPreview_ || isGitSplitDiffView_)
+        if (isPreview_ || isGitSplitDiffView_ || markdownViewMode_ == MarkdownViewMode::Split)
             return;
         if (!hScrollbarVisible_)
             return;

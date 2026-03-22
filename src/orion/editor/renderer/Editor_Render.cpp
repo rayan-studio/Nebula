@@ -11,6 +11,7 @@
 #include "orion/selection/Selection.h"
 #include "orion/caret/Caret.h"
 #include "core/explorer/Explorer.h"
+#include "ui/theme/Theme.h"
 #include "ui/panels/git/GitDiffDecorations.h"
 
 // Ensure Windows min/max macros don't interfere with std::min/std::max
@@ -320,6 +321,46 @@ namespace Orion
             return;
         }
 
+        if (markdownViewMode_ == MarkdownViewMode::Split)
+        {
+            EnsureFoldLineMaps();
+
+            float dividerX = GetGitSplitDividerX();
+            float leftPaneRight = dividerX - 5.0f;
+            float availableWidth = (std::max)(120.0f, leftPaneRight - left - metrics_.gutterWidth);
+
+            float baseContentHeight = (float)GetVisibleLineCount() * metrics_.lineHeight;
+            float extra = height - metrics_.lineHeight;
+            if (extra < 0.0f)
+                extra = 0.0f;
+            float contentHeight = baseContentHeight + extra;
+
+            scrollbar_.UpdateLayout(state_.leftEdge, state_.topEdge, width, height, contentHeight);
+            state_.scrollOffsetY = scrollbar_.GetScrollOffset();
+            if (pendingRevealCaret_)
+            {
+                float caretTop = ActualLineToVisibleLine(state_.caret.line) * metrics_.lineHeight;
+                float margin = metrics_.lineHeight * 2.0f;
+                float desired = caretTop - margin;
+                if (desired < 0.0f)
+                    desired = 0.0f;
+                scrollbar_.SetScrollOffset(desired);
+                state_.scrollOffsetY = scrollbar_.GetScrollOffset();
+                pendingRevealCaret_ = false;
+            }
+
+            hScrollbarVisible_ = false;
+            hContentWidth_ = 0.0f;
+            hViewportWidth_ = 0.0f;
+            hThumbWidth_ = 0.0f;
+            hThumbPos_ = 0.0f;
+            hIsDragging_ = false;
+            state_.scrollOffsetX = 0.0f;
+
+            searchBox_.UpdateLayout(left + metrics_.gutterWidth, top, availableWidth);
+            return;
+        }
+
         if ((int)state_.visualLineByActual.size() != (int)state_.lines.size())
             foldLineMapsDirty_ = true;
         EnsureFoldLineMaps();
@@ -489,6 +530,28 @@ namespace Orion
             return;
         }
 
+        if (markdownViewMode_ == MarkdownViewMode::Split)
+        {
+            DrawMarkdownSplitView(ctx, dwrite);
+        }
+        else
+        {
+            DrawEditorTextPane(ctx, dwrite, true);
+        }
+
+        ctx->PopAxisAlignedClip();
+
+        if (searchBox_.IsVisible())
+        {
+            searchBox_.Draw(ctx, dwrite);
+        }
+
+        ctx->SetAntialiasMode(oldAA);
+        ctx->SetTextAntialiasMode(oldTextAA);
+    }
+
+    void Editor::DrawEditorTextPane(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, bool drawScrollbars)
+    {
         EnsureFoldLineMaps();
         Orion::Gutter gutter;
         metrics_.gutterWidth = gutter.CalculateGutterWidth(state_, metrics_);
@@ -497,8 +560,10 @@ namespace Orion
         DrawFoldMarkers(ctx, dwrite);
 
         float contentLeft = state_.leftEdge + metrics_.gutterWidth + metrics_.leftPadding;
-        float contentRight = state_.rightEdge - (scrollbar_.IsVisible() ? 14.0f : 0.0f);
-        float contentBottom = state_.bottomEdge - (hScrollbarVisible_ ? 14.0f : 0.0f);
+        float verticalScrollbarWidth = (drawScrollbars && scrollbar_.IsVisible()) ? 14.0f : 0.0f;
+        float horizontalScrollbarHeight = (drawScrollbars && hScrollbarVisible_) ? 14.0f : 0.0f;
+        float contentRight = state_.rightEdge - verticalScrollbarWidth;
+        float contentBottom = state_.bottomEdge - horizontalScrollbarHeight;
         D2D1_RECT_F contentClip = D2D1::RectF(contentLeft, state_.topEdge, contentRight, contentBottom);
         ctx->PushAxisAlignedClip(contentClip, D2D1_ANTIALIAS_MODE_ALIASED);
 
@@ -510,9 +575,7 @@ namespace Orion
         DrawCaret(ctx);
 
         if (completionPopup_ && completionPopup_->IsVisible())
-        {
             completionPopup_->Draw(ctx, dwrite);
-        }
 
         if (diagHoverVisible_ && !diagHoverText_.empty())
         {
@@ -563,7 +626,6 @@ namespace Orion
                     float x = (float)diagHoverPos_.x + 14.0f;
                     float y = (float)diagHoverPos_.y + 18.0f;
 
-                    // Keep inside editor bounds
                     if (x + w > state_.rightEdge)
                         x = state_.rightEdge - w - 6.0f;
                     if (y + h > state_.bottomEdge)
@@ -598,46 +660,74 @@ namespace Orion
 
         ctx->PopAxisAlignedClip();
 
-
-        scrollbar_.Draw(ctx);
-
-        if (hScrollbarVisible_)
+        if (drawScrollbars)
         {
-            float hLeft = state_.leftEdge + metrics_.gutterWidth;
-            float hRight = state_.rightEdge - (scrollbar_.IsVisible() ? 14.0f : 0.0f);
-            float hTop = state_.bottomEdge - 14.0f;
-            float hBottom = state_.bottomEdge;
-            D2D1_COLOR_F thumbColor;
-            if (hIsDragging_)
-                thumbColor = D2D1::ColorF(0.45f, 0.45f, 0.45f, 0.9f);
-            else
-                thumbColor = D2D1::ColorF(0.25f, 0.25f, 0.25f, 0.4f);
+            scrollbar_.Draw(ctx);
 
-            ID2D1SolidColorBrush *thumbBrush = nullptr;
-            ctx->CreateSolidColorBrush(thumbColor, &thumbBrush);
-
-            float thumbLeft = hLeft + hThumbPos_;
-            float thumbRight = thumbLeft + hThumbWidth_;
-            D2D1_ROUNDED_RECT thumbRect = D2D1::RoundedRect(
-                D2D1::RectF(thumbLeft + 4.0f, hTop + 2.0f, thumbRight - 4.0f, hBottom - 2.0f),
-                3.0f, 3.0f);
-
-            if (thumbBrush)
+            if (hScrollbarVisible_)
             {
-                ctx->FillRoundedRectangle(thumbRect, thumbBrush);
-                thumbBrush->Release();
+                float hLeft = state_.leftEdge + metrics_.gutterWidth;
+                float hTop = state_.bottomEdge - 14.0f;
+                float hBottom = state_.bottomEdge;
+                D2D1_COLOR_F thumbColor = hIsDragging_
+                                              ? D2D1::ColorF(0.45f, 0.45f, 0.45f, 0.9f)
+                                              : D2D1::ColorF(0.25f, 0.25f, 0.25f, 0.4f);
+
+                ID2D1SolidColorBrush *thumbBrush = nullptr;
+                ctx->CreateSolidColorBrush(thumbColor, &thumbBrush);
+
+                float thumbLeft = hLeft + hThumbPos_;
+                float thumbRight = thumbLeft + hThumbWidth_;
+                D2D1_ROUNDED_RECT thumbRect = D2D1::RoundedRect(
+                    D2D1::RectF(thumbLeft + 4.0f, hTop + 2.0f, thumbRight - 4.0f, hBottom - 2.0f),
+                    3.0f, 3.0f);
+
+                if (thumbBrush)
+                {
+                    ctx->FillRoundedRectangle(thumbRect, thumbBrush);
+                    thumbBrush->Release();
+                }
             }
         }
+    }
 
-        ctx->PopAxisAlignedClip();
+    void Editor::DrawMarkdownSplitView(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
+    {
+        if (!ctx || !dwrite)
+            return;
 
-        if (searchBox_.IsVisible())
+        const float dividerX = GetGitSplitDividerX();
+        const float splitGap = 10.0f;
+        const float leftRight = dividerX - splitGap * 0.5f;
+        const float rightLeft = dividerX + splitGap * 0.5f;
+
+        ID2D1SolidColorBrush *dividerBrush = nullptr;
+        D2D1_COLOR_F dividerColor = UI::Theme::ChromeBorder();
+        dividerColor.a = 0.56f;
+        ctx->CreateSolidColorBrush(dividerColor, &dividerBrush);
+
+        const float savedLeft = state_.leftEdge;
+        const float savedRight = state_.rightEdge;
+        const float savedGutterWidth = metrics_.gutterWidth;
+
+        state_.rightEdge = leftRight;
+        DrawEditorTextPane(ctx, dwrite, false);
+
+        state_.leftEdge = rightLeft;
+        state_.rightEdge = savedRight;
+        DrawPreview(ctx, dwrite);
+
+        state_.leftEdge = savedLeft;
+        state_.rightEdge = savedRight;
+        metrics_.gutterWidth = savedGutterWidth;
+
+        if (dividerBrush)
         {
-            searchBox_.Draw(ctx, dwrite);
+            const float half = gitSplitDividerDragging_ ? 2.0f : 1.0f;
+            D2D1_RECT_F dividerRect = D2D1::RectF(dividerX - half, state_.topEdge, dividerX + half, state_.bottomEdge);
+            ctx->FillRectangle(dividerRect, dividerBrush);
+            dividerBrush->Release();
         }
-
-        ctx->SetAntialiasMode(oldAA);
-        ctx->SetTextAntialiasMode(oldTextAA);
     }
 
     void Editor::DrawFoldMarkers(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)

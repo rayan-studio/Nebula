@@ -221,6 +221,7 @@ namespace Orion
     {
         ResetPreview();
         ClearGitSplitDiffView();
+        markdownViewMode_ = MarkdownViewMode::Code;
         collapsedFolds_.clear();
         foldLineMapsDirty_ = true;
         gutterHoverLine_ = -1;
@@ -262,6 +263,7 @@ namespace Orion
             restoreViewAfterNextFileLoad_ = false;
             ResetPreview();
             ClearGitSplitDiffView();
+            markdownViewMode_ = MarkdownViewMode::Code;
             // UI : afficher un "loading" instantan?? (optionnel)
             state_.filePath = filePath;
             state_.lines.clear();

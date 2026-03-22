@@ -860,8 +860,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 }
                 if (pendingMarkdownPreview_.find(res->tabIndex) != pendingMarkdownPreview_.end())
                 {
-                    ed->SetMarkdownPreviewEnabled(true);
-                    tabBar_.SetTabMarkdownPreview(res->tabIndex, true);
+                    ed->SetMarkdownViewMode(Orion::MarkdownViewMode::Preview);
+                    tabBar_.SetTabMarkdownViewMode(res->tabIndex, Orion::MarkdownViewMode::Preview);
                     pendingMarkdownPreview_.erase(res->tabIndex);
                 }
                 InvalidateRect(hwnd_, nullptr, FALSE);
@@ -1175,6 +1175,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             }
         }
 
+        if (IsPointInUpdateDismiss(pt) && UpdateService::HasUpdateAvailable())
+        {
+            DismissUpdateToast();
+            ClearUpdateToastRect();
+            ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+
         if (IsPointInUpdateToast(pt) && UpdateService::HasUpdateAvailable())
         {
             std::wstring err;
@@ -1256,17 +1264,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                     editor->CancelInteraction();
 
                 // Handle close request separately so Window decides (UI only from TabBar)
-                if (r == TabBar::TAB_CLICKED_TOGGLE_PREVIEW)
+                if (r == TabBar::TAB_CLICKED_SET_MARKDOWN_VIEW)
                 {
-                    int idx = tabBar_.GetLastPreviewToggleIndex();
+                    int idx = tabBar_.GetLastMarkdownViewModeIndex();
                     if (idx >= 0)
                     {
                         Orion::Editor *ed = GetEditorForTab(idx);
                         if (ed)
                         {
-                            bool enable = !ed->IsMarkdownPreviewEnabled();
-                            ed->SetMarkdownPreviewEnabled(enable);
-                            tabBar_.SetTabMarkdownPreview(idx, enable);
+                            Orion::MarkdownViewMode mode = tabBar_.GetLastMarkdownViewMode();
+                            ed->SetMarkdownViewMode(mode);
+                            tabBar_.SetTabMarkdownViewMode(idx, mode);
                         }
                         InvalidateRect(hwnd_, nullptr, FALSE);
                         return 0;
@@ -1724,6 +1732,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
 
         if (SetUpdateToastHovered(IsPointInUpdateToast(pt)))
+            ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
+        if (SetUpdateDismissHovered(IsPointInUpdateDismiss(pt)))
             ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
 
         // If we're inside the tabbar -> consume the event here
@@ -3017,6 +3027,29 @@ void Window::ClearUpdateToastRect()
 {
     updateToastRect_ = D2D1::RectF(0, 0, 0, 0);
     updateToastHovered_ = false;
+    updateDismissRect_ = D2D1::RectF(0, 0, 0, 0);
+    updateDismissHovered_ = false;
+}
+
+void Window::SetUpdateDismissRect(const D2D1_RECT_F &rect)
+{
+    updateDismissRect_ = rect;
+}
+
+bool Window::IsPointInUpdateDismiss(POINT pt) const
+{
+    if (updateDismissRect_.right <= updateDismissRect_.left || updateDismissRect_.bottom <= updateDismissRect_.top)
+        return false;
+    return pt.x >= (LONG)updateDismissRect_.left && pt.x <= (LONG)updateDismissRect_.right &&
+           pt.y >= (LONG)updateDismissRect_.top  && pt.y <= (LONG)updateDismissRect_.bottom;
+}
+
+bool Window::SetUpdateDismissHovered(bool hovered)
+{
+    if (updateDismissHovered_ == hovered)
+        return false;
+    updateDismissHovered_ = hovered;
+    return true;
 }
 
 bool Window::IsPointInUpdateToast(POINT pt) const

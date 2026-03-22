@@ -435,15 +435,19 @@ void TerminalPanel::UpdateLayout(HWND hwnd, float left, float top, float right, 
     }
 
     SyncTabBar();
-    tabBar_.UpdateLayout(left_, bottom_ - TabsBarHeightPx(), TabsBarRightEdge());
+    tabBar_.UpdateLayout(left_, top_ + resizeZoneH_, TabsBarRightEdge());
 
-    // Update viewport for active session (content area under tabs bar)
+    // Session viewport inside the rounded content card
     TerminalSession* s = ActiveSession();
     if (s)
     {
+        const float pad = 8.0f;
         float tabsH = TabsBarHeightPx();
-        float contentTop = top_ + resizeZoneH_ + tabsH;
-        s->SetViewport(left_, contentTop, right_, bottom_);
+        float cardTop    = top_ + resizeZoneH_ + tabsH + pad + 4.0f;
+        float cardLeft   = left_  + pad + 4.0f;
+        float cardRight  = right_ - pad - 4.0f;
+        float cardBottom = bottom_ - pad - 4.0f;
+        s->SetViewport(cardLeft, cardTop, cardRight, cardBottom);
         UpdatePseudoConsoleSizeFromPixelsForActive();
     }
 }
@@ -479,9 +483,9 @@ RECT TerminalPanel::TabsBarRectClient() const
 {
     RECT r;
     r.left = (LONG)left_;
-    r.top = (LONG)(bottom_ - TabsBarHeightPx());
+    r.top = (LONG)(top_ + resizeZoneH_);
     r.right = (LONG)right_;
-    r.bottom = (LONG)bottom_;
+    r.bottom = (LONG)(top_ + resizeZoneH_ + TabsBarHeightPx());
     return r;
 }
 
@@ -1082,9 +1086,8 @@ void TerminalPanel::UpdatePseudoConsoleSizeFromPixelsForActive()
 
     float tabsH = TabsBarHeightPx();
 
-    const float contentPad = 8.0f;
-    float contentW = (right_ - left_) - 20.0f; // pads approximatifs
-    float contentH = (bottom_ - tabsH - contentPad) - (top_ + resizeZoneH_ + contentPad);
+    float contentW = (right_ - left_) - 20.0f;
+    float contentH = bottom_ - (top_ + resizeZoneH_ + tabsH);
 
     s->UpdatePseudoConsoleSizeFromPixels(contentW, contentH, fontFamily_, fontSize_, fontCollection_);
 }
@@ -1105,238 +1108,172 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
     SyncTabBar();
     tabBar_.UpdateLayout(left_, bottom_ - TabsBarHeightPx(), TabsBarRightEdge());
 
-    // Tabs bar background
+    // Brushes
     ID2D1SolidColorBrush* bg = nullptr;
     ID2D1SolidColorBrush* fg = nullptr;
+    ID2D1SolidColorBrush* muted = nullptr;
     ID2D1SolidColorBrush* border = nullptr;
-    ID2D1SolidColorBrush* resizeBg = nullptr;
+    ID2D1SolidColorBrush* accentBrush = nullptr;
     ID2D1SolidColorBrush* resizeLine = nullptr;
 
     rt->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &bg);
     rt->CreateSolidColorBrush(UI::Theme::PrimaryText(), &fg);
+    rt->CreateSolidColorBrush(UI::Theme::MutedText(), &muted);
     rt->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &border);
-    rt->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &resizeBg);
+    rt->CreateSolidColorBrush(UI::Theme::Accent(), &accentBrush);
     rt->CreateSolidColorBrush(resizeHover_ || resizing_ ? UI::Theme::Accent() : UI::Theme::ChromeBorder(), &resizeLine);
 
-    if (!bg || !fg || !border || !resizeBg || !resizeLine)
+    if (!bg || !fg || !muted || !border || !accentBrush || !resizeLine)
     {
         if (bg) bg->Release();
         if (fg) fg->Release();
+        if (muted) muted->Release();
         if (border) border->Release();
-        if (resizeBg) resizeBg->Release();
+        if (accentBrush) accentBrush->Release();
         if (resizeLine) resizeLine->Release();
         return;
     }
 
-    // Resize bar (above tabs)
-    D2D1_RECT_F resizeBar = D2D1::RectF(left_, top_, right_, top_ + resizeZoneH_);
-    rt->FillRectangle(resizeBar, resizeBg);
+    float tabsH = TabsBarHeightPx();
+    // Toolbar spans the full top: resize zone (invisible) + session tabs
+    float toolbarBottom = top_ + resizeZoneH_ + tabsH;
+
+    // Padding around the content card
+    const float pad = 8.0f;
+    const float radius = 7.0f;
+    float contentLeft   = left_  + pad;
+    float contentRight  = right_ - pad;
+    float contentTop    = toolbarBottom + pad;
+    float contentBottom = bottom_ - pad;
+    D2D1_RECT_F contentRect = D2D1::RectF(contentLeft, contentTop, contentRight, contentBottom);
+
+    // Step 1: fill entire panel fully opaque — blocks editor content behind the panel
     {
-        float gripY = top_ + resizeZoneH_ - 0.5f;
-        rt->DrawLine(D2D1::Point2F(left_ + 0.5f, gripY),
-                     D2D1::Point2F(right_ - 0.5f, gripY),
-                     resizeLine, 1.0f);
+        D2D1_COLOR_F solidBg = UI::Theme::ChromeBackground();
+        solidBg.a = 1.0f;
+        ID2D1SolidColorBrush* opaqueBg = nullptr;
+        rt->CreateSolidColorBrush(solidBg, &opaqueBg);
+        if (opaqueBg)
+        {
+            rt->FillRectangle(D2D1::RectF(left_, top_, right_, bottom_), opaqueBg);
+            opaqueBg->Release();
+        }
     }
 
-    RECT tabsR = TabsBarRectClient();
-    D2D1_RECT_F tabs = D2D1::RectF((float)tabsR.left, (float)tabsR.top, (float)tabsR.right, (float)tabsR.bottom);
-    rt->FillRectangle(tabs, bg);
-    rt->DrawLine(D2D1::Point2F(left_, tabs.top + 0.5f),
-                 D2D1::Point2F(right_, tabs.top + 0.5f), border, 1.0f);
+    // Step 2: toolbar tint on top (explorerToolbarHover can be semi-transparent, that's OK now)
+    {
+        ID2D1SolidColorBrush* toolbarBg = nullptr;
+        D2D1_COLOR_F tint = themePalette.explorerToolbarHover;
+        tint.a = 1.0f; // force opaque
+        rt->CreateSolidColorBrush(tint, &toolbarBg);
+        if (toolbarBg)
+        {
+            rt->FillRectangle(D2D1::RectF(left_, top_, right_, toolbarBottom), toolbarBg);
+            toolbarBg->Release();
+        }
+    }
 
+    // Resize handle: only visible when hovered
+    if (resizeHover_ || resizing_)
+    {
+        float gripY = top_ + resizeZoneH_ * 0.5f;
+        rt->DrawLine(D2D1::Point2F(left_ + 40.0f, gripY),
+                     D2D1::Point2F(right_ - 40.0f, gripY), resizeLine, 1.5f);
+    }
+
+    // Toolbar bottom separator (very thin, same as chrome borders)
+    {
+        float sepY = std::round(toolbarBottom) - 0.5f;
+        rt->DrawLine(D2D1::Point2F(left_, sepY), D2D1::Point2F(right_, sepY), border, 1.0f);
+    }
+
+    // Session tabs
     tabBar_.Draw(rt, dwrite, hwnd);
 
-    float tabsH = TabsBarHeightPx();
-    const float contentPad = 8.0f;
-    float contentTop = top_ + resizeZoneH_ + contentPad;
-    float contentBottom = bottom_ - tabsH - contentPad;
+    // Content card: rounded rect — bg already fills behind, just draw the border
+    rt->DrawRoundedRectangle(D2D1::RoundedRect(contentRect, radius, radius), border, 1.0f);
 
 
-    // Output button
-    RECT out = OutputButtonRectClient();
-    D2D1_RECT_F outputRect = D2D1::RectF((float)out.left, (float)out.top, (float)out.right, (float)out.bottom);
-    const float tabInset = 2.0f;
-    D2D1_RECT_F outputTab = D2D1::RectF(outputRect.left, outputRect.top - 4.0f, outputRect.right, outputRect.bottom);
-    D2D1_RECT_F outputTabOutline = outputTab;
-    if (showOutput_)
+    // Helper to draw a modern tab button with accent underline
+    auto drawTabButton = [&](const RECT& btnRect, const std::wstring& label, bool active, bool hovered)
     {
-        float tabH = outputTab.bottom - outputTab.top;
-        outputTabOutline.top = contentBottom - 1.0f; // align outline with content border
-        outputTabOutline.bottom = outputTabOutline.top + tabH;
-    }
+        D2D1_RECT_F r = D2D1::RectF((float)btnRect.left, (float)btnRect.top, (float)btnRect.right, (float)btnRect.bottom);
 
-    ID2D1SolidColorBrush* outputBg = nullptr;
-    ID2D1SolidColorBrush* outputBorder = nullptr;
-    if (showOutput_)
-        rt->CreateSolidColorBrush(themePalette.explorerRowActive, &outputBg);
-    else if (hoveredOutput_)
-        rt->CreateSolidColorBrush(themePalette.explorerRowHover, &outputBg);
-    rt->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &outputBorder);
-
-    if (outputBg)
-    {
-        D2D1_RECT_F fillRect = showOutput_ ? outputTabOutline : outputTab;
-        if (showOutput_)
-            fillRect.top += 1.0f; // keep border line visible
-        rt->FillRectangle(fillRect, outputBg);
-        outputBg->Release();
-    }
-    if (outputBorder)
-    {
-        // draw left/right/bottom only for active tab to look connected
-        if (showOutput_)
+        // Hover fill
+        if (hovered && !active)
         {
-            // outline handled by panel border section
+            ID2D1SolidColorBrush* hoverBg = nullptr;
+            rt->CreateSolidColorBrush(themePalette.explorerRowHover, &hoverBg);
+            if (hoverBg)
+            {
+                rt->FillRoundedRectangle(D2D1::RoundedRect(r, 4.0f, 4.0f), hoverBg);
+                hoverBg->Release();
+            }
         }
-        else
+
+        // Text
+        IDWriteTextFormat* tabFmt = nullptr;
+        dwrite->CreateTextFormat(
+            L"Segoe UI Variable Text",
+            NULL,
+            active ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            12.0f,
+            L"en-us",
+            &tabFmt);
+        if (tabFmt)
         {
-            // no outline when inactive
+            tabFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            tabFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            ID2D1SolidColorBrush* textBr = (active || hovered) ? fg : muted;
+            rt->DrawTextW(label.c_str(), (UINT32)label.size(), tabFmt, r, textBr);
+            tabFmt->Release();
         }
-        outputBorder->Release();
-    }
-    if (showOutput_)
-    {
-        // no extra accent line; keep a single border
-    }
 
-    IDWriteTextFormat* outputFormat = nullptr;
-    dwrite->CreateTextFormat(
-        L"Segoe UI",
-        NULL,
-        DWRITE_FONT_WEIGHT_NORMAL,
-        DWRITE_FONT_STYLE_NORMAL,
-        DWRITE_FONT_STRETCH_NORMAL,
-        12.0f,
-        L"en-us",
-        &outputFormat);
-    if (outputFormat)
-    {
-        outputFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        outputFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        // Accent underline for active tab
+        if (active)
+        {
+            float underlineH = 2.5f;
+            D2D1_RECT_F underline = D2D1::RectF(
+                r.left + 6.0f, r.bottom - underlineH - 2.0f,
+                r.right - 6.0f, r.bottom - 2.0f);
+            rt->FillRoundedRectangle(D2D1::RoundedRect(underline, 1.5f, 1.5f), accentBrush);
+        }
+    };
 
+    // Output tab
+    {
         size_t outputCount = 0;
         {
             std::lock_guard<std::mutex> lock(outputMutex_);
             outputCount = outputLines_.size();
         }
-        std::wstring label = L"Output (" + std::to_wstring(outputCount) + L")";
-        D2D1_RECT_F textRect = showOutput_ ? outputTabOutline : outputTab;
-        textRect.left += 14.0f;
-        textRect.right -= 8.0f;
-        ID2D1SolidColorBrush* labelBrush = fg;
-        if (!showOutput_ && !hoveredOutput_)
-        {
-            ID2D1SolidColorBrush* muted = nullptr;
-            rt->CreateSolidColorBrush(UI::Theme::MutedText(), &muted);
-            labelBrush = muted ? muted : fg;
-            rt->DrawTextW(label.c_str(), (UINT32)label.size(), outputFormat, textRect, labelBrush);
-            if (muted) muted->Release();
-        }
-        else
-        {
-            rt->DrawTextW(label.c_str(), (UINT32)label.size(), outputFormat, textRect, labelBrush);
-        }
-        outputFormat->Release();
+        RECT out = OutputButtonRectClient();
+        std::wstring outLabel = L"Output (" + std::to_wstring(outputCount) + L")";
+        drawTabButton(out, outLabel, showOutput_, hoveredOutput_);
     }
 
-    // Problems button
-    RECT prb = ProblemsButtonRectClient();
-    D2D1_RECT_F problemsRect = D2D1::RectF((float)prb.left, (float)prb.top, (float)prb.right, (float)prb.bottom);
-    D2D1_RECT_F problemsTab = D2D1::RectF(problemsRect.left, problemsRect.top - 4.0f, problemsRect.right, problemsRect.bottom);
-    D2D1_RECT_F problemsTabOutline = problemsTab;
-    if (showProblems_)
+    // Problems tab
     {
-        float tabH = problemsTab.bottom - problemsTab.top;
-        problemsTabOutline.top = contentBottom - 1.0f;
-        problemsTabOutline.bottom = problemsTabOutline.top + tabH;
-    }
-
-    ID2D1SolidColorBrush* problemsBg = nullptr;
-    ID2D1SolidColorBrush* problemsBorder = nullptr;
-    if (showProblems_)
-        rt->CreateSolidColorBrush(themePalette.explorerRowActive, &problemsBg);
-    else if (hoveredProblems_)
-        rt->CreateSolidColorBrush(themePalette.explorerRowHover, &problemsBg);
-    rt->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &problemsBorder);
-
-    if (problemsBg)
-    {
-        D2D1_RECT_F fillRect = showProblems_ ? problemsTabOutline : problemsTab;
-        if (showProblems_)
-            fillRect.top += 1.0f; // keep border line visible
-        rt->FillRectangle(fillRect, problemsBg);
-        problemsBg->Release();
-    }
-    if (problemsBorder)
-    {
-        if (showProblems_)
-        {
-            // outline handled by panel border section
-        }
-        else
-        {
-            // no outline when inactive
-        }
-        problemsBorder->Release();
-    }
-    if (showProblems_)
-    {
-        // no extra accent line; keep a single border
-    }
-
-    IDWriteTextFormat* problemsFormat = nullptr;
-    dwrite->CreateTextFormat(
-        L"Segoe UI",
-        NULL,
-        DWRITE_FONT_WEIGHT_NORMAL,
-        DWRITE_FONT_STYLE_NORMAL,
-        DWRITE_FONT_STRETCH_NORMAL,
-        12.0f,
-        L"en-us",
-        &problemsFormat);
-    if (problemsFormat)
-    {
-        problemsFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        problemsFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-
-        std::wstring label = L"Problems (" + std::to_wstring(problems_.size()) + L")";
-        D2D1_RECT_F textRect = showProblems_ ? problemsTabOutline : problemsTab;
-        textRect.left += 14.0f;
-        textRect.right -= 8.0f;
-        ID2D1SolidColorBrush* labelBrush = fg;
-        if (!showProblems_ && !hoveredProblems_)
-        {
-            ID2D1SolidColorBrush* muted = nullptr;
-            rt->CreateSolidColorBrush(UI::Theme::MutedText(), &muted);
-            labelBrush = muted ? muted : fg;
-            rt->DrawTextW(label.c_str(), (UINT32)label.size(), problemsFormat, textRect, labelBrush);
-            if (muted) muted->Release();
-        }
-        else
-        {
-            rt->DrawTextW(label.c_str(), (UINT32)label.size(), problemsFormat, textRect, labelBrush);
-        }
-        problemsFormat->Release();
+        RECT prb = ProblemsButtonRectClient();
+        std::wstring prbLabel = L"Probl\u00E8mes (" + std::to_wstring(problems_.size()) + L")";
+        drawTabButton(prb, prbLabel, showProblems_, hoveredProblems_);
     }
 
     // Plus button
     RECT pr = PlusButtonRectClient();
     D2D1_RECT_F plus = D2D1::RectF((float)pr.left, (float)pr.top, (float)pr.right, (float)pr.bottom);
 
-    ID2D1SolidColorBrush* plusBg = nullptr;
-    ID2D1SolidColorBrush* plusBorder = nullptr;
     if (hoveredPlus_)
+    {
+        ID2D1SolidColorBrush* plusBg = nullptr;
         rt->CreateSolidColorBrush(themePalette.explorerRowHover, &plusBg);
-    rt->CreateSolidColorBrush(hoveredPlus_ ? UI::Theme::Accent() : UI::Theme::ChromeBorder(), &plusBorder);
-    if (plusBg)
-    {
-        rt->FillRectangle(plus, plusBg);
-        plusBg->Release();
-    }
-    if (plusBorder)
-    {
-        rt->DrawRectangle(plus, plusBorder, 1.0f);
-        plusBorder->Release();
+        if (plusBg)
+        {
+            rt->FillRoundedRectangle(D2D1::RoundedRect(plus, 3.0f, 3.0f), plusBg);
+            plusBg->Release();
+        }
     }
 
     // draw "+"
@@ -1367,16 +1304,6 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
     }
     if (showProblems_)
     {
-        D2D1_RECT_F contentRect = D2D1::RectF(left_, contentTop, right_, contentBottom);
-        ID2D1SolidColorBrush* contentBg = nullptr;
-        D2D1_COLOR_F problemBg = UI::Theme::ChromeBackground();
-        problemBg.a = 0.96f;
-        rt->CreateSolidColorBrush(problemBg, &contentBg);
-        if (contentBg)
-        {
-            rt->FillRectangle(contentRect, contentBg);
-            contentBg->Release();
-        }
 
         IDWriteTextFormat* listFormat = nullptr;
         dwrite->CreateTextFormat(
@@ -1478,16 +1405,6 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
     }
     else if (showOutput_)
     {
-        D2D1_RECT_F contentRect = D2D1::RectF(left_, contentTop, right_, contentBottom);
-        ID2D1SolidColorBrush* contentBg = nullptr;
-        D2D1_COLOR_F outputBgColor = UI::Theme::ChromeBackground();
-        outputBgColor.a = 0.96f;
-        rt->CreateSolidColorBrush(outputBgColor, &contentBg);
-        if (contentBg)
-        {
-            rt->FillRectangle(contentRect, contentBg);
-            contentBg->Release();
-        }
 
         IDWriteTextFormat* listFormat = nullptr;
         dwrite->CreateTextFormat(
@@ -1505,13 +1422,13 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
             listFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
             listFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
 
-            ID2D1SolidColorBrush* accent = nullptr;
+            ID2D1SolidColorBrush* accentLocal = nullptr;
             ID2D1SolidColorBrush* dim = nullptr;
             ID2D1SolidColorBrush* warn = nullptr;
             ID2D1SolidColorBrush* err = nullptr;
             ID2D1SolidColorBrush* cmd = nullptr;
             ID2D1SolidColorBrush* ok = nullptr;
-            rt->CreateSolidColorBrush(UI::Theme::Accent(), &accent);
+            rt->CreateSolidColorBrush(UI::Theme::Accent(), &accentLocal);
             rt->CreateSolidColorBrush(UI::Theme::MutedText(), &dim);
             rt->CreateSolidColorBrush(lightMode ? D2D1::ColorF(0.58f, 0.52f, 0.12f, 1.0f)
                                                 : D2D1::ColorF(0.95f, 0.80f, 0.35f, 1.0f),
@@ -1531,7 +1448,7 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
             std::wstring header = L"Output";
             rt->DrawTextW(header.c_str(), (UINT32)header.size(), listFormat,
                           D2D1::RectF(x, headerY, contentRect.right - 8.0f, headerY + lineH),
-                          accent ? accent : fg);
+                          accentLocal ? accentLocal : fg);
             float headerBlock = lineH + 4.0f;
             float bodyStartY = headerY + headerBlock;
             D2D1_RECT_F bodyRect = D2D1::RectF(contentRect.left, bodyStartY, contentRect.right, contentRect.bottom);
@@ -1641,7 +1558,7 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
                     if (hoveredOutputLink_.active && hoveredOutputLink_.lineIndex == (int)i &&
                         (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0)
                     {
-                        brush = accent ? accent : brush;
+                        brush = accentLocal ? accentLocal : brush;
                     }
                     rt->DrawTextW(line.c_str(), (UINT32)line.size(), listFormat,
                                   D2D1::RectF(x, y, contentRect.right - 8.0f, y + lineH), brush);
@@ -1653,8 +1570,8 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
                 rt->PopAxisAlignedClip();
             }
 
-            if (accent)
-                accent->Release();
+            if (accentLocal)
+                accentLocal->Release();
             if (dim)
                 dim->Release();
             if (warn)
@@ -1675,56 +1592,18 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
         TerminalSession* s = ActiveSession();
         if (s)
         {
-            s->SetViewport(left_, contentTop, right_, contentBottom);
-
-            // draw session content (chrome + text + scrollbar)
+            // Clip session content inside the rounded card (with inner padding)
+            s->SetViewport(contentRect.left + 4.0f, contentRect.top + 4.0f,
+                           contentRect.right - 4.0f, contentRect.bottom - 4.0f);
             s->DrawContent(rt, dwrite, fontFamily_, fontSize_, fontCollection_, (resizeHover_ || resizing_), focused_);
-        }
-    }
-
-    // Content border (VS-style) - draw last so it stays visible
-    {
-        ID2D1SolidColorBrush* panelBorder = nullptr;
-        D2D1_COLOR_F borderColor = UI::Theme::Accent();
-        rt->CreateSolidColorBrush(borderColor, &panelBorder);
-        if (panelBorder)
-        {
-            D2D1_RECT_F panelRect = D2D1::RectF(left_ + 0.5f, contentTop + 0.5f, right_ - 0.5f, contentBottom - 0.5f);
-            D2D1_ANTIALIAS_MODE oldAA = rt->GetAntialiasMode();
-            rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
-            rt->DrawRectangle(panelRect, panelBorder, 1.0f);
-
-            if (showOutput_ || showProblems_)
-            {
-                D2D1_RECT_F tabRect = showOutput_ ? outputTabOutline : problemsTabOutline;
-                // cut the panel border under the active tab
-                D2D1_RECT_F cut = D2D1::RectF(tabRect.left - 1.0f, contentBottom - 1.0f,
-                                              tabRect.right + 1.0f, contentBottom + 2.0f);
-                rt->FillRectangle(cut, bg);
-
-                // draw active tab outline, connected to the panel border line
-                float connectY = contentBottom;
-                float leftX = tabRect.left;
-                float rightX = tabRect.right;
-                float bottomY = tabRect.bottom;
-
-                rt->DrawLine(D2D1::Point2F(leftX, connectY),
-                             D2D1::Point2F(leftX, bottomY), panelBorder, 1.0f);
-                rt->DrawLine(D2D1::Point2F(rightX, connectY),
-                             D2D1::Point2F(rightX, bottomY), panelBorder, 1.0f);
-                rt->DrawLine(D2D1::Point2F(leftX, bottomY),
-                             D2D1::Point2F(rightX, bottomY), panelBorder, 1.0f);
-            }
-
-            rt->SetAntialiasMode(oldAA);
-            panelBorder->Release();
         }
     }
 
     bg->Release();
     fg->Release();
+    muted->Release();
     border->Release();
-    resizeBg->Release();
+    accentBrush->Release();
     resizeLine->Release();
 }
 

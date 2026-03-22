@@ -232,12 +232,12 @@ void Window::OpenFileInNewTabWithMarkdownPreview(const std::wstring &filePath)
     {
         pendingMarkdownPreview_.insert(idx);
         tabBar_.SetTabMarkdown(idx, true);
-        tabBar_.SetTabMarkdownPreview(idx, true);
+        tabBar_.SetTabMarkdownViewMode(idx, Orion::MarkdownViewMode::Preview);
 
         Orion::Editor *ed = GetEditorForTab(idx);
         if (ed && ed->HasFile())
         {
-            ed->SetMarkdownPreviewEnabled(true);
+            ed->SetMarkdownViewMode(Orion::MarkdownViewMode::Preview);
             pendingMarkdownPreview_.erase(idx);
         }
         tabBar_.SetActiveTab(idx);

@@ -26,6 +26,7 @@
 #include <utility>
 #include <filesystem>
 #include "lsp/LspManager.h"
+#include "orion/editor/MarkdownViewMode.h"
 
 // ============================================================================
 // HELPER : Conversion couleurs Web (hex) → Direct2D AVEC CORRECTION GAMMA sRGB
@@ -390,8 +391,11 @@ namespace Orion
 
         void LoadFileAsync(HWND hwnd, const std::wstring &filePath, int tabIndex, bool preserveView = false);
         void LoadPreviewAsync(HWND hwnd, const std::wstring &filePath, int tabIndex);
+        void SetMarkdownViewMode(MarkdownViewMode mode);
+        MarkdownViewMode GetMarkdownViewMode() const { return markdownViewMode_; }
         void SetMarkdownPreviewEnabled(bool enabled);
         bool IsMarkdownPreviewEnabled() const;
+        bool IsMarkdownSplitViewEnabled() const { return markdownViewMode_ == MarkdownViewMode::Split; }
         void SetGitSplitDiffView(const std::vector<GitSplitDiffRow> &rows);
         void ClearGitSplitDiffView();
         bool IsGitSplitDiffViewEnabled() const { return isGitSplitDiffView_; }
@@ -425,6 +429,8 @@ namespace Orion
         void DrawTextContent(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
         void DrawFoldMarkers(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
         void DrawPreview(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
+        void DrawEditorTextPane(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, bool drawScrollbars);
+        void DrawMarkdownSplitView(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
         void DrawGitSplitDiff(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
         void DrawCaret(ID2D1RenderTarget *ctx);
         void ResetPreview();
@@ -523,6 +529,7 @@ namespace Orion
         std::vector<CaretPosition> secondaryCarets_;
 
         bool isPreview_ = false;
+        MarkdownViewMode markdownViewMode_ = MarkdownViewMode::Code;
         bool isGitSplitDiffView_ = false;
         std::vector<GitSplitDiffRow> gitSplitDiffRows_;
         float gitSplitDividerRatio_ = 0.5f;

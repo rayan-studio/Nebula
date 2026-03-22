@@ -372,41 +372,23 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
 
     if (window)
     {
-        if (UpdateService::GetState() == UpdateService::State::UpdateAvailable)
+        if (UpdateService::GetState() == UpdateService::State::UpdateAvailable &&
+            !window->IsUpdateToastDismissed())
         {
             UpdateService::LatestInfo latest = UpdateService::GetLatestInfo();
             UINT dpi = win32_get_dpi_for_window(hwnd);
             float margin = (float)win32_dpi_scale(12, dpi);
             float badgeH = (float)win32_dpi_scale(46, dpi);
             float footerH = (float)win32_dpi_scale(28, dpi);
-            float sidebarW = (float)win32_dpi_scale(52, dpi);
-            float panelLeftW = 0.0f;
-            Panel *activePanel = GetPanelManager().GetActivePanel();
-            if (activePanel && activePanel->IsVisible())
-            {
-                bool explorerOnRight = activePanel->GetId() == PanelId::Explorer &&
-                                       GetExplorerLayoutState().placement == ExplorerPlacement::Right;
-                if (!explorerOnRight)
-                    panelLeftW = (float)activePanel->GetState().physicalWidth;
-            }
-
-            float badgeLeft = sidebarW + panelLeftW + margin;
+            float preferredBadgeW = (float)win32_dpi_scale(300, dpi);
+            float badgeRight = (float)rc.right - margin;
+            float badgeLeft = badgeRight - preferredBadgeW;
+            if (badgeLeft < margin)
+                badgeLeft = margin;
+            float badgeW = badgeRight - badgeLeft;
             float badgeBottom = (float)rc.bottom - footerH - margin;
-            float maxBadgeW = (float)rc.right - badgeLeft - margin;
-            bool canDrawBadge = maxBadgeW > (float)win32_dpi_scale(140, dpi);
-            float preferredBadgeW = (float)win32_dpi_scale(340, dpi);
-            float badgeW = 0.0f;
-            if (canDrawBadge)
-            {
-                badgeW = (std::max)((float)win32_dpi_scale(220, dpi), (std::min)(preferredBadgeW, maxBadgeW));
-                if (badgeW > maxBadgeW)
-                {
-                    badgeLeft = margin;
-                    maxBadgeW = (float)rc.right - badgeLeft - margin;
-                    badgeW = (std::min)(badgeW, maxBadgeW);
-                }
-                canDrawBadge = badgeW > (float)win32_dpi_scale(140, dpi);
-            }
+            bool canDrawBadge = badgeW > (float)win32_dpi_scale(140, dpi);
+
             if (!canDrawBadge)
             {
                 window->ClearUpdateToastRect();
@@ -483,13 +465,49 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
                     subFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
                 }
 
+                // Bouton × (dismiss) — coin supérieur droit de la notification
+                float xBtnSize = (float)win32_dpi_scale(18, dpi);
+                float xBtnPad = (float)win32_dpi_scale(8, dpi);
+                float xBtnCY = badgeRect.top + (badgeH * 0.5f);
+                D2D1_RECT_F dismissRect = D2D1::RectF(
+                    badgeRect.right - xBtnSize - xBtnPad,
+                    xBtnCY - xBtnSize * 0.5f,
+                    badgeRect.right - xBtnPad,
+                    xBtnCY + xBtnSize * 0.5f);
+                window->SetUpdateDismissRect(dismissRect);
+
+                if (window->IsUpdateDismissHovered())
+                {
+                    ID2D1SolidColorBrush *xHover = nullptr;
+                    const UI::Theme::Palette &tp = UI::Theme::GetPalette();
+                    pRenderTarget_->CreateSolidColorBrush(tp.explorerToolbarHover, &xHover);
+                    if (xHover)
+                    {
+                        pRenderTarget_->FillRoundedRectangle(D2D1::RoundedRect(dismissRect, 3.0f, 3.0f), xHover);
+                        xHover->Release();
+                    }
+                }
+
+                IDWriteTextFormat *xFmt = nullptr;
+                pDWriteFactory_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                                                  DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                                  12.0f, L"en-us", &xFmt);
+                if (xFmt && mutedBrush)
+                {
+                    xFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                    xFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                    pRenderTarget_->DrawTextW(L"\u00D7", 1, xFmt, dismissRect, mutedBrush);
+                    xFmt->Release();
+                }
+
+                float textRight = dismissRect.left - (float)win32_dpi_scale(4, dpi);
                 if (textBrush && mutedBrush && titleFmt && subFmt)
                 {
                     float textLeft = badgeRect.left + (float)win32_dpi_scale(28, dpi);
                     D2D1_RECT_F titleRect = D2D1::RectF(textLeft, badgeRect.top + (float)win32_dpi_scale(7, dpi),
-                                                        badgeRect.right - margin, badgeRect.top + (float)win32_dpi_scale(23, dpi));
+                                                        textRight, badgeRect.top + (float)win32_dpi_scale(23, dpi));
                     D2D1_RECT_F subRect = D2D1::RectF(textLeft, badgeRect.top + (float)win32_dpi_scale(21, dpi),
-                                                      badgeRect.right - margin, badgeRect.bottom - (float)win32_dpi_scale(5, dpi));
+                                                      textRight, badgeRect.bottom - (float)win32_dpi_scale(5, dpi));
                     pRenderTarget_->DrawTextW(title.c_str(), (UINT32)title.size(), titleFmt, titleRect, textBrush);
                     pRenderTarget_->DrawTextW(sub.c_str(), (UINT32)sub.size(), subFmt, subRect, mutedBrush);
                 }

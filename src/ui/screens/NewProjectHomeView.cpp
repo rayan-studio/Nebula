@@ -1,5 +1,6 @@
 #include "ui/screens/NewProjectOverlay.h"
 #include "core/window/Window.h"
+#include "ui/theme/Theme.h"
 #include <filesystem>
 #include <shlobj.h>
 
@@ -25,6 +26,7 @@ void NewProjectHomeView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFac
 {
     (void)dwrite;
     const D2D1_RECT_F &rightPanel = rc.rightPanel;
+    const UI::Theme::Palette &palette = UI::Theme::GetPalette();
 
     // Right: actions (home page)
     D2D1_RECT_F actionsTitle = D2D1::RectF(rightPanel.left + 14.0f * rc.scale, rightPanel.top + 12.0f * rc.scale,
@@ -43,27 +45,21 @@ void NewProjectHomeView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFac
 
     auto drawAction = [&](const D2D1_RECT_F &rect, const wchar_t *icon, const wchar_t *label, bool hovered)
     {
-        ID2D1SolidColorBrush *btnBg = nullptr;
-        ctx->CreateSolidColorBrush(hovered ? D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f)
-                                           : D2D1::ColorF(0.16f, 0.16f, 0.16f, 0.0f), &btnBg);
-        if (btnBg)
+        if (hovered)
         {
-            ctx->FillRoundedRectangle(D2D1::RoundedRect(rect, 6.0f * rc.scale, 6.0f * rc.scale), btnBg);
-            btnBg->Release();
+            ID2D1SolidColorBrush *btnBg = nullptr;
+            ctx->CreateSolidColorBrush(palette.explorerRowHover, &btnBg);
+            if (btnBg)
+            {
+                ctx->FillRoundedRectangle(D2D1::RoundedRect(rect, 5.0f * rc.scale, 5.0f * rc.scale), btnBg);
+                btnBg->Release();
+            }
         }
 
-        // Subtle bottom divider for list feel
-        if (rc.divider)
-        {
-            float y = std::floor(rect.bottom) + 0.5f;
-            ctx->DrawLine(D2D1::Point2F(rect.left + 8.0f * rc.scale, y),
-                          D2D1::Point2F(rect.right - 8.0f * rc.scale, y), rc.divider, 1.0f);
-        }
-
-        if (rc.iconFmt && rc.muted)
+        if (rc.iconFmt && rc.accent)
         {
             D2D1_RECT_F iconRect = D2D1::RectF(rect.left + 10.0f * rc.scale, rect.top, rect.left + 28.0f * rc.scale, rect.bottom);
-            ctx->DrawTextW(icon, 1, rc.iconFmt, iconRect, rc.muted);
+            ctx->DrawTextW(icon, 1, rc.iconFmt, iconRect, rc.accent);
         }
 
         if (rc.actionFmt && rc.text)
@@ -83,20 +79,20 @@ void NewProjectHomeView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFac
     window.newProjTemplateRects_.clear();
     window.newProjNameInput_.SetRect(D2D1::RectF(0, 0, 0, 0));
 
-    // Bottom continue button
+    // Bottom continue button (ghost style)
     float btnY = rightPanel.bottom - 36.0f * rc.scale;
     window.newProjCancelRect_ = D2D1::RectF(rightPanel.right - 190.0f * rc.scale, btnY, rightPanel.right - 14.0f * rc.scale, btnY + 28.0f * rc.scale);
-    ID2D1SolidColorBrush *cancelBrush = nullptr;
-    ID2D1SolidColorBrush *btnText = nullptr;
-    ctx->CreateSolidColorBrush(window.newProjCancelHover_ ? D2D1::ColorF(0.22f, 0.22f, 0.22f, 1.0f)
-                                                          : D2D1::ColorF(0.16f, 0.16f, 0.16f, 1.0f), &cancelBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.96f, 0.96f, 0.96f, 1.0f), &btnText);
-    if (cancelBrush)
+    if (window.newProjCancelHover_)
     {
-        ctx->FillRoundedRectangle(D2D1::RoundedRect(window.newProjCancelRect_, 6.0f * rc.scale, 6.0f * rc.scale), cancelBrush);
-        cancelBrush->Release();
+        ID2D1SolidColorBrush *cancelBrush = nullptr;
+        ctx->CreateSolidColorBrush(palette.explorerToolbarHover, &cancelBrush);
+        if (cancelBrush)
+        {
+            ctx->FillRoundedRectangle(D2D1::RoundedRect(window.newProjCancelRect_, 5.0f * rc.scale, 5.0f * rc.scale), cancelBrush);
+            cancelBrush->Release();
+        }
     }
-    if (btnText)
+    if (rc.muted)
     {
         IDWriteTextFormat *btnFmt = nullptr;
         dwrite->CreateTextFormat(rc.uiFont, rc.uiCollection, DWRITE_FONT_WEIGHT_MEDIUM,
@@ -106,10 +102,10 @@ void NewProjectHomeView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFac
         {
             btnFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
             btnFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            ctx->DrawTextW(L"Continuer sans code", 20, btnFmt, window.newProjCancelRect_, btnText);
+            ctx->DrawTextW(L"Continuer sans code", 20, btnFmt, window.newProjCancelRect_,
+                           window.newProjCancelHover_ ? rc.text : rc.muted);
             btnFmt->Release();
         }
-        btnText->Release();
     }
 }
 } // namespace UI

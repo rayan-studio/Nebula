@@ -156,6 +156,7 @@ namespace Orion
 
     void Editor::SetGitSplitDiffView(const std::vector<GitSplitDiffRow> &rows)
     {
+        markdownViewMode_ = MarkdownViewMode::Code;
         gitSplitDiffRows_ = rows;
         isGitSplitDiffView_ = !gitSplitDiffRows_.empty();
         state_.hasSelection = false;
@@ -205,7 +206,7 @@ namespace Orion
 
     bool Editor::IsPointOnGitSplitDivider(POINT pt) const
     {
-        if (!isGitSplitDiffView_)
+        if (!isGitSplitDiffView_ && markdownViewMode_ != MarkdownViewMode::Split)
             return false;
         if (pt.y < (int)state_.topEdge || pt.y > (int)state_.bottomEdge)
             return false;

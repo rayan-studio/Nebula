@@ -5,6 +5,7 @@
 #include <vector>
 #include <windows.h>
 #include <chrono>
+#include "orion/editor/MarkdownViewMode.h"
 
 struct Tab
 {
@@ -13,7 +14,7 @@ struct Tab
     bool isDirty = false;
     bool isActive = false;
     bool isMarkdown = false;
-    bool markdownPreview = false;
+    Orion::MarkdownViewMode markdownViewMode = Orion::MarkdownViewMode::Code;
 };
 
 class TabBar
@@ -34,11 +35,11 @@ public:
     void SetTabDirty(int index, bool dirty);
     bool IsTabDirty(int index) const;
     void SetTabMarkdown(int index, bool isMarkdown);
-    void SetTabMarkdownPreview(int index, bool enabled);
+    void SetTabMarkdownViewMode(int index, Orion::MarkdownViewMode mode);
 
     int GetTabCount() const { return (int)tabs_.size(); }
     float GetHeight() const { return tabs_.empty() ? 0.0f : (tabHeight_ + 1.0f); }
-    void DrawCloseOrDirty(ID2D1RenderTarget *ctx, const D2D1_RECT_F &rect, bool hovered, bool dirty) const;
+    void DrawCloseOrDirty(ID2D1RenderTarget *ctx, HWND hwnd, const D2D1_RECT_F &rect, bool hovered, bool dirty) const;
 
     // Height of the small path bar shown under the tabs
     float pathBarHeight_ = 35.0f;
@@ -53,9 +54,10 @@ public:
     bool ClearHover();
 
     static const int TAB_CLICKED_CLOSE = -3;
-    static const int TAB_CLICKED_TOGGLE_PREVIEW = -4;
+    static const int TAB_CLICKED_SET_MARKDOWN_VIEW = -4;
     int GetLastCloseRequestIndex() const { return lastCloseRequestIndex_; }
-    int GetLastPreviewToggleIndex() const { return lastPreviewToggleIndex_; }
+    int GetLastMarkdownViewModeIndex() const { return lastMarkdownViewModeIndex_; }
+    Orion::MarkdownViewMode GetLastMarkdownViewMode() const { return lastMarkdownViewMode_; }
 
 private:
     std::vector<std::wstring> mruHistory_; // most-recently-used file paths, front is most recent
@@ -65,7 +67,8 @@ private:
     int activeTabIndex_ = -1;
     int hoveredTabIndex_ = -1;
     int hoveredCloseIndex_ = -1;
-    int hoveredPreviewIndex_ = -1;
+    int hoveredMarkdownModeIndex_ = -1;
+    Orion::MarkdownViewMode hoveredMarkdownViewMode_ = Orion::MarkdownViewMode::Code;
 
     float leftEdge_ = 0.0f;
     float topEdge_ = 0.0f;
@@ -77,10 +80,18 @@ private:
     D2D1_RECT_F CloseRectForTab(int index) const;
     bool IsPointInCloseRect(int index, POINT pt) const;
     void DrawCloseButton(ID2D1RenderTarget *ctx, const D2D1_RECT_F &rect, bool hovered) const;
-    D2D1_RECT_F PreviewRectForTab(int index) const;
-    bool IsPointInPreviewRect(int index, POINT pt) const;
+    D2D1_RECT_F MarkdownToolbarRect() const;
+    D2D1_RECT_F MarkdownModeRect(Orion::MarkdownViewMode mode) const;
+    bool IsPointInMarkdownModeRect(Orion::MarkdownViewMode mode, POINT pt) const;
+    void DrawMarkdownModeButton(
+        ID2D1RenderTarget *ctx,
+        const D2D1_RECT_F &rect,
+        Orion::MarkdownViewMode mode,
+        bool active,
+        bool hovered) const;
 
     // Last requested close index (UI only) - set when close button clicked
     int lastCloseRequestIndex_ = -1;
-    int lastPreviewToggleIndex_ = -1;
+    int lastMarkdownViewModeIndex_ = -1;
+    Orion::MarkdownViewMode lastMarkdownViewMode_ = Orion::MarkdownViewMode::Code;
 };

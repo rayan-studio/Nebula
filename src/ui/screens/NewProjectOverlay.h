@@ -24,6 +24,7 @@ struct NewProjectRenderContext
     ID2D1SolidColorBrush *muted = nullptr;
     ID2D1SolidColorBrush *text = nullptr;
     ID2D1SolidColorBrush *subtle = nullptr;
+    ID2D1SolidColorBrush *accent = nullptr;
 
     IDWriteTextFormat *titleFmt = nullptr;
     IDWriteTextFormat *sectionFmt = nullptr;

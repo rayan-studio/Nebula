@@ -128,16 +128,15 @@ void NewProjectOverlay::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFact
     ctx->CreateSolidColorBrush(UI::Theme::MutedText(), &rc.muted);
     ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &rc.text);
     ctx->CreateSolidColorBrush(palette.explorerToolbarHover, &rc.subtle);
+    ctx->CreateSolidColorBrush(UI::Theme::Accent(), &rc.accent);
 
     if (rc.panelBg)
         ctx->FillRoundedRectangle(D2D1::RoundedRect(rightPanel, 8.0f * scale, 8.0f * scale), rc.panelBg);
-    if (rc.panelBorder)
-        ctx->DrawRoundedRectangle(D2D1::RoundedRect(PixelSnapRect(rightPanel, scale), 8.0f * scale, 8.0f * scale), rc.panelBorder, 1.0f);
     if (showHome && rc.divider)
     {
         float dividerX = AlignToPixel(rightPanel.left - gap * 0.5f, scale);
-        float dividerTop = AlignToPixel(rightPanel.top, scale);
-        float dividerBottom = AlignToPixel(rightPanel.bottom, scale);
+        float dividerTop = AlignToPixel(rightPanel.top + 20.0f * scale, scale);
+        float dividerBottom = AlignToPixel(rightPanel.bottom - 20.0f * scale, scale);
         ctx->DrawLine(D2D1::Point2F(dividerX, dividerTop),
                       D2D1::Point2F(dividerX, dividerBottom), rc.divider, 1.0f);
     }
@@ -178,15 +177,15 @@ void NewProjectOverlay::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFact
         float searchY = leftTitle.bottom + 10.0f * scale;
         window.newProjLocationInput_.SetRect(D2D1::RectF(leftPanel.left, searchY, leftPanel.right, searchY + searchH));
         auto &searchStyle = window.newProjLocationInput_.GetStyle();
-        searchStyle.backgroundColor = D2D1::ColorF(0.15f, 0.15f, 0.15f, 1.0f);
-        searchStyle.borderColor = D2D1::ColorF(0.24f, 0.24f, 0.24f, 1.0f);
+        searchStyle.backgroundColor = palette.inputBackground;
+        searchStyle.borderColor = palette.inputBorder;
         searchStyle.focusBorderColor = palette.inputFocusBorder;
-        searchStyle.cornerRadius = 8.0f * scale;
+        searchStyle.cornerRadius = 6.0f * scale;
         searchStyle.fontSize = 12.0f * scale;
         searchStyle.padding = 9.0f * scale;
-        searchStyle.textColor = D2D1::ColorF(0.92f, 0.92f, 0.92f, 1.0f);
-        searchStyle.placeholderColor = D2D1::ColorF(0.48f, 0.48f, 0.48f, 1.0f);
-        searchStyle.iconColor = D2D1::ColorF(0.55f, 0.55f, 0.55f, 1.0f);
+        searchStyle.textColor = palette.inputText;
+        searchStyle.placeholderColor = palette.inputPlaceholder;
+        searchStyle.iconColor = palette.explorerPlaceholderText;
         searchStyle.iconSize = 14.0f * scale;
         searchStyle.iconPadding = 26.0f * scale;
         searchStyle.fontFamily = uiFont;
@@ -201,8 +200,6 @@ void NewProjectOverlay::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFact
         ctx->DrawTextW(L"Recents", 7, rc.sectionFmt, recentsLabel, rc.muted);
     }
     D2D1_RECT_F listRect = D2D1::RectF(leftPanel.left, recentsLabelY + 18.0f * scale, leftPanel.right, leftPanel.bottom - 10.0f * scale);
-    if (rc.panelBorder)
-        ctx->DrawRoundedRectangle(D2D1::RoundedRect(PixelSnapRect(listRect, scale), 8.0f * scale, 8.0f * scale), rc.panelBorder, 1.0f);
 
     window.recentProjectRects_.clear();
     window.recentProjectIndexMap_.clear();
@@ -234,10 +231,16 @@ void NewProjectOverlay::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFact
         window.recentProjectIndexMap_.push_back((int)i);
 
         bool hovered = ((int)window.recentProjectRects_.size() - 1 == window.recentProjectHover_);
-        if (hovered && rc.subtle)
-            ctx->FillRoundedRectangle(D2D1::RoundedRect(rowRect, 6.0f * scale, 6.0f * scale), rc.subtle);
-        if (rc.panelBorder)
-            ctx->DrawRoundedRectangle(D2D1::RoundedRect(PixelSnapRect(rowRect, scale), 6.0f * scale, 6.0f * scale), rc.panelBorder, 1.0f);
+        if (hovered)
+        {
+            ID2D1SolidColorBrush *rowHoverBrush = nullptr;
+            ctx->CreateSolidColorBrush(palette.explorerRowHover, &rowHoverBrush);
+            if (rowHoverBrush)
+            {
+                ctx->FillRoundedRectangle(D2D1::RoundedRect(rowRect, 5.0f * scale, 5.0f * scale), rowHoverBrush);
+                rowHoverBrush->Release();
+            }
+        }
 
         if (rc.iconFmt && rc.muted)
         {
@@ -293,6 +296,7 @@ void NewProjectOverlay::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFact
     if (rc.muted) rc.muted->Release();
     if (rc.text) rc.text->Release();
     if (rc.subtle) rc.subtle->Release();
+    if (rc.accent) rc.accent->Release();
     if (rc.titleFmt) rc.titleFmt->Release();
     if (rc.sectionFmt) rc.sectionFmt->Release();
     if (rc.labelFmt) rc.labelFmt->Release();

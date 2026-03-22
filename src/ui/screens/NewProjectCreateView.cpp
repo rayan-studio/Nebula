@@ -28,17 +28,16 @@ void NewProjectCreateView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteF
 
     auto drawAction = [&](const D2D1_RECT_F &rect, const wchar_t *icon, const wchar_t *label, bool hovered)
     {
-        ID2D1SolidColorBrush *btnBg = nullptr;
-        ctx->CreateSolidColorBrush(hovered ? D2D1::ColorF(0.22f, 0.22f, 0.22f, 1.0f)
-                                           : D2D1::ColorF(0.18f, 0.18f, 0.18f, 1.0f), &btnBg);
-        if (btnBg)
+        if (hovered)
         {
-            ctx->FillRoundedRectangle(D2D1::RoundedRect(rect, 6.0f * rc.scale, 6.0f * rc.scale), btnBg);
-            btnBg->Release();
+            ID2D1SolidColorBrush *btnBg = nullptr;
+            ctx->CreateSolidColorBrush(palette.explorerRowHover, &btnBg);
+            if (btnBg)
+            {
+                ctx->FillRoundedRectangle(D2D1::RoundedRect(rect, 5.0f * rc.scale, 5.0f * rc.scale), btnBg);
+                btnBg->Release();
+            }
         }
-        if (rc.panelBorder)
-            ctx->DrawRoundedRectangle(D2D1::RoundedRect(PixelSnapRect(rect, rc.scale), 6.0f * rc.scale, 6.0f * rc.scale), rc.panelBorder, 1.0f);
-
         if (rc.iconFmt && rc.muted)
         {
             D2D1_RECT_F iconRect = D2D1::RectF(rect.left + 10.0f * rc.scale, rect.top, rect.left + 28.0f * rc.scale, rect.bottom);
@@ -70,14 +69,14 @@ void NewProjectCreateView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteF
     window.newProjNameInput_.SetRect(D2D1::RectF(rightPanel.left + inputPad, nameY, rightPanel.left + inputPad + inputW, nameY + inputH));
 
     auto &styleName = window.newProjNameInput_.GetStyle();
-    styleName.backgroundColor = D2D1::ColorF(0.15f, 0.15f, 0.15f, 1.0f);
-    styleName.borderColor = D2D1::ColorF(0.24f, 0.24f, 0.24f, 1.0f);
+    styleName.backgroundColor = palette.inputBackground;
+    styleName.borderColor = palette.inputBorder;
     styleName.focusBorderColor = palette.inputFocusBorder;
-    styleName.cornerRadius = 8.0f * rc.scale;
+    styleName.cornerRadius = 6.0f * rc.scale;
     styleName.fontSize = 12.0f * rc.scale;
     styleName.padding = 9.0f * rc.scale;
-    styleName.textColor = D2D1::ColorF(0.92f, 0.92f, 0.92f, 1.0f);
-    styleName.placeholderColor = D2D1::ColorF(0.48f, 0.48f, 0.48f, 1.0f);
+    styleName.textColor = palette.inputText;
+    styleName.placeholderColor = palette.inputPlaceholder;
     styleName.fontFamily = rc.uiFont;
     styleName.fontCollection = rc.uiCollection;
     window.newProjNameInput_.Draw(ctx, dwrite);
@@ -110,8 +109,6 @@ void NewProjectCreateView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteF
                                         tY + i * (tH + 8.0f * rc.scale) + tH);
         window.newProjTemplateRects_.push_back(tRect);
     }
-    ID2D1SolidColorBrush *tBorder = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.20f, 0.20f, 1.0f), &tBorder);
     IDWriteTextFormat *tFmt = nullptr;
     dwrite->CreateTextFormat(rc.uiFont, rc.uiCollection, DWRITE_FONT_WEIGHT_SEMI_BOLD,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
@@ -126,32 +123,39 @@ void NewProjectCreateView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteF
         D2D1_RECT_F r = window.newProjTemplateRects_[i];
         bool selected = (i == window.newProjTemplateIndex_);
         bool hovered = (i == window.newProjTemplateHover_);
-        ID2D1SolidColorBrush *selBg = nullptr;
-        if (selected)
-            ctx->CreateSolidColorBrush(palette.explorerRowActive, &selBg);
-        else if (hovered)
-            ctx->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.18f, 0.18f, 1.0f), &selBg);
-        if (selBg)
+
+        if (selected || hovered)
         {
-            ctx->FillRoundedRectangle(D2D1::RoundedRect(r, 6.0f * rc.scale, 6.0f * rc.scale), selBg);
-            selBg->Release();
+            ID2D1SolidColorBrush *rowBg = nullptr;
+            ctx->CreateSolidColorBrush(selected ? palette.explorerRowActive : palette.explorerRowHover, &rowBg);
+            if (rowBg)
+            {
+                ctx->FillRoundedRectangle(D2D1::RoundedRect(r, 5.0f * rc.scale, 5.0f * rc.scale), rowBg);
+                rowBg->Release();
+            }
         }
-        if (tBorder)
-            ctx->DrawRoundedRectangle(D2D1::RoundedRect(PixelSnapRect(r, rc.scale), 6.0f * rc.scale, 6.0f * rc.scale), tBorder, 1.0f);
+
+        // Barre accent gauche pour l'item sélectionné
+        if (selected && rc.accent)
+        {
+            D2D1_RECT_F accentBar = D2D1::RectF(r.left, r.top + 6.0f * rc.scale, r.left + 2.5f * rc.scale, r.bottom - 6.0f * rc.scale);
+            ctx->FillRoundedRectangle(D2D1::RoundedRect(accentBar, 1.5f * rc.scale, 1.5f * rc.scale), rc.accent);
+        }
+
+        float textOffsetX = selected ? 14.0f * rc.scale : 10.0f * rc.scale;
         if (tFmt && rc.text)
         {
-            D2D1_RECT_F tr = D2D1::RectF(r.left + 10.0f * rc.scale, r.top + 6.0f * rc.scale, r.right - 10.0f * rc.scale, r.bottom);
+            D2D1_RECT_F tr = D2D1::RectF(r.left + textOffsetX, r.top + 6.0f * rc.scale, r.right - 10.0f * rc.scale, r.bottom);
             ctx->DrawTextW(templateTitles[i], (UINT32)wcslen(templateTitles[i]), tFmt, tr, rc.text);
         }
         if (rc.subFmt && rc.muted)
         {
-            D2D1_RECT_F sr = D2D1::RectF(r.left + 10.0f * rc.scale, r.top + 22.0f * rc.scale, r.right - 10.0f * rc.scale, r.bottom - 6.0f * rc.scale);
+            D2D1_RECT_F sr = D2D1::RectF(r.left + textOffsetX, r.top + 22.0f * rc.scale, r.right - 10.0f * rc.scale, r.bottom - 6.0f * rc.scale);
             rc.subFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
             rc.subFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-            ctx->DrawTextW(templateSubs[i], (UINT32)wcslen(templateSubs[i]), rc.subFmt, sr, rc.muted);
+            ctx->DrawTextW(templateSubs[i], (UINT32)wcslen(templateSubs[i]), rc.subFmt, sr, selected ? rc.accent : rc.muted);
         }
     }
-    if (tBorder) tBorder->Release();
     if (tFmt) tFmt->Release();
 
     float btnY = rightPanel.bottom - 36.0f * rc.scale;
@@ -162,7 +166,7 @@ void NewProjectCreateView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteF
     ID2D1SolidColorBrush *btnText = nullptr;
     D2D1_COLOR_F createColor = window.newProjCreateHover_ ? palette.accentStrong : palette.accent;
     ctx->CreateSolidColorBrush(createColor, &createBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.96f, 0.96f, 0.96f, 1.0f), &btnText);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), &btnText);
     if (createBrush)
     {
         ctx->FillRoundedRectangle(D2D1::RoundedRect(window.newProjCreateRect_, 6.0f * rc.scale, 6.0f * rc.scale), createBrush);

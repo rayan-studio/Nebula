@@ -90,6 +90,7 @@ namespace Orion
 
     void Editor::LoadFile(const std::wstring &filePath)
     {
+        markdownViewMode_ = MarkdownViewMode::Code;
         ClearGitSplitDiffView();
         state_.filePath = filePath;
         state_.lines.clear();
@@ -269,6 +270,7 @@ namespace Orion
     {
         ResetPreview();
         ClearGitSplitDiffView();
+        markdownViewMode_ = MarkdownViewMode::Code;
         state_.lines.clear();
         state_.lines.push_back(L"");
         state_.caret = {0, 0};
@@ -285,6 +287,7 @@ namespace Orion
     {
         ResetPreview();
         ClearGitSplitDiffView();
+        markdownViewMode_ = MarkdownViewMode::Code;
         state_.lines.clear();
         collapsedFolds_.clear();
         foldLineMapsDirty_ = true;

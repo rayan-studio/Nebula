@@ -11,6 +11,8 @@
 
 namespace
 {
+using Orion::MarkdownViewMode;
+
 D2D1_COLOR_F BlendTabColor(D2D1_COLOR_F a, D2D1_COLOR_F b, float t)
 {
     t = (std::max)(0.0f, (std::min)(1.0f, t));
@@ -32,6 +34,20 @@ D2D1_RECT_F MakeTabRect(float left, float top, float width, float height, bool a
     const float r = std::round(left + width - insetRight);
     const float b = std::round(top + height - insetBottom);
     return D2D1::RectF(l, t, r, b);
+}
+
+int MarkdownModeSlot(MarkdownViewMode mode)
+{
+    switch (mode)
+    {
+    case MarkdownViewMode::Code:
+        return 0;
+    case MarkdownViewMode::Split:
+        return 1;
+    case MarkdownViewMode::Preview:
+        return 2;
+    }
+    return 0;
 }
 }
 
@@ -155,37 +171,40 @@ bool TabBar::IsTabDirty(int index) const
     return tabs_[index].isDirty;
 }
 
-void TabBar::DrawCloseOrDirty(ID2D1RenderTarget *ctx, const D2D1_RECT_F &rect, bool hovered, bool dirty) const
+void TabBar::DrawCloseOrDirty(ID2D1RenderTarget *ctx, HWND hwnd, const D2D1_RECT_F &rect, bool hovered, bool dirty) const
 {
     if (!ctx)
         return;
 
+    const UINT dpi = win32_get_dpi_for_window(hwnd);
+    const int iconPx = dirty ? win32_dpi_scale(8, dpi) : win32_dpi_scale(12, dpi);
+    const std::string iconPath = dirty
+                                     ? "assets/ressource/icons/circle.svg"
+                                     : "assets/ressource/icons/x.svg";
+    ID2D1Bitmap *iconBmp = GetExplorerManager().LoadSvgIconPublic(ctx, iconPath, iconPx, dpi);
+
+    if (iconBmp)
+    {
+        const float iconSize = (float)iconPx;
+        const float iconX = rect.left + (rect.right - rect.left - iconSize) * 0.5f;
+        const float iconY = rect.top + (rect.bottom - rect.top - iconSize) * 0.5f;
+        const D2D1_RECT_F iconRect = D2D1::RectF(iconX, iconY, iconX + iconSize, iconY + iconSize);
+        const float opacity = hovered ? 1.0f : (dirty ? 0.88f : 0.72f);
+        ctx->DrawBitmap(iconBmp, iconRect, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        return;
+    }
+
     D2D1_COLOR_F normal = UI::Theme::MutedText();
     normal.a = 0.82f;
     D2D1_COLOR_F hover = UI::Theme::PrimaryText();
-    D2D1_COLOR_F hoverBg = UI::Theme::GetPalette().explorerToolbarHover;
-
-    ID2D1SolidColorBrush *bgBrush = nullptr;
     ID2D1SolidColorBrush *fgBrush = nullptr;
-
     if (hovered)
-    {
-        ctx->CreateSolidColorBrush(hoverBg, &bgBrush);
-        if (bgBrush)
-            ctx->FillRectangle(rect, bgBrush);
         ctx->CreateSolidColorBrush(hover, &fgBrush);
-    }
     else
-    {
         ctx->CreateSolidColorBrush(normal, &fgBrush);
-    }
 
     if (!fgBrush)
-    {
-        if (bgBrush)
-            bgBrush->Release();
         return;
-    }
 
     const float cx = (rect.left + rect.right) * 0.5f;
     const float cy = (rect.top + rect.bottom) * 0.5f;
@@ -198,7 +217,7 @@ void TabBar::DrawCloseOrDirty(ID2D1RenderTarget *ctx, const D2D1_RECT_F &rect, b
         ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
         ctx->FillEllipse(
             D2D1::Ellipse(
-                D2D1::Point2F(std::round(cx), std::round(cy)),
+            D2D1::Point2F(std::round(cx), std::round(cy)),
                 radius,
                 radius),
             fgBrush);
@@ -218,8 +237,6 @@ void TabBar::DrawCloseOrDirty(ID2D1RenderTarget *ctx, const D2D1_RECT_F &rect, b
         ctx->DrawLine(c, d, fgBrush, thickness);
     }
 
-    if (bgBrush)
-        bgBrush->Release();
     fgBrush->Release();
 }
 
@@ -394,13 +411,6 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
             const D2D1_RECT_F closeRect = CloseRectForTab(i);
             float textRight = closeRect.left - gapToClose;
 
-            const bool showPreviewToggle = tab.isMarkdown && (tab.isActive || hoveredTabIndex_ == i);
-            if (showPreviewToggle)
-            {
-                const D2D1_RECT_F previewRect = PreviewRectForTab(i);
-                textRight = previewRect.left - gapToClose;
-            }
-
             if (textRight < textLeft + 10.0f)
                 textRight = textLeft + 10.0f;
 
@@ -447,48 +457,30 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
         {
             const D2D1_RECT_F closeRect = CloseRectForTab(i);
             const bool isHoveredClose = (hoveredCloseIndex_ == i);
-            DrawCloseOrDirty(ctx, closeRect, isHoveredClose, tab.isDirty);
-        }
-
-        if (tab.isMarkdown)
-        {
-            const bool showPreviewToggle = (tab.isActive || hoveredTabIndex_ == i);
-            if (showPreviewToggle)
-            {
-                const D2D1_RECT_F previewRect = PreviewRectForTab(i);
-                const bool hovered = (hoveredPreviewIndex_ == i);
-
-                if (hovered)
-                {
-                    ID2D1SolidColorBrush *previewBgBrush = nullptr;
-                    ctx->CreateSolidColorBrush(themePalette.explorerToolbarHover, &previewBgBrush);
-                    if (previewBgBrush)
-                    {
-                        ctx->FillRectangle(previewRect, previewBgBrush);
-                        previewBgBrush->Release();
-                    }
-                }
-
-                const std::string iconPath = tab.markdownPreview
-                                                 ? "assets/ressource/icons/folder-review-open.svg"
-                                                 : "assets/ressource/icons/folder-review.svg";
-                const UINT dpi = win32_get_dpi_for_window(hwnd);
-                const int iconPx = win32_dpi_scale(14, dpi);
-                ID2D1Bitmap *iconBmp = GetExplorerManager().LoadSvgIconPublic(ctx, iconPath, iconPx, dpi);
-                if (iconBmp)
-                {
-                    const float iconY = previewRect.top + (previewRect.bottom - previewRect.top - (float)iconPx) * 0.5f;
-                    const float iconX = previewRect.left + (previewRect.right - previewRect.left - (float)iconPx) * 0.5f;
-                    const D2D1_RECT_F iconRect = D2D1::RectF(iconX, iconY, iconX + (float)iconPx, iconY + (float)iconPx);
-                    ctx->DrawBitmap(iconBmp, iconRect, tab.markdownPreview ? 1.0f : 0.8f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
-                }
-            }
+            DrawCloseOrDirty(ctx, hwnd, closeRect, isHoveredClose, tab.isDirty);
         }
 
         if (tabBrush)
             tabBrush->Release();
 
         x += tabWidth_;
+    }
+
+    const Tab *activeTab = GetActiveTab();
+    if (activeTab && activeTab->isMarkdown)
+    {
+        const MarkdownViewMode modes[] = {
+            MarkdownViewMode::Code,
+            MarkdownViewMode::Split,
+            MarkdownViewMode::Preview};
+
+        for (MarkdownViewMode mode : modes)
+        {
+            const D2D1_RECT_F buttonRect = MarkdownModeRect(mode);
+            const bool hovered = hoveredMarkdownModeIndex_ == activeTabIndex_ && hoveredMarkdownViewMode_ == mode;
+            const bool active = activeTab->markdownViewMode == mode;
+            DrawMarkdownModeButton(ctx, buttonRect, mode, active, hovered);
+        }
     }
 
     if (format)
@@ -504,20 +496,32 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
 
 int TabBar::OnLeftButtonDown(POINT pt)
 {
+    const Tab *activeTab = GetActiveTab();
+    if (activeTabIndex_ >= 0 && activeTab && activeTab->isMarkdown)
+    {
+        const MarkdownViewMode modes[] = {
+            MarkdownViewMode::Code,
+            MarkdownViewMode::Split,
+            MarkdownViewMode::Preview};
+        for (MarkdownViewMode mode : modes)
+        {
+            if (IsPointInMarkdownModeRect(mode, pt))
+            {
+                lastMarkdownViewModeIndex_ = activeTabIndex_;
+                lastMarkdownViewMode_ = mode;
+                hoveredMarkdownModeIndex_ = -1;
+                hoveredCloseIndex_ = -1;
+                hoveredTabIndex_ = -1;
+                return TAB_CLICKED_SET_MARKDOWN_VIEW;
+            }
+        }
+    }
+
     float x = leftEdge_;
 
     for (int i = 0; i < (int)tabs_.size(); ++i)
     {
         D2D1_RECT_F tabRect = D2D1::RectF(x, topEdge_, x + tabWidth_, topEdge_ + tabHeight_);
-        if (tabs_[i].isMarkdown && IsPointInPreviewRect(i, pt))
-        {
-            lastPreviewToggleIndex_ = i;
-            hoveredPreviewIndex_ = -1;
-            hoveredCloseIndex_ = -1;
-            hoveredTabIndex_ = -1;
-            return TAB_CLICKED_TOGGLE_PREVIEW;
-        }
-
         if (IsPointInCloseRect(i, pt))
         {
             lastCloseRequestIndex_ = i;
@@ -543,11 +547,37 @@ int TabBar::OnMouseMove(POINT pt)
 {
     int prevTab = hoveredTabIndex_;
     int prevClose = hoveredCloseIndex_;
-    int prevPreview = hoveredPreviewIndex_;
+    int prevMarkdownModeIndex = hoveredMarkdownModeIndex_;
+    MarkdownViewMode prevMarkdownMode = hoveredMarkdownViewMode_;
 
     int newTab = -1;
     int newClose = -1;
-    int newPreview = -1;
+    int newMarkdownModeIndex = -1;
+    MarkdownViewMode newMarkdownMode = MarkdownViewMode::Code;
+
+    const Tab *activeTab = GetActiveTab();
+    if (activeTabIndex_ >= 0 && activeTab && activeTab->isMarkdown)
+    {
+        const MarkdownViewMode modes[] = {
+            MarkdownViewMode::Code,
+            MarkdownViewMode::Split,
+            MarkdownViewMode::Preview};
+        const float modeTolerance = 6.0f;
+        for (MarkdownViewMode mode : modes)
+        {
+            D2D1_RECT_F modeRect = MarkdownModeRect(mode);
+            bool inModeZone = (pt.x >= modeRect.left - modeTolerance &&
+                               pt.x <= modeRect.right + modeTolerance &&
+                               pt.y >= modeRect.top - modeTolerance &&
+                               pt.y <= modeRect.bottom + modeTolerance);
+            if (inModeZone)
+            {
+                newMarkdownModeIndex = activeTabIndex_;
+                newMarkdownMode = mode;
+                break;
+            }
+        }
+    }
 
     const float horizTolerance = 4.0f;
 
@@ -574,29 +604,21 @@ int TabBar::OnMouseMove(POINT pt)
             if (inCloseZone)
                 newClose = i;
 
-            if (tabs_[i].isMarkdown)
-            {
-                D2D1_RECT_F previewRect = PreviewRectForTab(i);
-                const float previewTolerance = 6.0f;
-                bool inPreviewZone = (pt.x >= previewRect.left - previewTolerance &&
-                                      pt.x <= previewRect.right + previewTolerance &&
-                                      pt.y >= previewRect.top - previewTolerance &&
-                                      pt.y <= previewRect.bottom + previewTolerance);
-                if (inPreviewZone)
-                    newPreview = i;
-            }
-
             break;
         }
 
         x += tabWidth_;
     }
 
-    if (newTab != prevTab || newClose != prevClose || newPreview != prevPreview)
+    if (newTab != prevTab ||
+        newClose != prevClose ||
+        newMarkdownModeIndex != prevMarkdownModeIndex ||
+        newMarkdownMode != prevMarkdownMode)
     {
         hoveredTabIndex_ = newTab;
         hoveredCloseIndex_ = newClose;
-        hoveredPreviewIndex_ = newPreview;
+        hoveredMarkdownModeIndex_ = newMarkdownModeIndex;
+        hoveredMarkdownViewMode_ = newMarkdownMode;
         return newTab;
     }
 
@@ -605,10 +627,11 @@ int TabBar::OnMouseMove(POINT pt)
 
 bool TabBar::ClearHover()
 {
-    bool hadHover = (hoveredTabIndex_ >= 0 || hoveredCloseIndex_ >= 0 || hoveredPreviewIndex_ >= 0);
+    bool hadHover = (hoveredTabIndex_ >= 0 || hoveredCloseIndex_ >= 0 || hoveredMarkdownModeIndex_ >= 0);
     hoveredTabIndex_ = -1;
     hoveredCloseIndex_ = -1;
-    hoveredPreviewIndex_ = -1;
+    hoveredMarkdownModeIndex_ = -1;
+    hoveredMarkdownViewMode_ = MarkdownViewMode::Code;
     return hadHover;
 }
 
@@ -634,34 +657,159 @@ D2D1_RECT_F TabBar::CloseRectForTab(int index) const
         topEdge_ + (tabHeight_ + closeSize) * 0.5f);
 }
 
-D2D1_RECT_F TabBar::PreviewRectForTab(int index) const
+D2D1_RECT_F TabBar::MarkdownToolbarRect() const
 {
-    float x = leftEdge_ + index * tabWidth_;
-    float size = 14.0f;
-    float closePadding = 10.0f;
-    float gap = 6.0f;
-    float right = x + tabWidth_ - closePadding - 14.0f - gap;
-    return D2D1::RectF(
-        right - size,
-        topEdge_ + (tabHeight_ - size) * 0.5f,
-        right,
-        topEdge_ + (tabHeight_ + size) * 0.5f);
+    const float insetRight = 12.0f;
+    const float insetTop = 5.0f;
+    const float height = 24.0f;
+    const float buttonSize = 20.0f;
+    const float gap = 6.0f;
+    const float paddingX = 6.0f;
+    const float width = paddingX * 2.0f + buttonSize * 3.0f + gap * 2.0f;
+    const float right = rightEdge_ - insetRight;
+    const float left = right - width;
+    return D2D1::RectF(left, topEdge_ + insetTop, right, topEdge_ + insetTop + height);
 }
 
-bool TabBar::IsPointInPreviewRect(int index, POINT pt) const
+D2D1_RECT_F TabBar::MarkdownModeRect(MarkdownViewMode mode) const
 {
-    if (index < 0 || index >= (int)tabs_.size())
-        return false;
-    if (!tabs_[index].isMarkdown)
+    const D2D1_RECT_F toolbar = MarkdownToolbarRect();
+    const float buttonSize = 20.0f;
+    const float gap = 6.0f;
+    const float paddingX = 6.0f;
+    float slotX = toolbar.left + paddingX + MarkdownModeSlot(mode) * (buttonSize + gap);
+    return D2D1::RectF(
+        slotX,
+        toolbar.top + (toolbar.bottom - toolbar.top - buttonSize) * 0.5f,
+        slotX + buttonSize,
+        toolbar.top + (toolbar.bottom - toolbar.top - buttonSize) * 0.5f + buttonSize);
+}
+
+bool TabBar::IsPointInMarkdownModeRect(MarkdownViewMode mode, POINT pt) const
+{
+    const Tab *activeTab = GetActiveTab();
+    if (!activeTab || !activeTab->isMarkdown)
         return false;
 
-    D2D1_RECT_F r = PreviewRectForTab(index);
+    D2D1_RECT_F r = MarkdownModeRect(mode);
     const float tolerance = 2.0f;
 
     return (pt.x >= r.left - tolerance &&
             pt.x <= r.right + tolerance &&
             pt.y >= r.top - tolerance &&
             pt.y <= r.bottom + tolerance);
+}
+
+void TabBar::DrawMarkdownModeButton(
+    ID2D1RenderTarget *ctx,
+    const D2D1_RECT_F &rect,
+    MarkdownViewMode mode,
+    bool active,
+    bool hovered) const
+{
+    if (!ctx)
+        return;
+
+    const UI::Theme::Palette &palette = UI::Theme::GetPalette();
+    D2D1_COLOR_F fgColor = UI::Theme::MutedText();
+    fgColor.a = active ? 0.98f : (hovered ? 0.92f : 0.72f);
+
+    if (active)
+    {
+        fgColor = UI::Theme::Accent();
+    }
+    else if (hovered)
+    {
+        fgColor = UI::Theme::PrimaryText();
+    }
+
+    ID2D1SolidColorBrush *fgBrush = nullptr;
+
+    if (!SUCCEEDED(ctx->CreateSolidColorBrush(fgColor, &fgBrush)) || !fgBrush)
+        return;
+
+    std::string iconPath;
+    if (mode == MarkdownViewMode::Code)
+        iconPath = "assets/ressource/icons/align-justified.svg";
+    else if (mode == MarkdownViewMode::Split)
+        iconPath = "assets/ressource/icons/layout-sidebar-right.svg";
+    else
+        iconPath = "assets/ressource/icons/photo.svg";
+
+    FLOAT dpiX = 96.0f;
+    FLOAT dpiY = 96.0f;
+    ctx->GetDpi(&dpiX, &dpiY);
+    const UINT dpi = (UINT)std::round(dpiX);
+    const int iconPx = MulDiv(14, (int)dpi, 96);
+    ID2D1Bitmap *iconBmp = GetExplorerManager().LoadSvgIconPublic(ctx, iconPath, iconPx, dpi);
+
+    if (iconBmp)
+    {
+        const float iconSize = (float)iconPx;
+        const float iconX = rect.left + (rect.right - rect.left - iconSize) * 0.5f;
+        const float iconY = rect.top + (rect.bottom - rect.top - iconSize) * 0.5f;
+        const D2D1_RECT_F iconRect = D2D1::RectF(iconX, iconY, iconX + iconSize, iconY + iconSize);
+        const float opacity = active ? 0.98f : (hovered ? 0.90f : 0.72f);
+        ctx->DrawBitmap(iconBmp, iconRect, opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+    }
+    else
+    {
+    const float stroke = active ? 1.35f : 1.15f;
+    const float left = rect.left + 5.0f;
+    const float right = rect.right - 5.0f;
+    const float top = rect.top + 5.0f;
+    const float bottom = rect.bottom - 5.0f;
+    const float midY = (top + bottom) * 0.5f;
+
+    if (mode == MarkdownViewMode::Code)
+    {
+        ctx->DrawLine(D2D1::Point2F(left, top + 0.8f), D2D1::Point2F(right - 1.5f, top + 0.8f), fgBrush, stroke);
+        ctx->DrawLine(D2D1::Point2F(left, midY), D2D1::Point2F(right - 3.0f, midY), fgBrush, stroke);
+        ctx->DrawLine(D2D1::Point2F(left, bottom - 0.8f), D2D1::Point2F(right - 0.5f, bottom - 0.8f), fgBrush, stroke);
+    }
+    else if (mode == MarkdownViewMode::Split)
+    {
+        const float splitX = rect.left + (rect.right - rect.left) * 0.56f;
+        ctx->DrawLine(D2D1::Point2F(splitX, rect.top + 4.0f), D2D1::Point2F(splitX, rect.bottom - 4.0f), fgBrush, stroke);
+        ctx->DrawLine(D2D1::Point2F(left, top + 1.0f), D2D1::Point2F(splitX - 3.5f, top + 1.0f), fgBrush, stroke);
+        ctx->DrawLine(D2D1::Point2F(left, midY), D2D1::Point2F(splitX - 5.0f, midY), fgBrush, stroke);
+        ctx->DrawLine(D2D1::Point2F(left, bottom - 1.0f), D2D1::Point2F(splitX - 2.0f, bottom - 1.0f), fgBrush, stroke);
+        D2D1_RECT_F paneRect = D2D1::RectF(splitX + 3.0f, rect.top + 4.0f, rect.right - 4.0f, rect.bottom - 4.0f);
+        ctx->DrawRoundedRectangle(D2D1::RoundedRect(paneRect, 2.5f, 2.5f), fgBrush, stroke);
+    }
+    else
+    {
+        D2D1_ROUNDED_RECT panel = D2D1::RoundedRect(
+            D2D1::RectF(rect.left + 4.0f, rect.top + 4.0f, rect.right - 4.0f, rect.bottom - 4.0f),
+            2.5f,
+            2.5f);
+        ctx->DrawRoundedRectangle(panel, fgBrush, stroke);
+        ctx->DrawLine(D2D1::Point2F(left + 0.5f, top + 1.6f), D2D1::Point2F(right - 0.5f, top + 1.6f), fgBrush, stroke);
+        ctx->DrawLine(D2D1::Point2F(left + 1.0f, midY + 0.6f), D2D1::Point2F(right - 2.0f, midY + 0.6f), fgBrush, stroke);
+        ctx->DrawLine(D2D1::Point2F(left + 1.0f, bottom - 0.8f), D2D1::Point2F(right - 3.2f, bottom - 0.8f), fgBrush, stroke);
+    }
+    }
+
+    if (active || hovered)
+    {
+        ID2D1SolidColorBrush *indicatorBrush = nullptr;
+        D2D1_COLOR_F indicatorColor = active ? UI::Theme::Accent() : palette.inputBorder;
+        indicatorColor.a = active ? 0.95f : 0.55f;
+        if (SUCCEEDED(ctx->CreateSolidColorBrush(indicatorColor, &indicatorBrush)) && indicatorBrush)
+        {
+            const float indicatorY = rect.bottom - 1.0f;
+            const float indicatorInset = active ? 3.0f : 5.0f;
+            const float thickness = active ? 2.0f : 1.0f;
+            ctx->DrawLine(
+                D2D1::Point2F(rect.left + indicatorInset, indicatorY),
+                D2D1::Point2F(rect.right - indicatorInset, indicatorY),
+                indicatorBrush,
+                thickness);
+            indicatorBrush->Release();
+        }
+    }
+
+    fgBrush->Release();
 }
 
 bool TabBar::IsPointInCloseRect(int index, POINT pt) const
@@ -742,7 +890,7 @@ void TabBar::UpdateTabPath(int index, const std::wstring &filePath, const std::w
     std::transform(ext.begin(), ext.end(), ext.begin(), [](wchar_t c) { return (wchar_t)towlower(c); });
     tabs_[index].isMarkdown = (ext == L".md");
     if (!tabs_[index].isMarkdown)
-        tabs_[index].markdownPreview = false;
+        tabs_[index].markdownViewMode = MarkdownViewMode::Code;
 }
 
 void TabBar::SetTabMarkdown(int index, bool isMarkdown)
@@ -751,12 +899,12 @@ void TabBar::SetTabMarkdown(int index, bool isMarkdown)
         return;
     tabs_[index].isMarkdown = isMarkdown;
     if (!isMarkdown)
-        tabs_[index].markdownPreview = false;
+        tabs_[index].markdownViewMode = MarkdownViewMode::Code;
 }
 
-void TabBar::SetTabMarkdownPreview(int index, bool enabled)
+void TabBar::SetTabMarkdownViewMode(int index, MarkdownViewMode mode)
 {
     if (index < 0 || index >= (int)tabs_.size())
         return;
-    tabs_[index].markdownPreview = enabled;
+    tabs_[index].markdownViewMode = tabs_[index].isMarkdown ? mode : MarkdownViewMode::Code;
 }

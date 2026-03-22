@@ -1854,6 +1854,7 @@ namespace Orion
     void Editor::LoadPreviewAsync(HWND hwnd, const std::wstring &filePath, int tabIndex)
     {
         ResetPreview();
+        markdownViewMode_ = MarkdownViewMode::Code;
         isPreview_ = true;
         previewMode_ = PreviewMode::Image;
         previewMessage_ = L"Loading preview...";
@@ -1932,6 +1933,7 @@ namespace Orion
     {
         ResetPreview();
         ClearGitSplitDiffView();
+        markdownViewMode_ = MarkdownViewMode::Code;
         isPreview_ = true;
         previewMode_ = PreviewMode::Image;
         state_.filePath = std::move(filePath);
@@ -1947,33 +1949,39 @@ namespace Orion
         previewMessage_ = std::move(previewMessage);
     }
 
-    void Editor::SetMarkdownPreviewEnabled(bool enabled)
+    void Editor::SetMarkdownViewMode(MarkdownViewMode mode)
     {
-        if (enabled)
-        {
-            ResetPreview();
-            ClearGitSplitDiffView();
-            isPreview_ = true;
-            previewMode_ = PreviewMode::Markdown;
-            BuildMarkdownBlocks(state_.lines, state_.filePath, previewMarkdownBlocks_);
-            previewMessage_.clear();
-            state_.scrollOffsetY = 0.0f;
-        }
-        else
+        if (mode == MarkdownViewMode::Code)
         {
             if (previewMode_ == PreviewMode::Markdown)
-            {
                 ResetMarkdownPreviewLayout();
-                isPreview_ = false;
-                previewMode_ = PreviewMode::None;
-                state_.scrollOffsetY = 0.0f;
-            }
+            markdownViewMode_ = MarkdownViewMode::Code;
+            isPreview_ = false;
+            previewMode_ = PreviewMode::None;
+            gitSplitDividerDragging_ = false;
+            return;
         }
+
+        ResetPreview();
+        ClearGitSplitDiffView();
+        markdownViewMode_ = mode;
+        isPreview_ = (mode == MarkdownViewMode::Preview);
+        previewMode_ = PreviewMode::Markdown;
+        BuildMarkdownBlocks(state_.lines, state_.filePath, previewMarkdownBlocks_);
+        previewMessage_.clear();
+        gitSplitDividerDragging_ = false;
+        state_.scrollOffsetX = 0.0f;
+        state_.scrollOffsetY = 0.0f;
+    }
+
+    void Editor::SetMarkdownPreviewEnabled(bool enabled)
+    {
+        SetMarkdownViewMode(enabled ? MarkdownViewMode::Preview : MarkdownViewMode::Code);
     }
 
     bool Editor::IsMarkdownPreviewEnabled() const
     {
-        return isPreview_ && previewMode_ == PreviewMode::Markdown;
+        return markdownViewMode_ == MarkdownViewMode::Preview;
     }
 
     void Editor::DrawPreview(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
@@ -2245,13 +2253,16 @@ namespace Orion
                 totalHeight += measurePendingFloatHeight + kFloatGap;
 
             float contentHeight = (std::max)(totalHeight + kFloatGap, availableH);
-            scrollbar_.UpdateLayout(
-                state_.leftEdge,
-                contentRect.top,
-                state_.rightEdge - state_.leftEdge,
-                contentRect.bottom - contentRect.top,
-                contentHeight);
-            state_.scrollOffsetY = scrollbar_.GetScrollOffset();
+            if (markdownViewMode_ != MarkdownViewMode::Split)
+            {
+                scrollbar_.UpdateLayout(
+                    state_.leftEdge,
+                    contentRect.top,
+                    state_.rightEdge - state_.leftEdge,
+                    contentRect.bottom - contentRect.top,
+                    contentHeight);
+                state_.scrollOffsetY = scrollbar_.GetScrollOffset();
+            }
 
             auto saturate = [](float v) -> float
             {
@@ -2929,7 +2940,8 @@ namespace Orion
                 ruleBrush->Release();
             if (accentBrush)
                 accentBrush->Release();
-            scrollbar_.Draw(ctx);
+            if (markdownViewMode_ != MarkdownViewMode::Split)
+                scrollbar_.Draw(ctx);
             return;
         }
 

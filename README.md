@@ -11,7 +11,6 @@ It is designed to launch instantly, stay responsive on large projects, and avoid
 Unlike Electron-based editors, Nebula runs **directly on the system**, with minimal memory usage and predictable performance.
 
 ---
-
 ## Table of Contents
 
 - [Features](#features)

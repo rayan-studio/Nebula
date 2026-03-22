@@ -104,6 +104,13 @@ public:
     bool IsPointInUpdateToast(POINT pt) const;
     bool SetUpdateToastHovered(bool hovered);
     bool IsUpdateToastHovered() const { return updateToastHovered_; }
+    void SetUpdateDismissRect(const D2D1_RECT_F &rect);
+    bool IsPointInUpdateDismiss(POINT pt) const;
+    bool SetUpdateDismissHovered(bool hovered);
+    bool IsUpdateDismissHovered() const { return updateDismissHovered_; }
+    void DismissUpdateToast() { updateToastDismissed_ = true; }
+    bool IsUpdateToastDismissed() const { return updateToastDismissed_; }
+    void ResetUpdateToastDismissed() { updateToastDismissed_ = false; }
 
     // Gestion multi-éditeurs
     Orion::Editor *GetEditorForTab(int tabIndex);
@@ -156,6 +163,9 @@ public:
     std::wstring lastUpdateStatusMessage_;
     D2D1_RECT_F updateToastRect_ = D2D1::RectF(0, 0, 0, 0);
     bool updateToastHovered_ = false;
+    D2D1_RECT_F updateDismissRect_ = D2D1::RectF(0, 0, 0, 0);
+    bool updateDismissHovered_ = false;
+    bool updateToastDismissed_ = false;
 
 public:
     float GetTitlebarHoverAlpha(CustomTitleBarHoveredButton btn) const;
