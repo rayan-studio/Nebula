@@ -347,7 +347,11 @@ static bool RunCommandInNewConsole(const std::wstring &command,
     return exitCode == 0;
 }
 
-static bool LaunchExecutable(const std::filesystem::path &exePath, bool keepConsoleOpen = false)
+static bool LaunchExecutable(const std::filesystem::path &exePath,
+                             bool keepConsoleOpen,
+                             HANDLE &processHandleOut,
+                             HANDLE &threadHandleOut,
+                             DWORD &processIdOut)
 {
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
@@ -360,13 +364,14 @@ static bool LaunchExecutable(const std::filesystem::path &exePath, bool keepCons
         cmdLine = QuotePath(exePath);
 
     wchar_t *mutableCmd = _wcsdup(cmdLine.c_str());
+    DWORD flags = keepConsoleOpen ? CREATE_NEW_CONSOLE : 0;
     BOOL ok = CreateProcessW(
         nullptr,
         mutableCmd,
         nullptr,
         nullptr,
         FALSE,
-        0,
+        flags,
         nullptr,
         exePath.parent_path().wstring().c_str(),
         &si,
@@ -376,8 +381,140 @@ static bool LaunchExecutable(const std::filesystem::path &exePath, bool keepCons
     if (!ok)
         return false;
 
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
+    processHandleOut = pi.hProcess;
+    threadHandleOut = pi.hThread;
+    processIdOut = pi.dwProcessId;
+    return true;
+}
+
+bool Window::IsRunProcessActive() const
+{
+    std::lock_guard<std::mutex> lock(runProcessMutex_);
+    if (!runProcessHandle_)
+        return false;
+
+    DWORD wait = WaitForSingleObject(runProcessHandle_, 0);
+    return wait == WAIT_TIMEOUT;
+}
+
+void Window::ClearTrackedRunProcess()
+{
+    std::lock_guard<std::mutex> lock(runProcessMutex_);
+    if (runProcessHandle_)
+    {
+        CloseHandle(runProcessHandle_);
+        runProcessHandle_ = nullptr;
+    }
+    if (runJobHandle_)
+    {
+        CloseHandle(runJobHandle_);
+        runJobHandle_ = nullptr;
+    }
+    runProcessId_ = 0;
+}
+
+void Window::StopActiveRunProcess()
+{
+    HANDLE processHandle = nullptr;
+    HANDLE jobHandle = nullptr;
+    DWORD processId = 0;
+
+    {
+        std::lock_guard<std::mutex> lock(runProcessMutex_);
+        processHandle = runProcessHandle_;
+        jobHandle = runJobHandle_;
+        processId = runProcessId_;
+        runProcessHandle_ = nullptr;
+        runJobHandle_ = nullptr;
+        runProcessId_ = 0;
+    }
+
+    if (!processHandle && !jobHandle)
+        return;
+
+    if (jobHandle)
+        TerminateJobObject(jobHandle, 1);
+    else if (processHandle)
+        TerminateProcess(processHandle, 1);
+
+    if (processHandle)
+    {
+        WaitForSingleObject(processHandle, 3000);
+        CloseHandle(processHandle);
+    }
+    if (jobHandle)
+        CloseHandle(jobHandle);
+
+    Logger::Instance().Log(L"Run: Process stopped manually. pid=" + std::to_wstring(processId));
+
+    auto& terminal = GetTerminalPanel();
+    std::wstring sep(40, L'\u2500');
+    terminal.AppendOutputChunk(L"\n" + sep + L"\n");
+    terminal.AppendOutputChunk(L"Processus arr\u00eat\u00e9 manuellement\n");
+    terminal.FlushOutputBuffer();
+
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+bool Window::TrackRunProcess(HANDLE processHandle, HANDLE threadHandle, DWORD processId)
+{
+    if (!processHandle)
+    {
+        if (threadHandle)
+            CloseHandle(threadHandle);
+        return false;
+    }
+
+    HANDLE jobHandle = CreateJobObjectW(nullptr, nullptr);
+    if (jobHandle)
+    {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {};
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(jobHandle, JobObjectExtendedLimitInformation, &limits, sizeof(limits)) ||
+            !AssignProcessToJobObject(jobHandle, processHandle))
+        {
+            CloseHandle(jobHandle);
+            jobHandle = nullptr;
+        }
+    }
+
+    HANDLE waitHandle = nullptr;
+    DuplicateHandle(GetCurrentProcess(),
+                    processHandle,
+                    GetCurrentProcess(),
+                    &waitHandle,
+                    SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                    FALSE,
+                    0);
+
+    if (threadHandle)
+        CloseHandle(threadHandle);
+
+    {
+        std::lock_guard<std::mutex> lock(runProcessMutex_);
+        if (runProcessHandle_)
+            CloseHandle(runProcessHandle_);
+        if (runJobHandle_)
+            CloseHandle(runJobHandle_);
+        runProcessHandle_ = processHandle;
+        runJobHandle_ = jobHandle;
+        runProcessId_ = processId;
+    }
+
+    if (waitHandle)
+    {
+        HWND hwnd = hwnd_;
+        std::thread([hwnd, waitHandle, processId]()
+        {
+            WaitForSingleObject(waitHandle, INFINITE);
+            CloseHandle(waitHandle);
+            if (hwnd)
+                PostMessageW(hwnd, WM_RUN_PROCESS_EXITED, (WPARAM)processId, 0);
+        }).detach();
+    }
+
+    Logger::Instance().Log(L"Run: Tracking launched process. pid=" + std::to_wstring(processId));
+    InvalidateRect(hwnd_, nullptr, FALSE);
     return true;
 }
 
@@ -952,6 +1089,12 @@ static std::string GetProjectTypeFromRoot(const std::filesystem::path &root)
 
 void Window::RunActiveProject()
 {
+    if (IsRunProcessActive())
+    {
+        Logger::Instance().Log(L"Run: An executable is already running.");
+        return;
+    }
+
     std::wstring root = GetExplorerManager().GetState().rootPath;
     Orion::Editor *activeEditor = GetEditor();
     std::wstring activeFile = activeEditor ? activeEditor->GetFilePath() : L"";
@@ -1037,11 +1180,9 @@ void Window::RunActiveProject()
                 return;
             }
 
-            if (!LaunchExecutable(outExe, true))
-            {
-                MessageBoxW(hwnd, L"Impossible de lancer l'executable.", L"Run", MB_OK | MB_ICONERROR);
-                return;
-            }
+            // Lance l'exe dans le terminal intégré (& pour compatibilité PowerShell)
+            std::wstring workDir = outExe.parent_path().wstring();
+            GetTerminalPanel().SendCommandToActive(hwnd, workDir, L"& " + QuotePath(outExe));
         }).detach();
         return;
     }
@@ -1161,14 +1302,10 @@ void Window::RunActiveProject()
             return;
         }
 
-        if (!LaunchExecutable(exe, keepConsoleOpen))
-        {
-            Logger::Instance().Log(L"Run: Failed to launch executable.");
-            MessageBoxW(hwnd, L"Impossible de lancer l'exÃ©cutable.", L"Run", MB_OK | MB_ICONERROR);
-            return;
-        }
-
-        Logger::Instance().Log(L"Run: Executable launched.");
+        // Lance l'exe dans le terminal intégré — output visible dans la session terminal
+        Logger::Instance().Log(L"Run: Launching executable in integrated terminal.");
+        std::wstring workDir = exe.parent_path().wstring();
+        GetTerminalPanel().SendCommandToActive(hwnd, workDir, L"& " + QuotePath(exe));
     }).detach();
 }
 

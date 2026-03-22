@@ -632,6 +632,34 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
         return 0;
     }
+    case WM_RUN_PROCESS_EXITED:
+    {
+        DWORD processId = static_cast<DWORD>(wParam);
+        bool ownedProcess = false;
+        DWORD exitCode = 0;
+        {
+            std::lock_guard<std::mutex> lock(runProcessMutex_);
+            ownedProcess = (runProcessId_ == processId);
+            if (ownedProcess && runProcessHandle_)
+                GetExitCodeProcess(runProcessHandle_, &exitCode);
+        }
+        if (ownedProcess)
+        {
+            ClearTrackedRunProcess();
+            auto& terminal = GetTerminalPanel();
+            std::wstring sep(40, L'\u2500');
+            std::wstring msg = L"\n" + sep + L"\n";
+            if (exitCode == 0)
+                msg += L"Processus termin\u00E9 avec succ\u00E8s (code 0)\n";
+            else
+                msg += L"Processus termin\u00E9 avec le code " + std::to_wstring(exitCode) + L"\n";
+            msg += L"Appuyez sur Entr\u00E9e dans le terminal pour relancer\n";
+            terminal.AppendOutputChunk(msg);
+            terminal.FlushOutputBuffer();
+        }
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return 0;
+    }
     case WM_NCHITTEST:
     {
         LRESULT hit = DefWindowProc(hwnd_, uMsg, wParam, lParam);
@@ -2633,6 +2661,26 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 }
             }
 
+            if (menu == 6)
+            {
+                switch (index)
+                {
+                case 0: // Start Debugging
+                case 1: // Run
+                    RunActiveProject();
+                    return 0;
+                case 2: // Stop
+                    StopActiveRunProcess();
+                    return 0;
+                case 3: // Restart Debugging
+                    StopActiveRunProcess();
+                    RunActiveProject();
+                    return 0;
+                default:
+                    break;
+                }
+            }
+
             MessageBoxW(hwnd_, buf, L"Menu", MB_OK);
             return 0;
         }
@@ -2684,7 +2732,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
         else if (current == Window::Hovered_Run)
         {
-            RunActiveProject();
+            if (IsRunProcessActive())
+                StopActiveRunProcess();
+            else
+                RunActiveProject();
             return 0;
         }
         return DefWindowProc(hwnd_, uMsg, wParam, lParam);
@@ -2906,6 +2957,7 @@ Window::Window(HINSTANCE hInstance)
 
 Window::~Window()
 {
+    StopActiveRunProcess();
     for (auto &p : editors_)
     {
         delete p.second;
@@ -3128,4 +3180,3 @@ bool Window::UpdateTabBarHover(const POINT& ptClient)
         return false;
     }
 }
-

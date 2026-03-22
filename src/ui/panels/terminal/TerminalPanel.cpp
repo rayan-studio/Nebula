@@ -489,6 +489,29 @@ RECT TerminalPanel::TabsBarRectClient() const
     return r;
 }
 
+RECT TerminalPanel::SessionTabRectClient(int index) const
+{
+    RECT t = TabsBarRectClient();
+    int x = t.left + 10 + index * 128;
+    RECT r;
+    r.left = x;
+    r.right = x + 116;
+    r.top = t.top + 4;
+    r.bottom = t.bottom - 4;
+    return r;
+}
+
+RECT TerminalPanel::SessionCloseRectClient(int index) const
+{
+    RECT tab = SessionTabRectClient(index);
+    RECT r;
+    r.right = tab.right - 6;
+    r.left = r.right - 14;
+    r.top = tab.top + ((tab.bottom - tab.top) - 14) / 2;
+    r.bottom = r.top + 14;
+    return r;
+}
+
 float TerminalPanel::TabsBarRightEdge() const
 {
     RECT output = OutputButtonRectClient();
@@ -498,16 +521,47 @@ float TerminalPanel::TabsBarRightEdge() const
     return rightEdge;
 }
 
-RECT TerminalPanel::PlusButtonRectClient() const
+bool TerminalPanel::HitTestSessionTab(int index, POINT pt) const
+{
+    RECT r = SessionTabRectClient(index);
+    return pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom;
+}
+
+bool TerminalPanel::HitTestSessionClose(int index, POINT pt) const
+{
+    RECT r = SessionCloseRectClient(index);
+    return pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom;
+}
+
+RECT TerminalPanel::MinimizeButtonRectClient() const
 {
     RECT t = TabsBarRectClient();
+    int size = (int)TabsBarHeightPx() - 8;
+    if (size < 14) size = 14;
+    RECT r;
+    r.right  = t.right - 8;
+    r.left   = r.right - size;
+    r.top    = t.top + 4;
+    r.bottom = t.bottom - 4;
+    return r;
+}
+
+bool TerminalPanel::HitTestMinimize(POINT pt) const
+{
+    RECT r = MinimizeButtonRectClient();
+    return (pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom);
+}
+
+RECT TerminalPanel::PlusButtonRectClient() const
+{
+    RECT mini = MinimizeButtonRectClient();
     int size = (int)TabsBarHeightPx() - 6;
     if (size < 14) size = 14;
     RECT r;
-    r.right = t.right - 8;
-    r.left  = r.right - size;
-    r.top   = t.top + 2;
-    r.bottom= t.bottom - 2;
+    r.right  = mini.left - 6;
+    r.left   = r.right - size;
+    r.top    = mini.top - 2;
+    r.bottom = mini.bottom + 2;
     return r;
 }
 
@@ -642,6 +696,12 @@ void TerminalPanel::UpdateHoveredOutputLink(POINT pt)
 void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
 {
     if (!visible_) return;
+
+    if (HitTestMinimize(pt))
+    {
+        SetVisible(false);
+        return;
+    }
 
     if (HitTestOutput(pt))
     {
@@ -779,22 +839,22 @@ void TerminalPanel::OnLeftButtonDown(HWND hwnd, POINT pt)
 
     if (IsPointInTabsBar(pt))
     {
-        int result = tabBar_.OnLeftButtonDown(pt);
-        if (result == TabBar::TAB_CLICKED_CLOSE)
+        for (int i = 0; i < (int)sessions_.size(); ++i)
         {
-            int closeIndex = tabBar_.GetLastCloseRequestIndex();
-            CloseTerminal(closeIndex);
-            return;
-        }
-
-        if (result >= 0)
-        {
-            SetActiveIndex(result);
-            showOutput_ = false;
-            showProblems_ = false;
-            focused_ = true;
-            EnsureActiveInitialized(hwnd);
-            return;
+            if (sessions_.size() > 1 && HitTestSessionClose(i, pt))
+            {
+                CloseTerminal(i);
+                return;
+            }
+            if (HitTestSessionTab(i, pt))
+            {
+                SetActiveIndex(i);
+                showOutput_ = false;
+                showProblems_ = false;
+                focused_ = true;
+                EnsureActiveInitialized(hwnd);
+                return;
+            }
         }
     }
 
@@ -955,6 +1015,11 @@ bool TerminalPanel::OnMouseMove(HWND hwnd, POINT pt)
     if (prevOutput != hoveredOutput_)
         changed = true;
 
+    bool prevMinimize = hoveredMinimize_;
+    hoveredMinimize_ = HitTestMinimize(pt);
+    if (prevMinimize != hoveredMinimize_)
+        changed = true;
+
     int prevProblemRow = hoveredProblemIndex_;
     hoveredProblemIndex_ = -1;
     if (showProblems_ && problemsRowHeight_ > 0.0f &&
@@ -990,17 +1055,29 @@ bool TerminalPanel::OnMouseMove(HWND hwnd, POINT pt)
         changed = true;
     }
 
+    int prevSessionTab = hoveredSessionTab_;
+    int prevSessionClose = hoveredSessionClose_;
+    hoveredSessionTab_ = -1;
+    hoveredSessionClose_ = -1;
     if (IsPointInTabsBar(pt) && !hoveredPlus_ && !hoveredProblems_ && !hoveredOutput_)
     {
-        int tabHover = tabBar_.OnMouseMove(pt);
-        if (tabHover != -2)
-            changed = true;
+        for (int i = 0; i < (int)sessions_.size(); ++i)
+        {
+            if (sessions_.size() > 1 && HitTestSessionClose(i, pt))
+            {
+                hoveredSessionTab_ = i;
+                hoveredSessionClose_ = i;
+                break;
+            }
+            if (HitTestSessionTab(i, pt))
+            {
+                hoveredSessionTab_ = i;
+                break;
+            }
+        }
     }
-    else
-    {
-        if (tabBar_.ClearHover())
-            changed = true;
-    }
+    if (prevSessionTab != hoveredSessionTab_ || prevSessionClose != hoveredSessionClose_)
+        changed = true;
 
     // Scrollbar hover/drag
     if (TerminalSession* s = ActiveSession())
@@ -1106,7 +1183,7 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
 
     EnsureAtLeastOneSession(NULL);
     SyncTabBar();
-    tabBar_.UpdateLayout(left_, bottom_ - TabsBarHeightPx(), TabsBarRightEdge());
+    tabBar_.UpdateLayout(left_, top_ + resizeZoneH_, TabsBarRightEdge());
 
     // Brushes
     ID2D1SolidColorBrush* bg = nullptr;
@@ -1119,7 +1196,9 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
     rt->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &bg);
     rt->CreateSolidColorBrush(UI::Theme::PrimaryText(), &fg);
     rt->CreateSolidColorBrush(UI::Theme::MutedText(), &muted);
-    rt->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &border);
+    D2D1_COLOR_F terminalBorderColor = UI::Theme::ChromeBorder();
+    terminalBorderColor.a = lightMode ? 0.72f : 0.46f;
+    rt->CreateSolidColorBrush(terminalBorderColor, &border);
     rt->CreateSolidColorBrush(UI::Theme::Accent(), &accentBrush);
     rt->CreateSolidColorBrush(resizeHover_ || resizing_ ? UI::Theme::Accent() : UI::Theme::ChromeBorder(), &resizeLine);
 
@@ -1160,11 +1239,11 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
         }
     }
 
-    // Step 2: toolbar tint on top (explorerToolbarHover can be semi-transparent, that's OK now)
+    // Step 2: keep the toolbar in the same visual family as the terminal body
     {
         ID2D1SolidColorBrush* toolbarBg = nullptr;
-        D2D1_COLOR_F tint = themePalette.explorerToolbarHover;
-        tint.a = 1.0f; // force opaque
+        D2D1_COLOR_F tint = UI::Theme::ChromeBackground();
+        tint.a = 1.0f;
         rt->CreateSolidColorBrush(tint, &toolbarBg);
         if (toolbarBg)
         {
@@ -1184,14 +1263,96 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
     // Toolbar bottom separator (very thin, same as chrome borders)
     {
         float sepY = std::round(toolbarBottom) - 0.5f;
-        rt->DrawLine(D2D1::Point2F(left_, sepY), D2D1::Point2F(right_, sepY), border, 1.0f);
+        rt->DrawLine(D2D1::Point2F(left_, sepY), D2D1::Point2F(right_, sepY), border, 0.8f);
     }
 
     // Session tabs
-    tabBar_.Draw(rt, dwrite, hwnd);
+    auto drawSessionTab = [&](int index)
+    {
+        const Tab* tab = tabBar_.GetTab(index);
+        if (!tab)
+            return;
+
+        RECT rc = SessionTabRectClient(index);
+        D2D1_RECT_F r = D2D1::RectF((float)rc.left, (float)rc.top, (float)rc.right, (float)rc.bottom);
+        bool active = index == activeIndex_;
+        bool hovered = index == hoveredSessionTab_;
+
+        IDWriteTextFormat* tabFmt = nullptr;
+        dwrite->CreateTextFormat(
+            L"Segoe UI Variable Text",
+            NULL,
+            active ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            12.0f,
+            L"en-us",
+            &tabFmt);
+        if (tabFmt)
+        {
+            tabFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            tabFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            ID2D1SolidColorBrush* textBr = (active || hovered) ? fg : muted;
+            float textRight = r.right - (sessions_.size() > 1 ? 18.0f : 0.0f);
+            rt->DrawTextW(
+                tab->displayName.c_str(),
+                (UINT32)tab->displayName.size(),
+                tabFmt,
+                D2D1::RectF(r.left, r.top, textRight, r.bottom),
+                textBr);
+            tabFmt->Release();
+        }
+
+        D2D1_COLOR_F underlineColor = active ? UI::Theme::Accent() : UI::Theme::ChromeBorder();
+        underlineColor.a = active ? 0.96f : (hovered ? 0.55f : 0.0f);
+        if (underlineColor.a > 0.0f)
+        {
+            ID2D1SolidColorBrush* underlineBrush = nullptr;
+            rt->CreateSolidColorBrush(underlineColor, &underlineBrush);
+            if (underlineBrush)
+            {
+                float y = r.bottom - (active ? 2.0f : 1.0f);
+                rt->DrawLine(
+                    D2D1::Point2F(r.left + 2.0f, y),
+                    D2D1::Point2F(r.right - 2.0f, y),
+                    underlineBrush,
+                    active ? 2.0f : 1.0f);
+                underlineBrush->Release();
+            }
+        }
+
+        if (sessions_.size() > 1)
+        {
+            RECT closeRc = SessionCloseRectClient(index);
+            D2D1_RECT_F closeRect = D2D1::RectF((float)closeRc.left, (float)closeRc.top, (float)closeRc.right, (float)closeRc.bottom);
+            bool closeHovered = index == hoveredSessionClose_;
+            D2D1_COLOR_F closeColor = closeHovered ? UI::Theme::PrimaryText() : UI::Theme::MutedText();
+            closeColor.a = closeHovered ? 0.95f : 0.62f;
+            ID2D1SolidColorBrush* closeBrush = nullptr;
+            rt->CreateSolidColorBrush(closeColor, &closeBrush);
+            if (closeBrush)
+            {
+                const float pad = 4.0f;
+                rt->DrawLine(
+                    D2D1::Point2F(closeRect.left + pad, closeRect.top + pad),
+                    D2D1::Point2F(closeRect.right - pad, closeRect.bottom - pad),
+                    closeBrush,
+                    1.1f);
+                rt->DrawLine(
+                    D2D1::Point2F(closeRect.left + pad, closeRect.bottom - pad),
+                    D2D1::Point2F(closeRect.right - pad, closeRect.top + pad),
+                    closeBrush,
+                    1.1f);
+                closeBrush->Release();
+            }
+        }
+    };
+
+    for (int i = 0; i < (int)sessions_.size(); ++i)
+        drawSessionTab(i);
 
     // Content card: rounded rect — bg already fills behind, just draw the border
-    rt->DrawRoundedRectangle(D2D1::RoundedRect(contentRect, radius, radius), border, 1.0f);
+    rt->DrawRoundedRectangle(D2D1::RoundedRect(contentRect, radius, radius), border, 0.9f);
 
 
     // Helper to draw a modern tab button with accent underline
@@ -1206,6 +1367,9 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
             rt->CreateSolidColorBrush(themePalette.explorerRowHover, &hoverBg);
             if (hoverBg)
             {
+                D2D1_COLOR_F hoverColor = themePalette.explorerRowHover;
+                hoverColor.a = 0.45f;
+                hoverBg->SetColor(hoverColor);
                 rt->FillRoundedRectangle(D2D1::RoundedRect(r, 4.0f, 4.0f), hoverBg);
                 hoverBg->Release();
             }
@@ -1293,6 +1457,38 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
         plusStroke->Release();
     }
 
+
+    // Minimize button (−)
+    {
+        RECT mr = MinimizeButtonRectClient();
+        D2D1_RECT_F miniRect = D2D1::RectF((float)mr.left, (float)mr.top, (float)mr.right, (float)mr.bottom);
+
+        if (hoveredMinimize_)
+        {
+            ID2D1SolidColorBrush* miniBg = nullptr;
+            rt->CreateSolidColorBrush(themePalette.explorerRowHover, &miniBg);
+            if (miniBg)
+            {
+                rt->FillRoundedRectangle(D2D1::RoundedRect(miniRect, 3.0f, 3.0f), miniBg);
+                miniBg->Release();
+            }
+        }
+
+        float mcx = (miniRect.left + miniRect.right) * 0.5f;
+        float mcy = (miniRect.top + miniRect.bottom) * 0.5f;
+        float halfW = (miniRect.right - miniRect.left) * 0.28f;
+
+        ID2D1SolidColorBrush* miniStroke = nullptr;
+        D2D1_COLOR_F miniColor = hoveredMinimize_
+            ? UI::Theme::PrimaryText()
+            : UI::Theme::MutedText();
+        rt->CreateSolidColorBrush(miniColor, &miniStroke);
+        if (miniStroke)
+        {
+            rt->DrawLine(D2D1::Point2F(mcx - halfW, mcy), D2D1::Point2F(mcx + halfW, mcy), miniStroke, 1.5f);
+            miniStroke->Release();
+        }
+    }
 
     // Content viewport
     if (!showOutput_)
@@ -1709,25 +1905,20 @@ bool TerminalPanel::SendCommandToActive(HWND hwnd, const std::wstring& startDir,
     showOutput_ = false;
     showProblems_ = false;
 
-    EnsureSessionExists(hwnd);
+    // Utilise le terminal actif existant — ne crée un nouveau que si aucun n'existe
+    EnsureActiveInit(hwnd);
     TerminalSession* s = ActiveSession();
-    if (!s || !s->IsInitialized())
-    {
-        if (!startDir.empty())
-        {
-            NewTerminal(hwnd, startDir);
-        }
-        else
-        {
-            EnsureActiveInit(hwnd);
-        }
-    }
-
-    s = ActiveSession();
     if (!s)
         return false;
 
-    std::string u8 = WideToUtf8(command);
+    // Combine cd + commande sur une seule ligne (PowerShell: point-virgule)
+    std::wstring fullCmd;
+    if (!startDir.empty())
+        fullCmd = L"cd \"" + startDir + L"\"; " + command;
+    else
+        fullCmd = command;
+
+    std::string u8 = WideToUtf8(fullCmd);
     if (!u8.empty())
         s->SendUtf8(u8.data(), (DWORD)u8.size());
     s->SendUtf8("\r", 1);

@@ -323,13 +323,13 @@ bool TerminalSession::StartShellProcess(const std::wstring& startDir)
     if (shell.empty())
     {
         // Keep terminal usable in production even if NebulaDevShell is missing.
-        std::wstring cmd = FindExeInPathW(L"cmd.exe");
-        if (!cmd.empty())
-            shell = cmd;
+        std::wstring pwsh = FindExeInPathW(L"pwsh.exe");
+        if (!pwsh.empty())
+            shell = pwsh;
         if (shell.empty())
             shell = FindExeInPathW(L"powershell.exe");
         if (shell.empty())
-            shell = FindExeInPathW(L"pwsh.exe");
+            shell = FindExeInPathW(L"cmd.exe");
 
         if (shell.empty())
         {
@@ -830,9 +830,15 @@ void TerminalSession::UpdatePseudoConsoleSizeFromPixels(float widthPx, float hei
     // Metrics approximations (comme ton code)
     float charW = fontSizePx * 0.60f;
     float lineH = fontSizePx * 1.35f;
+    float usableWidth = widthPx - padX_ * 2.0f;
+    float usableHeight = heightPx - padY_ * 2.0f;
+    if (usableWidth < 20.0f)
+        usableWidth = widthPx;
+    if (usableHeight < 20.0f)
+        usableHeight = heightPx;
 
-    int cols = (int)(widthPx / std::max(4.0f, charW));
-    int rows = (int)(heightPx / std::max(8.0f, lineH));
+    int cols = (int)(usableWidth / std::max(4.0f, charW));
+    int rows = (int)(usableHeight / std::max(8.0f, lineH));
 
     cols = std::max(20, cols);
     rows = std::max(5, rows);
@@ -859,10 +865,12 @@ void TerminalSession::DrawContent(ID2D1RenderTarget* rt, IDWriteFactory* dwrite,
     ID2D1SolidColorBrush* border = nullptr;
     D2D1_COLOR_F terminalBg = UI::Theme::ChromeBackground();
     terminalBg.a = 0.96f;
+    D2D1_COLOR_F terminalBorder = UI::Theme::ChromeBorder();
+    terminalBorder.a = 0.38f;
 
     HRESULT hr1 = rt->CreateSolidColorBrush(terminalBg, &bg);
     HRESULT hr2 = rt->CreateSolidColorBrush(UI::Theme::PrimaryText(), &fg);
-    HRESULT hr3 = rt->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &border);
+    HRESULT hr3 = rt->CreateSolidColorBrush(terminalBorder, &border);
 
     if (FAILED(hr1) || FAILED(hr2) || FAILED(hr3) || !bg || !fg || !border)
     {
@@ -931,14 +939,7 @@ void TerminalSession::DrawContent(ID2D1RenderTarget* rt, IDWriteFactory* dwrite,
     charW_ = fontSizePx * 0.60f;
     lineH_ = fontSizePx * 1.35f;
 
-    float contentHeight = padY * 2.0f + (float)((int)scrollback_.size() + rows_) * lineH_;
-    if (scrollback_.empty())
-    {
-        // No scrollback -> keep scrollbar hidden and stick to top.
-        contentHeight = viewportH;
-        scrollbar_.SetScrollOffset(0.0f);
-        userScrolling_ = false;
-    }
+    float contentHeight = (std::max)(viewportH, padY * 2.0f + (float)((int)scrollback_.size() + rows_) * lineH_);
     scrollbar_.UpdateLayout(left_, top_, viewportW, viewportH, contentHeight);
 
     if (pendingSnapToBottom_)
@@ -1069,6 +1070,16 @@ void TerminalSession::DrawContent(ID2D1RenderTarget* rt, IDWriteFactory* dwrite,
     }
 
     rt->PopAxisAlignedClip();
+
+    if (scrollbar_.IsVisible())
+    {
+        const float guideX = right_ - 7.0f;
+        rt->DrawLine(
+            D2D1::Point2F(guideX, top_ + 6.0f),
+            D2D1::Point2F(guideX, bottom_ - 6.0f),
+            border,
+            1.0f);
+    }
 
     scrollbar_.Draw(rt);
 

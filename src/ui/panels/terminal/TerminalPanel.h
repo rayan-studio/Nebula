@@ -115,12 +115,18 @@ private:
     float TabsBarHeightPx() const { return tabBar_.GetHeight(); }
 
     RECT  TabsBarRectClient() const;
+    RECT  SessionTabRectClient(int index) const;
+    RECT  SessionCloseRectClient(int index) const;
     RECT  PlusButtonRectClient() const;
     RECT  ProblemsButtonRectClient() const;
     RECT  OutputButtonRectClient() const;
+    RECT  MinimizeButtonRectClient() const;
+    bool  HitTestSessionTab(int index, POINT pt) const;
+    bool  HitTestSessionClose(int index, POINT pt) const;
     bool  HitTestPlus(POINT pt) const;
     bool  HitTestProblems(POINT pt) const;
     bool  HitTestOutput(POINT pt) const;
+    bool  HitTestMinimize(POINT pt) const;
     bool  HitTestOutputCopy(POINT pt) const;
     bool  IsPointInTabsBar(POINT pt) const;
     float TabsBarRightEdge() const;
@@ -174,6 +180,9 @@ private:
     bool hoveredPlus_ = false;
     bool hoveredProblems_ = false;
     bool hoveredOutput_ = false;
+    bool hoveredMinimize_ = false;
+    int hoveredSessionTab_ = -1;
+    int hoveredSessionClose_ = -1;
     bool showProblems_ = false;
     bool showOutput_ = false;
 

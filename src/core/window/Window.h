@@ -8,6 +8,7 @@
 #include <ctime>
 #include <optional>
 #include <unordered_set>
+#include <mutex>
 #include "lsp/LspManager.h"
 #include "ui/components/input/TextInput.h"
 #include "ui/screens/NewProjectOverlay.h"
@@ -22,6 +23,7 @@ static constexpr UINT WM_OPEN_SETTINGS = WM_USER + 779;
 static constexpr UINT WM_LSP_DIAGNOSTICS = WM_USER + 780;
 static constexpr UINT WM_OPEN_NEW_PROJECT = WM_USER + 781;
 static constexpr UINT WM_SHOW_RUN_ERROR_POPUP = WM_USER + 782;
+static constexpr UINT WM_RUN_PROCESS_EXITED = WM_USER + 783;
 
 struct RenamePathPayload
 {
@@ -54,6 +56,10 @@ private:
     std::map<int, std::pair<int, int>> pendingGoToLocation_;
     std::unordered_set<int> pendingMarkdownPreview_;
     std::optional<Lsp::Location> pendingContextGoto_;
+    mutable std::mutex runProcessMutex_;
+    HANDLE runProcessHandle_ = nullptr;
+    HANDLE runJobHandle_ = nullptr;
+    DWORD runProcessId_ = 0;
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT HandleMessage(UINT, WPARAM, LPARAM);
@@ -64,6 +70,10 @@ private:
     // Reset hover state for all top-level UI controls
     void ClearAllHoverStates();
     void RunActiveProject();
+    void StopActiveRunProcess();
+    bool IsRunProcessActive() const;
+    bool TrackRunProcess(HANDLE processHandle, HANDLE threadHandle, DWORD processId);
+    void ClearTrackedRunProcess();
     bool HandleCommandLineArgs();
     void StartTitlebarHoverAnimation();
     void StepTitlebarHoverAnimation();

@@ -150,6 +150,8 @@ bool Scrollbar::OnLeftButtonUp() {
 
 void Scrollbar::Draw(ID2D1RenderTarget* ctx) {
     if (!state_.visible || !ctx) return;
+    if (state_.thumbHeight <= 0.0f || state_.trackBottom <= state_.trackTop)
+        return;
     
     // Pas de track visible - juste le thumb
     D2D1_COLOR_F thumbColor;
@@ -163,10 +165,17 @@ void Scrollbar::Draw(ID2D1RenderTarget* ctx) {
     }
     
     ID2D1SolidColorBrush* thumbBrush = nullptr;
-    ctx->CreateSolidColorBrush(thumbColor, &thumbBrush);
+    HRESULT hr = ctx->CreateSolidColorBrush(thumbColor, &thumbBrush);
+    if (FAILED(hr) || !thumbBrush)
+        return;
     
     float thumbTop = state_.trackTop + state_.thumbPosition;
     float thumbBottom = thumbTop + state_.thumbHeight;
+    if (thumbBottom <= thumbTop)
+    {
+        thumbBrush->Release();
+        return;
+    }
     
     // Thumb plus fin et arrondi
     D2D1_ROUNDED_RECT thumbRect = D2D1::RoundedRect(
@@ -182,5 +191,5 @@ void Scrollbar::Draw(ID2D1RenderTarget* ctx) {
     
     ctx->FillRoundedRectangle(thumbRect, thumbBrush);
     
-    if (thumbBrush) thumbBrush->Release();
+    thumbBrush->Release();
 }
