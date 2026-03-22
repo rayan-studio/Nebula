@@ -450,6 +450,7 @@ namespace Orion
 
         D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
         D2D1_TEXT_ANTIALIAS_MODE oldTextAA = ctx->GetTextAntialiasMode();
+        ctx->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
 
         D2D1_RECT_F editorClip = D2D1::RectF(
             state_.leftEdge,

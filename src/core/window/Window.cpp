@@ -53,7 +53,7 @@
 #include "utils/update/UpdateService.h"
 #include "ui/theme/Theme.h"
 
-static void EnableMicaIfAvailable(HWND hwnd)
+static void ApplyDwmWindowStyle(HWND hwnd)
 {
     HMODULE hDwm = LoadLibraryW(L"dwmapi.dll");
     if (!hDwm)
@@ -71,8 +71,8 @@ static void EnableMicaIfAvailable(HWND hwnd)
     pDwmSetWindowAttribute(hwnd, 20, &useDark, sizeof(useDark));
     pDwmSetWindowAttribute(hwnd, 19, &useDark, sizeof(useDark));
     const DWORD DWMWA_SYSTEMBACKDROP_TYPE = 38;
-    const int DWMSBT_MAINWINDOW = 2;
-    pDwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &DWMSBT_MAINWINDOW, sizeof(DWMSBT_MAINWINDOW));
+    const int DWMSBT_NONE = 1;
+    pDwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &DWMSBT_NONE, sizeof(DWMSBT_NONE));
 
     FreeLibrary(hDwm);
 }
@@ -310,7 +310,7 @@ bool Window::Create(int nCmdShow)
     UpdateWindow(hwnd_);
 
     SetWindowPos(hwnd_, NULL, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
-    EnableMicaIfAvailable(hwnd_);
+    ApplyDwmWindowStyle(hwnd_);
     SetDwmBorderColor(hwnd_, true);
 
     return true;

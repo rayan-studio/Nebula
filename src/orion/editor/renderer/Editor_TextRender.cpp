@@ -289,8 +289,16 @@ namespace Orion
             }
             else
             {
-                guideStyle.normalColor = D2D1::ColorF(theme_.lineNumberText.r, theme_.lineNumberText.g, theme_.lineNumberText.b, appliedUiThemeIsLight_ ? 0.45f : 0.65f);
-                guideStyle.activeColor = D2D1::ColorF(theme_.text.r, theme_.text.g, theme_.text.b, appliedUiThemeIsLight_ ? 0.50f : 0.80f);
+                if (appliedUiThemeIsLight_)
+                {
+                    guideStyle.normalColor = D2D1::ColorF(theme_.lineNumberText.r, theme_.lineNumberText.g, theme_.lineNumberText.b, 0.45f);
+                    guideStyle.activeColor = D2D1::ColorF(theme_.text.r, theme_.text.g, theme_.text.b, 0.50f);
+                }
+                else
+                {
+                    guideStyle.normalColor = D2D1::ColorF(49.0f / 255.0f, 52.0f / 255.0f, 56.0f / 255.0f, 1.0f);   // 313438
+                    guideStyle.activeColor = D2D1::ColorF(102.0f / 255.0f, 104.0f / 255.0f, 112.0f / 255.0f, 1.0f); // 666870
+                }
             }
             guideStyle.lineWidth = 0.75f;
 
@@ -653,21 +661,23 @@ namespace Orion
             switch (type)
             {
             case ::Orion::Syntax::TokenType::Keyword:
-                return D2D1::ColorF(0.86f, 0.58f, 0.22f);
+                return theme_.keyword;
             case ::Orion::Syntax::TokenType::Type:
-                return D2D1::ColorF(0.4f, 0.8f, 1.0f);
+                return theme_.type;
             case ::Orion::Syntax::TokenType::Function:
                 return theme_.function;
             case ::Orion::Syntax::TokenType::Macro:
-                return D2D1::ColorF(0.90f, 0.70f, 0.40f);
+                return theme_.keyword;
             case ::Orion::Syntax::TokenType::Variable:
                 return theme_.variable;
             case ::Orion::Syntax::TokenType::String:
-                return D2D1::ColorF(0.56f, 0.87f, 0.56f);
+                return theme_.string;
             case ::Orion::Syntax::TokenType::Comment:
-                return D2D1::ColorF(0.5f, 0.5f, 0.5f);
+                return theme_.comment;
+            case ::Orion::Syntax::TokenType::Number:
+                return theme_.number;
             case ::Orion::Syntax::TokenType::Preprocessor:
-                return D2D1::ColorF(0.9f, 0.7f, 0.4f);
+                return theme_.keyword;
             default:
                 return theme_.text;
             }

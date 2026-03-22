@@ -185,6 +185,10 @@ namespace Orion
         D2D1_COLOR_F lineNumberText =
             D2D1::ColorF(0.541176f, 0.541176f, 0.541176f, 1.0f);
 
+        // Active line number color
+        D2D1_COLOR_F activeLineNumberText =
+            D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
+
         // Active line uses a faint contrast aligned with the dark theme
         D2D1_COLOR_F activeLineBackground =
             D2D1::ColorF(0.145098f, 0.145098f, 0.149019f, 1.0f);
@@ -599,7 +603,7 @@ namespace Orion
         // IDWritePixelSnapping
         HRESULT STDMETHODCALLTYPE IsPixelSnappingDisabled(void *, BOOL *isDisabled) override
         {
-            *isDisabled = FALSE;
+            *isDisabled = TRUE;
             return S_OK;
         }
         HRESULT STDMETHODCALLTYPE GetCurrentTransform(void *, DWRITE_MATRIX *transform) override

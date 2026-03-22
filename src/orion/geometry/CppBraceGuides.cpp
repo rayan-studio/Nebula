@@ -207,6 +207,8 @@ namespace Orion::Geometry
                             {
                                 if (li == ob.line)
                                     continue; // same-line pairs don't get guides
+                                if (ob.visualCol <= 0)
+                                    continue; // root-level block guide would duplicate the main left guide
                                 IndentGuide g;
                                 g.startLine = ob.line + 1; // start after opening brace line
                                 g.endLine = li - 1; // stop before closing brace line
@@ -226,6 +228,8 @@ namespace Orion::Geometry
         // Guides pour blocs ouverts non refermés dans la fenêtre
         for (const auto &ob : stack)
         {
+            if (ob.visualCol <= 0)
+                continue; // keep root-level block out of the indentation guides
             IndentGuide g;
             g.startLine = ob.line + 1; // start after opening brace line
             g.endLine = lastLine - 1;

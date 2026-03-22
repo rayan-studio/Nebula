@@ -35,6 +35,32 @@ namespace Orion
 
         ctx->FillRectangle(gutterRect, bgBrush);
 
+        if (!state.hasSelection)
+        {
+            int caretVisualLine = state.caret.line;
+            if (!state.visualLineByActual.empty())
+            {
+                int clamped = (std::max)(0, (std::min)(state.caret.line, (int)state.visualLineByActual.size() - 1));
+                caretVisualLine = state.visualLineByActual[(size_t)clamped];
+            }
+
+            const float lineY = state.topEdge + (caretVisualLine * metrics.lineHeight) - state.scrollOffsetY;
+            if (lineY + metrics.lineHeight >= state.topEdge && lineY <= state.bottomEdge)
+            {
+                ID2D1SolidColorBrush *activeLineBrush = nullptr;
+                if (SUCCEEDED(ctx->CreateSolidColorBrush(theme.activeLineBackground, &activeLineBrush)) && activeLineBrush)
+                {
+                    D2D1_RECT_F activeRect = D2D1::RectF(
+                        state.leftEdge,
+                        lineY,
+                        state.leftEdge + metrics.gutterWidth,
+                        lineY + metrics.lineHeight);
+                    ctx->FillRectangle(activeRect, activeLineBrush);
+                    activeLineBrush->Release();
+                }
+            }
+        }
+
         ID2D1SolidColorBrush *borderBrush = nullptr;
         D2D1_COLOR_F border = theme.lineNumberText;
         border.a = 0.24f;
@@ -74,7 +100,7 @@ namespace Orion
         ID2D1SolidColorBrush *textBrush = nullptr;
         ID2D1SolidColorBrush *activeTextBrush = nullptr;
         ctx->CreateSolidColorBrush(theme.lineNumberText, &textBrush);
-        ctx->CreateSolidColorBrush(theme.text, &activeTextBrush);
+        ctx->CreateSolidColorBrush(theme.activeLineNumberText, &activeTextBrush);
 
         int visibleCount = state.actualLineByVisual.empty()
             ? (int)state.lines.size()

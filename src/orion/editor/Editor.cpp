@@ -51,6 +51,7 @@ namespace Orion
         theme_.text = palette.inputText;
         theme_.caret = palette.inputCaret;
         theme_.lineNumberText = UI::Theme::MutedText();
+        theme_.activeLineNumberText = theme_.text;
         theme_.selection = palette.inputSelection;
 
         if (lightMode)
@@ -69,21 +70,24 @@ namespace Orion
         else
         {
             theme_.background = D2D1::ColorF(24.0f / 255.0f, 26.0f / 255.0f, 29.0f / 255.0f, 1.0f);
-            theme_.gutterBackground = D2D1::ColorF(22.0f / 255.0f, 24.0f / 255.0f, 27.0f / 255.0f, 1.0f);
-            theme_.text = D2D1::ColorF(0.82f, 0.84f, 0.87f, 1.0f);
-            theme_.caret = D2D1::ColorF(0.90f, 0.91f, 0.93f, 1.0f);
-            theme_.lineNumberText = D2D1::ColorF(0.40f, 0.43f, 0.47f, 1.0f);
-            theme_.selection = D2D1::ColorF(0.28f, 0.34f, 0.42f, 0.32f);
-            theme_.activeLineBackground = D2D1::ColorF(33.0f / 255.0f, 35.0f / 255.0f, 39.0f / 255.0f, 1.0f);
+            // Match JetBrains expUI dark editor palette more closely.
+            theme_.background = D2D1::ColorF(30.0f / 255.0f, 31.0f / 255.0f, 34.0f / 255.0f, 1.0f);          // 1e1f22
+            theme_.gutterBackground = theme_.background;
+            theme_.text = D2D1::ColorF(188.0f / 255.0f, 190.0f / 255.0f, 196.0f / 255.0f, 1.0f);             // bcbec4
+            theme_.caret = D2D1::ColorF(206.0f / 255.0f, 208.0f / 255.0f, 214.0f / 255.0f, 1.0f);            // ced0d6
+            theme_.lineNumberText = D2D1::ColorF(75.0f / 255.0f, 80.0f / 255.0f, 89.0f / 255.0f, 1.0f);      // 4b5059
+            theme_.activeLineNumberText = D2D1::ColorF(161.0f / 255.0f, 163.0f / 255.0f, 171.0f / 255.0f, 1.0f); // a1a3ab
+            theme_.selection = D2D1::ColorF(53.0f / 255.0f, 83.0f / 255.0f, 143.0f / 255.0f, 0.55f);         // 35538f
+            theme_.activeLineBackground = D2D1::ColorF(38.0f / 255.0f, 40.0f / 255.0f, 46.0f / 255.0f, 1.0f); // 26282e
 
-            theme_.keyword = D2D1::ColorF(0.73f, 0.62f, 0.45f, 1.0f);
-            theme_.string = D2D1::ColorF(0.58f, 0.67f, 0.52f, 1.0f);
-            theme_.comment = D2D1::ColorF(0.42f, 0.45f, 0.49f, 1.0f);
-            theme_.number = D2D1::ColorF(0.56f, 0.64f, 0.72f, 1.0f);
-            theme_.function = D2D1::ColorF(0.76f, 0.71f, 0.58f, 1.0f);
-            theme_.type = D2D1::ColorF(0.60f, 0.68f, 0.75f, 1.0f);
-            theme_.operator_ = D2D1::ColorF(0.72f, 0.75f, 0.79f, 1.0f);
-            theme_.variable = D2D1::ColorF(0.82f, 0.84f, 0.87f, 1.0f);
+            theme_.keyword = D2D1::ColorF(207.0f / 255.0f, 142.0f / 255.0f, 109.0f / 255.0f, 1.0f);          // cf8e6d
+            theme_.string = D2D1::ColorF(106.0f / 255.0f, 171.0f / 255.0f, 115.0f / 255.0f, 1.0f);           // 6aab73
+            theme_.comment = D2D1::ColorF(122.0f / 255.0f, 126.0f / 255.0f, 133.0f / 255.0f, 1.0f);          // 7a7e85
+            theme_.number = D2D1::ColorF(42.0f / 255.0f, 172.0f / 255.0f, 184.0f / 255.0f, 1.0f);            // 2aacb8
+            theme_.function = D2D1::ColorF(86.0f / 255.0f, 168.0f / 255.0f, 245.0f / 255.0f, 1.0f);          // 56a8f5
+            theme_.type = D2D1::ColorF(86.0f / 255.0f, 168.0f / 255.0f, 245.0f / 255.0f, 1.0f);              // inferred from JetBrains C++ dark rendering
+            theme_.operator_ = D2D1::ColorF(188.0f / 255.0f, 190.0f / 255.0f, 196.0f / 255.0f, 1.0f);        // bcbec4
+            theme_.variable = D2D1::ColorF(188.0f / 255.0f, 190.0f / 255.0f, 196.0f / 255.0f, 1.0f);         // bcbec4
         }
     }
 
