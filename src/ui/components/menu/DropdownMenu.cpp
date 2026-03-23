@@ -385,7 +385,7 @@ void DrawDropdownPanel(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, MenuDropd
 }
 }
 
-int GetHoveredMenuItem(HWND hwnd, POINT pt)
+int GetHoveredMenuItem([[maybe_unused]] HWND hwnd, POINT pt)
 {
     (void)hwnd;
     for (size_t i = 0; i < g_menuItems.size(); ++i)

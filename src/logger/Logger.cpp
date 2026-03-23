@@ -21,7 +21,7 @@ bool Logger::Init(const std::wstring &logPath)
         return true; // already initialized
 
     // Create logs directory if needed
-    size_t pos = logPath.find_last_of(L"/\\");
+    size_t pos = logPath.find_last_of(L"\\/");
     if (pos != std::wstring::npos)
     {
         std::wstring dir = logPath.substr(0, pos);

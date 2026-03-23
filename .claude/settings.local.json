@@ -1,7 +1,24 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python scripts/build.py --skip-configure)"
+      "Bash(python scripts/build.py --skip-configure)",
+      "Bash(powershell -ExecutionPolicy Bypass -File scripts/release.ps1 -Version 2.5.0 -SkipUpload)",
+      "Bash(cmd /c \"taskkill /IM Nebula.exe /F\")",
+      "Bash(cmd /c \"tasklist | findstr Nebula\")",
+      "Bash(cmd /c \"handle64 C:\\\\Users\\\\Rayan\\\\Desktop\\\\Nebula\\\\build\\\\Release\\\\Nebula.exe 2>nul\")",
+      "Bash(cmd /c \"fuser C:\\\\Users\\\\Rayan\\\\Desktop\\\\Nebula\\\\build\\\\Release\\\\Nebula.exe 2>nul\")",
+      "Bash(cmd /c \"del /F C:\\\\Users\\\\Rayan\\\\Desktop\\\\Nebula\\\\build\\\\Release\\\\Nebula.exe 2>&1\")",
+      "Bash(sed -i 's/std::vector<std::wstring> labels;/std::vector<CompletionPopup::PopupItem> labels;/g' \"c:/Users/Rayan/Desktop/Nebula/src/orion/editor/input/Editor_InputKeyboard.cpp\")",
+      "Bash(sed -i 's/labels.push_back\\(it.label\\);/labels.push_back\\({ it.label, it.description }\\);/g' \"c:/Users/Rayan/Desktop/Nebula/src/orion/editor/input/Editor_InputKeyboard.cpp\")",
+      "Bash(curl -s \"https://api.github.com/repos/clangd/clangd/releases/tags/18.1.8\")",
+      "Bash(python -c \"import sys,json; r=json.load\\(sys.stdin\\); [print\\(a[''''name''''], a[''''browser_download_url'''']\\) for a in r.get\\(''''assets'''',[]\\)]\")",
+      "Bash(curl -s \"https://api.github.com/repos/clangd/clangd/releases\")",
+      "Bash(python -c \"import sys,json; releases=json.load\\(sys.stdin\\); [print\\(r[''''tag_name'''']\\) for r in releases[:10]]\")",
+      "Bash(curl -s \"https://api.github.com/repos/clangd/clangd/releases/tags/18.1.3\")",
+      "Bash(python -c \"import sys,json; r=json.load\\(sys.stdin\\); print\\(r.get\\(''''message'''',''''ok''''\\)\\)\")",
+      "Bash(curl -s \"https://api.github.com/repos/mstorsjo/llvm-mingw/releases/latest\")",
+      "Bash(/tmp/summary.txt:*)",
+      "Read(//tmp/**)"
     ]
   }
 }

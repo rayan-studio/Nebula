@@ -209,6 +209,8 @@ struct KeyMods
     bool shift = false;
     bool alt = false;
 };
+#pragma warning(push)
+#pragma warning(disable: 4505)
 static KeyMods GetMods()
 {
     KeyMods m;
@@ -228,8 +230,9 @@ static bool KeyIsChar(WPARAM wParam, wchar_t cUpper)
     // WM_KEYDOWN donne virtual-key codes, pour lettres c'est 'A'..'Z'
     return (wParam == (WPARAM)cUpper);
 }
+#pragma warning(pop)
 
-bool Window::Create(int nCmdShow)
+bool Window::Create(int /*nCmdShow*/)
 {
     WNDCLASSEXW wcex = {};
     wcex.cbSize = sizeof(WNDCLASSEXW);
@@ -306,7 +309,7 @@ bool Window::Create(int nCmdShow)
     if (!hwnd_)
         return false;
 
-    ShowWindow(hwnd_, nCmdShow);
+    ShowWindow(hwnd_, SW_MAXIMIZE);
     UpdateWindow(hwnd_);
 
     SetWindowPos(hwnd_, NULL, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);

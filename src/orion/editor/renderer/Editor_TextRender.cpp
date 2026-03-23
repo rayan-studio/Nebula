@@ -339,10 +339,12 @@ namespace Orion
         }
 
         std::vector<Editor::Diagnostic> diagnostics = GetDiagnostics();
-        ID2D1SolidColorBrush *errorBrush = nullptr;
+        ID2D1SolidColorBrush *errorBrush   = nullptr;
         ID2D1SolidColorBrush *warningBrush = nullptr;
+        ID2D1SolidColorBrush *hintBrush    = nullptr;
         ctx->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.25f, 0.25f, 1.0f), &errorBrush);
         ctx->CreateSolidColorBrush(D2D1::ColorF(0.95f, 0.65f, 0.25f, 1.0f), &warningBrush);
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.50f, 0.50f, 0.50f, 0.7f), &hintBrush);
 
         for (int v = firstVisibleLine; v < lastVisibleLine; ++v)
         {
@@ -516,7 +518,9 @@ namespace Orion
                             std::vector<DWRITE_HIT_TEST_METRICS> metrics(count);
                             layout->HitTestTextRange((UINT32)start, (UINT32)length, drawX, drawY, metrics.data(), count, &count);
 
-                            ID2D1SolidColorBrush *lineBrush = diag.isError ? errorBrush : warningBrush;
+                            ID2D1SolidColorBrush *lineBrush = diag.isError ? errorBrush
+                                                             : diag.isHint  ? hintBrush
+                                                             :                warningBrush;
                             if (!lineBrush)
                                 continue;
 
@@ -556,6 +560,8 @@ namespace Orion
             errorBrush->Release();
         if (warningBrush)
             warningBrush->Release();
+        if (hintBrush)
+            hintBrush->Release();
     }
 
     D2D1_COLOR_F Editor::GetTokenColor(::Orion::Syntax::TokenType type, const std::wstring &ext) const

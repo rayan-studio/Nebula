@@ -5,18 +5,6 @@
 
 namespace UI
 {
-namespace
-{
-static D2D1_RECT_F PixelSnapRect(const D2D1_RECT_F &rect, float scale)
-{
-    return D2D1::RectF(
-        (std::floor(rect.left * scale) + 0.5f) / scale,
-        (std::floor(rect.top * scale) + 0.5f) / scale,
-        (std::floor(rect.right * scale) - 0.5f) / scale,
-        (std::floor(rect.bottom * scale) - 0.5f) / scale);
-}
-}
-
 void NewProjectCreateView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, const NewProjectRenderContext &rc)
 {
     const UI::Theme::Palette &palette = UI::Theme::GetPalette();

@@ -569,7 +569,7 @@ RECT TerminalPanel::ProblemsButtonRectClient() const
 {
     RECT plus = PlusButtonRectClient();
     int height = (int)TabsBarHeightPx();
-    int width = (int)std::round(height * 4.6f);
+    int width = static_cast<int>(std::round(height * 4.6f));
     RECT r;
     r.right = plus.left - 6;
     r.left = r.right - width;
@@ -582,7 +582,7 @@ RECT TerminalPanel::OutputButtonRectClient() const
 {
     RECT problems = ProblemsButtonRectClient();
     int height = (int)TabsBarHeightPx();
-    int width = (int)std::round(height * 4.1f);
+    int width = static_cast<int>(std::round(height * 4.1f));
     RECT r;
     r.right = problems.left - 6;
     r.left = r.right - width;
@@ -1534,50 +1534,112 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
             rt->CreateSolidColorBrush(themePalette.explorerRowActive, &rowHover);
             rt->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &rowBorder);
 
-            float y = contentRect.top + 12.0f;
-            float x = contentRect.left + 16.0f;
+            float y = contentRect.top + 10.0f;
             float lineH = fontSize_ + 6.0f;
 
-            std::wstring header = L"Problems";
-            rt->DrawTextW(header.c_str(), (UINT32)header.size(), listFormat,
-                          D2D1::RectF(x, y, contentRect.right - 8.0f, y + lineH), fg);
-            y += lineH + 4.0f;
+            // Muted brush for secondary info
+            ID2D1SolidColorBrush* mutedBrush = nullptr;
+            rt->CreateSolidColorBrush(UI::Theme::MutedText(), &mutedBrush);
 
-            problemsRowHeight_ = lineH;
-            problemsListRect_ = D2D1::RectF(contentRect.left + 8.0f, y, contentRect.right - 8.0f, contentRect.bottom - 8.0f);
+            // Bold format for file header
+            IDWriteTextFormat* boldFormat = nullptr;
+            dwrite->CreateTextFormat(
+                fontFamily_.c_str(), fontCollection_,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL, fontSize_, L"en-us", &boldFormat);
+            if (boldFormat)
+            {
+                boldFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                boldFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                boldFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            }
 
             if (problems_.empty())
             {
-                std::wstring empty = L"Aucun probleme detecte";
+                ID2D1SolidColorBrush* m = mutedBrush ? mutedBrush : fg;
+                std::wstring empty = L"Aucun probl\u00E8me d\u00E9tect\u00E9";
                 rt->DrawTextW(empty.c_str(), (UINT32)empty.size(), listFormat,
-                              D2D1::RectF(x, y, contentRect.right - 8.0f, y + lineH), fg);
+                              D2D1::RectF(contentRect.left + 16.0f, y, contentRect.right - 8.0f, y + lineH), m);
+                problemsRowHeight_ = lineH;
+                problemsListRect_ = D2D1::RectF(0,0,0,0);
             }
             else
             {
+                // --- File group header ---
+                // Extract short filename and directory from problemsFilePath_
+                std::wstring shortName = problemsFilePath_;
+                std::wstring dirPart;
+                size_t sl = problemsFilePath_.find_last_of(L"\\/");
+                if (sl != std::wstring::npos)
+                {
+                    shortName = problemsFilePath_.substr(sl + 1);
+                    dirPart   = problemsFilePath_.substr(0, sl);
+                }
+                int errCount  = 0, warnCount = 0;
+                for (const auto& p : problems_) { if (p.isError) errCount++; else warnCount++; }
+                std::wstring countStr = L"  " + std::to_wstring(problems_.size()) +
+                    (problems_.size() == 1 ? L" probl\u00E8me" : L" probl\u00E8mes");
+
+                float fileHeaderLeft = contentRect.left + 12.0f;
+
+                // Draw filename (bold, normal color)
+                if (boldFormat)
+                    rt->DrawTextW(shortName.c_str(), (UINT32)shortName.size(), boldFormat,
+                                  D2D1::RectF(fileHeaderLeft, y, contentRect.right - 8.0f, y + lineH), fg);
+
+                // Measure filename width to place dir after it
+                float nameW = 0.0f;
+                {
+                    IDWriteTextLayout* tl = nullptr;
+                    if (boldFormat && SUCCEEDED(dwrite->CreateTextLayout(shortName.c_str(), (UINT32)shortName.size(),
+                                                boldFormat, 9999.0f, lineH, &tl)))
+                    {
+                        DWRITE_TEXT_METRICS tm; tl->GetMetrics(&tm); nameW = tm.width; tl->Release();
+                    }
+                }
+
+                // Dir + count in muted color
+                std::wstring afterName = L"  " + dirPart + countStr;
+                if (mutedBrush)
+                    rt->DrawTextW(afterName.c_str(), (UINT32)afterName.size(), listFormat,
+                                  D2D1::RectF(fileHeaderLeft + nameW, y, contentRect.right - 8.0f, y + lineH), mutedBrush);
+
+                y += lineH + 4.0f;
+
+                // --- Problem rows ---
+                problemsRowHeight_ = lineH;
+                problemsListRect_ = D2D1::RectF(contentRect.left + 8.0f, y, contentRect.right - 8.0f, contentRect.bottom - 8.0f);
+
                 rt->PushAxisAlignedClip(contentRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
                 int idx = 0;
                 for (const auto& p : problems_)
                 {
-                    float rowLeft = contentRect.left + 8.0f;
+                    float rowLeft  = contentRect.left + 8.0f;
                     float rowRight = contentRect.right - 8.0f;
-                    float rowTop = y - 2.0f;
-                    float rowBottom = y + lineH + 2.0f;
-                    D2D1_RECT_F rowRect = D2D1::RectF(rowLeft, rowTop, rowRight, rowBottom);
+                    D2D1_RECT_F rowRect = D2D1::RectF(rowLeft, y - 1.0f, rowRight, y + lineH + 1.0f);
 
-                    if (idx % 2 == 1 && rowAlt)
-                        rt->FillRectangle(rowRect, rowAlt);
                     if (idx == hoveredProblemIndex_ && rowHover)
-                        rt->FillRectangle(rowRect, rowHover);
-                    if (idx == hoveredProblemIndex_ && rowBorder)
-                        rt->DrawRectangle(rowRect, rowBorder, 1.0f);
+                        rt->FillRoundedRectangle(D2D1::RoundedRect(rowRect, 3.0f, 3.0f), rowHover);
 
-                    ID2D1SolidColorBrush* lineBrush = p.isError ? errorBrush : warningBrush;
-                    std::wstring line = (p.isError ? L"Error " : L"Warning ") +
-                        p.fileName + L":" + std::to_wstring(p.line) + L":" + std::to_wstring(p.column) + L" " + p.message;
-                    if (!p.suggestion.empty())
-                        line += L" | Suggestion: " + p.suggestion;
-                    rt->DrawTextW(line.c_str(), (UINT32)line.size(), listFormat,
-                                  D2D1::RectF(x, y, contentRect.right - 8.0f, y + lineH), lineBrush ? lineBrush : fg);
+                    ID2D1SolidColorBrush* iconBrush = p.isError ? errorBrush : warningBrush;
+
+                    // Icon: ● (error) or ▲ (warning)
+                    float iconX = contentRect.left + 16.0f;
+                    std::wstring icon = p.isError ? L"\u25CF" : L"\u25B2";
+                    rt->DrawTextW(icon.c_str(), (UINT32)icon.size(), listFormat,
+                                  D2D1::RectF(iconX, y, iconX + lineH, y + lineH), iconBrush ? iconBrush : fg);
+
+                    // Message text
+                    float msgX = iconX + lineH + 2.0f;
+                    rt->DrawTextW(p.message.c_str(), (UINT32)p.message.size(), listFormat,
+                                  D2D1::RectF(msgX, y, rowRight - 40.0f, y + lineH), fg);
+
+                    // Line number right-aligned
+                    std::wstring lineNum = L":" + std::to_wstring(p.line);
+                    if (mutedBrush)
+                        rt->DrawTextW(lineNum.c_str(), (UINT32)lineNum.size(), listFormat,
+                                      D2D1::RectF(rowRight - 38.0f, y, rowRight, y + lineH), mutedBrush);
+
                     y += lineH;
                     idx++;
                     if (y > contentRect.bottom - lineH)
@@ -1585,6 +1647,9 @@ void TerminalPanel::Draw(ID2D1RenderTarget* rt, IDWriteFactory* dwrite, HWND hwn
                 }
                 rt->PopAxisAlignedClip();
             }
+
+            if (boldFormat) boldFormat->Release();
+            if (mutedBrush) mutedBrush->Release();
 
             if (errorBrush)
                 errorBrush->Release();

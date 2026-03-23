@@ -9,6 +9,7 @@ namespace Orion::Completion
     {
         std::wstring label;
         std::wstring insertText;
+        std::wstring description; // right-side hint: "std", "project", "sdk", etc.
         bool isSnippet = false;
     };
 

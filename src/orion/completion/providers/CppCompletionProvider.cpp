@@ -353,13 +353,46 @@ namespace Orion::Completion
             if (lt != std::wstring::npos && lt > posInclude)
             {
                 size_t start = lt + 1;
-                size_t end = ctx.column;
+                size_t end   = ctx.column;
                 if (end < start) end = start;
                 std::wstring prefix = line.substr(start, end - start);
-                auto suggestions = GetIncludeSuggestions(prefix);
-                for (const auto& s : suggestions)
-                    items.push_back({ s, s, false });
-                return items;
+                return GetIncludeSuggestions(prefix);
+            }
+        }
+        
+        // Check for "using namespace" completions
+        size_t posUsing = line.rfind(L"using", ctx.column);
+        if (posUsing != std::wstring::npos)
+        {
+            size_t usingEnd = posUsing + 5; // length of "using"
+            if (usingEnd < ctx.column)
+            {
+                std::wstring afterUsing = line.substr(usingEnd, ctx.column - usingEnd);
+                
+                // Check if we have "using namespace "
+                if (afterUsing.find(L"namespace") != std::wstring::npos)
+                {
+                    size_t namespacePos = afterUsing.find(L"namespace");
+                    size_t namespaceEnd = namespacePos + 9; // length of "namespace"
+                    
+                    if (namespaceEnd <= afterUsing.length())
+                    {
+                        std::wstring afterNamespace = afterUsing.substr(namespaceEnd);
+                        size_t firstNonSpace = afterNamespace.find_first_not_of(L" \t");
+                        
+                        if (firstNonSpace == std::wstring::npos)
+                        {
+                            // "using namespace " with nothing after
+                            return GetUsingSuggestions(L"");
+                        }
+                        else
+                        {
+                            // Extract what comes after "using namespace "
+                            std::wstring prefix = afterNamespace.substr(firstNonSpace);
+                            return GetUsingSuggestions(prefix);
+                        }
+                    }
+                }
             }
         }
         
@@ -369,27 +402,32 @@ namespace Orion::Completion
         
         for (const auto& item : lspItems)
         {
-            items.push_back({
-                item.label,
-                item.description,
-                false  // not a snippet
-            });
+            items.push_back({ item.label, item.label, item.description, false });
         }
         
         return items;
     }
 
-    std::vector<std::wstring> CppCompletionProvider::GetIncludeSuggestions(const std::wstring& prefix) const
+    std::vector<CompletionItem> CppCompletionProvider::GetIncludeSuggestions(const std::wstring& prefix) const
     {
         EnsureHeaderIndexAsync();
         std::vector<std::filesystem::path> roots;
         AppendIncludeRoots(roots);
 
-        std::vector<std::wstring> out;
-        
-        // First, add standard C++ headers that match the prefix
+        std::vector<CompletionItem> out;
+        std::unordered_set<std::wstring> seen;
+
+        // Helper to lowercase a string
+        auto toLower = [](std::wstring s) {
+            for (auto& c : s) c = towlower(c);
+            return s;
+        };
+
+        std::wstring lowerPrefix = toLower(prefix);
+
+        // 1. Standard C++ headers
         static const std::vector<std::wstring> stdHeaders = {
-            L"algorithm", L"array", L"atomic", L"bitset", L"chrono", 
+            L"algorithm", L"array", L"atomic", L"bitset", L"chrono",
             L"codecvt", L"complex", L"condition_variable", L"deque",
             L"exception", L"filesystem", L"fstream", L"functional",
             L"future", L"initializer_list", L"iomanip", L"ios",
@@ -401,29 +439,30 @@ namespace Orion::Completion
             L"thread", L"tuple", L"type_traits", L"typeinfo", L"unordered_map",
             L"unordered_set", L"utility", L"valarray", L"variant", L"vector"
         };
-        
-        // Helper to lowercase a string
-        auto toLower = [](std::wstring s) {
-            for (auto& c : s) c = towlower(c);
-            return s;
-        };
-        
-        std::wstring lowerPrefix = toLower(prefix);
-        
-        // Add matching std headers
-        for (const auto& header : stdHeaders)
+
+        for (const auto& h : stdHeaders)
         {
-            std::wstring lowerHeader = toLower(header);
-            // Match if starts with prefix or contains prefix
-            if (lowerHeader.find(lowerPrefix) == 0 || lowerPrefix.empty())
+            std::wstring low = toLower(h);
+            if (lowerPrefix.empty() || low.find(lowerPrefix) == 0)
             {
-                out.push_back(header);
+                seen.insert(h);
+                out.push_back({ h, h, L"std", false });
             }
         }
-        
-        // Then add project headers
-        AddDirectSuggestions(roots, prefix, out);
 
+        // 2. Project headers (from src / include / project root)
+        {
+            std::vector<std::wstring> projOut;
+            AddDirectSuggestions(roots, prefix, projOut);
+            for (const auto& h : projOut)
+            {
+                if (seen.insert(h).second)
+                    out.push_back({ h, h, L"project", false });
+                if (out.size() >= 200) return out;
+            }
+        }
+
+        // 3. SDK / system headers from background index
         if (!g_headerReady.load())
             return out;
 
@@ -436,18 +475,60 @@ namespace Orion::Completion
         for (const auto& h : snapshot)
         {
             if (out.size() >= 200) break;
-            if (prefix.empty())
-                out.push_back(h);
-            else
+            bool matches = lowerPrefix.empty();
+            if (!matches)
             {
-                std::wstring low = h;
-                std::wstring lp = prefix;
-                for (auto& c : low) c = towlower(c);
-                for (auto& c : lp) c = towlower(c);
-                if (low.rfind(lp, 0) == 0 || low.find(lp) != std::wstring::npos)
-                    out.push_back(h);
+                std::wstring low = toLower(h);
+                matches = low.rfind(lowerPrefix, 0) == 0 || low.find(lowerPrefix) != std::wstring::npos;
+            }
+            if (matches && seen.insert(h).second)
+                out.push_back({ h, h, L"sdk", false });
+        }
+        return out;
+    }
+
+    std::vector<CompletionItem> CppCompletionProvider::GetUsingSuggestions(const std::wstring& prefix) const
+    {
+        std::vector<CompletionItem> out;
+        
+        // Helper to lowercase a string
+        auto toLower = [](std::wstring s) {
+            for (auto& c : s) c = towlower(c);
+            return s;
+        };
+        
+        std::wstring lowerPrefix = toLower(prefix);
+        
+        // Common C++ namespaces
+        static const std::vector<std::pair<std::wstring, std::wstring>> commonNamespaces = {
+            { L"std", L"std" },
+            { L"chrono", L"std" },
+            { L"filesystem", L"std" },
+            { L"thread", L"std" },
+            { L"memory", L"std" },
+            { L"algorithm", L"std" },
+            { L"functional", L"std" },
+            { L"utility", L"std" },
+            { L"string", L"std" },
+            { L"vector", L"std" },
+            { L"map", L"std" },
+            { L"set", L"std" },
+            { L"unordered_map", L"std" },
+            { L"unordered_set", L"std" },
+        };
+        
+        for (const auto& [ns, origin] : commonNamespaces)
+        {
+            std::wstring low = toLower(ns);
+            if (lowerPrefix.empty() || low.find(lowerPrefix) == 0)
+            {
+                out.push_back({ ns, ns, origin, false });
             }
         }
+        
+        // TODO: Parse file for custom namespaces
+        // For now, just return common ones
+        
         return out;
     }
 }

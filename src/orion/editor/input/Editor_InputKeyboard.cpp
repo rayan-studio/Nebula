@@ -812,8 +812,8 @@ namespace Orion
             // show pending completion label
             if (pendingCompletionShow_ && completionPopup_)
             {
-                std::vector<std::wstring> items;
-                items.push_back(pendingCompletionLabel_.empty() ? L"Snippet" : pendingCompletionLabel_);
+                std::vector<CompletionPopup::PopupItem> items;
+                items.push_back({ pendingCompletionLabel_.empty() ? L"Snippet" : pendingCompletionLabel_, L"" });
                 completionPopup_->SetItems(items);
                 D2D1_POINT_2F p = TextToScreenPosition(state_.caret);
                 completionPopup_->UpdateLayout(p.x, p.y + metrics_.lineHeight, 520.0f, metrics_.lineHeight);
@@ -835,10 +835,10 @@ namespace Orion
                     auto items = completionService_->GetCompletions(ctx);
                     if (!items.empty())
                     {
-                        std::vector<std::wstring> labels;
+                        std::vector<CompletionPopup::PopupItem> labels;
                         labels.reserve(items.size());
                         for (const auto &it : items)
-                            labels.push_back(it.label);
+                            labels.push_back({ it.label, it.description });
 
                         completionPopup_->SetItems(labels);
                         D2D1_POINT_2F p = TextToScreenPosition(state_.caret);
@@ -951,10 +951,10 @@ namespace Orion
             auto items = completionService_->GetCompletions(ctx);
             if (!items.empty())
             {
-                std::vector<std::wstring> labels;
+                std::vector<CompletionPopup::PopupItem> labels;
                 labels.reserve(items.size());
                 for (const auto &it : items)
-                    labels.push_back(it.label);
+                    labels.push_back({ it.label, it.description });
 
                 if (items[0].isSnippet)
                 {
@@ -1554,10 +1554,10 @@ namespace Orion
                     auto items = completionService_->GetCompletions(ctx);
                     if (!items.empty())
                     {
-                        std::vector<std::wstring> labels;
+                        std::vector<CompletionPopup::PopupItem> labels;
                         labels.reserve(items.size());
                         for (const auto &it : items)
-                            labels.push_back(it.label);
+                            labels.push_back({ it.label, it.description });
 
                         completionPopup_->SetItems(labels);
                         D2D1_POINT_2F p = TextToScreenPosition(state_.caret);

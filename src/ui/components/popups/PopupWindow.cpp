@@ -38,8 +38,8 @@ static void SafeRelease(T *&p)
 static int GetHeaderHeightPx(HWND hwnd)
 {
     UINT dpi = win32_get_dpi_for_window(hwnd);
-    float scale = (float)dpi / 96.0f;
-    int headerH = (int)std::round(36.0f * scale);
+    float scale = static_cast<float>(dpi) / 96.0f;
+    int headerH = static_cast<int>(std::lround(36.0f * scale));
     return (std::max)(30, headerH);
 }
 

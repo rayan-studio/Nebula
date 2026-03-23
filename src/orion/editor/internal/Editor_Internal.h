@@ -12,27 +12,4 @@
 
 namespace Orion
 {
-    static bool SafeHitTestTextPosition(
-        IDWriteTextLayout* layout,
-        UINT32 textPosition,
-        FLOAT* outX,
-        FLOAT* outY,
-        DWRITE_HIT_TEST_METRICS* outMetrics)
-    {
-        if (!layout || !outX || !outY || !outMetrics)
-            return false;
-
-    #ifdef _MSC_VER
-        __try {
-            HRESULT hr = layout->HitTestTextPosition(textPosition, FALSE, outX, outY, outMetrics);
-            return SUCCEEDED(hr);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
-            return false;
-        }
-    #else
-        HRESULT hr = layout->HitTestTextPosition(textPosition, FALSE, outX, outY, outMetrics);
-        return SUCCEEDED(hr);
-    #endif
-    }
 }

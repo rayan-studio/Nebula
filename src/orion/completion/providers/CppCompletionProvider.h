@@ -13,6 +13,7 @@ namespace Orion::Completion
         std::vector<CompletionItem> GetCompletions(const CompletionContext& ctx) override;
 
     private:
-        std::vector<std::wstring> GetIncludeSuggestions(const std::wstring& prefix) const;
+        std::vector<CompletionItem> GetIncludeSuggestions(const std::wstring& prefix) const;
+        std::vector<CompletionItem> GetUsingSuggestions(const std::wstring& prefix) const;
     };
 }

@@ -82,11 +82,11 @@ bool GGWavePanel::IsPointInPopup(POINT pt) const {
 // Events
 // ============================================================================
 
-void GGWavePanel::OnMouseMove(HWND /*hwnd*/, POINT clientPoint) {
+void GGWavePanel::OnMouseMove([[maybe_unused]] HWND hwnd, POINT clientPoint) {
     buttonHovered_ = IsPointOnButton(clientPoint);
 }
 
-void GGWavePanel::OnLeftButtonDown(HWND /*hwnd*/, POINT clientPoint) {
+void GGWavePanel::OnLeftButtonDown([[maybe_unused]] HWND hwnd, POINT clientPoint) {
     if (IsPointOnButton(clientPoint)) {
         buttonPressed_ = true;
     } else if (IsPointInPopup(clientPoint)) {

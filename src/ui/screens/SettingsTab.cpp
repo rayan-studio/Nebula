@@ -104,7 +104,7 @@ void SettingsTabView::UpdateLayout(HWND hwnd, float left, float top, float right
     style.padding = 8.0f * scale;
 }
 
-void SettingsTabView::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
+void SettingsTabView::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, [[maybe_unused]] HWND hwnd)
 {
     (void)hwnd;
     if (!ctx || !dwrite)

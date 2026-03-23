@@ -1,11 +1,12 @@
 #include "helpers/window_helpers.h"
 #include <uxtheme.h>
 #include <vssym32.h>
+#include <cmath>
 
 #pragma comment(lib, "uxtheme.lib")
 
 int win32_dpi_scale(int value, UINT dpi) {
-    return (int)((float)value * dpi / 96);
+    return static_cast<int>(std::lround(static_cast<float>(value) * static_cast<float>(dpi) / 96.0f));
 }
 
 UINT win32_get_dpi_for_window(HWND handle) {

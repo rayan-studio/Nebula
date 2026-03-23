@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-set(NEBULA_APP_VERSION "1.0.0" CACHE STRING "Nebula application version")
+set(NEBULA_APP_VERSION "2.5.0" CACHE STRING "Nebula application version")
 
 # ========================================
 # Configuration libvterm (neovim version)

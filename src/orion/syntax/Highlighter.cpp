@@ -23,12 +23,15 @@ static const std::unordered_set<std::wstring> cppKeywords = {
     L"inline", L"virtual", L"override", L"public", L"private", L"protected",
     L"namespace", L"using", L"class", L"struct", L"enum", L"template",
     L"typename", L"this", L"new", L"delete", L"try", L"catch", L"throw",
-    L"nullptr", L"true", L"false"
+    L"nullptr", L"true", L"false",
+    // Primitive types as keywords (matches CLion / JetBrains coloring)
+    L"int", L"float", L"double", L"char", L"bool", L"void", L"long", L"short",
+    L"unsigned", L"signed", L"auto", L"decltype", L"explicit", L"extern",
+    L"register", L"volatile", L"mutable", L"noexcept", L"final", L"default"
 };
 
 static const std::unordered_set<std::wstring> cppTypes = {
-    L"int", L"float", L"double", L"char", L"bool", L"void", L"long", L"short",
-    L"size_t", L"std", L"auto",
+    L"size_t", L"std",
     L"string", L"wstring", L"string_view", L"vector", L"array", L"deque", L"list", L"forward_list",
     L"map", L"set", L"unordered_map", L"unordered_set", L"pair", L"tuple", L"optional", L"variant",
     L"regex", L"smatch", L"wregex", L"basic_regex",

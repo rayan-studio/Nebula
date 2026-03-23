@@ -17,15 +17,6 @@ static float AlignToPixel(float value, float scale)
     return (std::floor(value * scale) + 0.5f) / scale;
 }
 
-static D2D1_RECT_F PixelSnapRect(const D2D1_RECT_F &rect, float scale)
-{
-    return D2D1::RectF(
-        (std::floor(rect.left * scale) + 0.5f) / scale,
-        (std::floor(rect.top * scale) + 0.5f) / scale,
-        (std::floor(rect.right * scale) - 0.5f) / scale,
-        (std::floor(rect.bottom * scale) - 0.5f) / scale);
-}
-
 static std::wstring GetDefaultSourceReposPath()
 {
     PWSTR profilePath = nullptr;
@@ -39,6 +30,8 @@ static std::wstring GetDefaultSourceReposPath()
     return out;
 }
 
+#pragma warning(push)
+#pragma warning(disable: 4505)  // unreferenced function with internal linkage
 static std::wstring ToLowerCopy(std::wstring value)
 {
     std::transform(value.begin(), value.end(), value.begin(),

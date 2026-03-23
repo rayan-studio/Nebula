@@ -1018,8 +1018,8 @@ namespace
         }
 
         const int oversample = 2;
-        int scaledW = (int)std::ceil(targetW * (float)oversample);
-        int scaledH = (int)std::ceil(targetH * (float)oversample);
+        int scaledW = static_cast<int>(std::ceil(targetW * (float)oversample));
+        int scaledH = static_cast<int>(std::ceil(targetH * (float)oversample));
         if (scaledW <= 0 || scaledH <= 0)
         {
             nsvgDelete(image);

@@ -1,3 +1,4 @@
+#pragma warning(disable: 4505)
 #include "core/window/Window.h"
 #include "core/explorer/Explorer.h"
 #include <windows.h>

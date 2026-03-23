@@ -284,7 +284,7 @@ namespace Orion
         return true;
     }
 
-    void Editor::UpdateLayout(HWND hwnd, float left, float top, float right, float bottom)
+    void Editor::UpdateLayout([[maybe_unused]] HWND hwnd, float left, float top, float right, float bottom)
     {
         (void)hwnd;
         state_.leftEdge = left;
@@ -768,7 +768,7 @@ namespace Orion
             std::string iconPath = isCollapsed
                 ? "assets\\ressource\\icons\\chevron-right.svg"
                 : "assets\\ressource\\icons\\chevron-up.svg";
-            ID2D1Bitmap *bmp = GetExplorerManager().LoadSvgIconPublic(ctx, iconPath, (int)std::round(arrowSize), dpi);
+            ID2D1Bitmap *bmp = GetExplorerManager().LoadSvgIconPublic(ctx, iconPath, static_cast<int>(std::round(arrowSize)), dpi);
             if (!bmp)
                 continue;
 

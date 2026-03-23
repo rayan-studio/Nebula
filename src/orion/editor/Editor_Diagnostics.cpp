@@ -67,12 +67,30 @@ namespace Orion
 
         std::optional<std::filesystem::path> FindCompilationDatabase(const std::filesystem::path &filePath)
         {
+            // Common build subdirectory names (CLion uses cmake-build-*, VS uses out/, etc.)
+            static const std::vector<std::wstring> kBuildDirs = {
+                L"cmake-build-debug", L"cmake-build-release",
+                L"cmake-build-relwithdebinfo", L"cmake-build-minsizerel",
+                L"build", L"Build", L"out", L"Out", L"_build", L".build",
+                L"x64", L"x86",
+            };
+
             std::filesystem::path dir = filePath.parent_path();
             std::error_code ec;
             while (!dir.empty())
             {
+                // Check directly in this directory
                 if (std::filesystem::exists(dir / "compile_commands.json", ec))
                     return dir;
+
+                // Check in common build subdirectories
+                for (const auto &bd : kBuildDirs)
+                {
+                    std::filesystem::path candidate = dir / bd / "compile_commands.json";
+                    if (std::filesystem::exists(candidate, ec))
+                        return dir / bd;
+                }
+
                 if (dir == dir.root_path())
                     break;
                 dir = dir.parent_path();
@@ -118,6 +136,7 @@ namespace Orion
             out.startCol = d.startCol;
             out.endCol = d.endCol;
             out.isError = (d.severity == Lsp::DiagnosticSeverity::Error);
+            out.isHint  = (d.severity == Lsp::DiagnosticSeverity::Info);
             out.message = d.message;
             out.suggestion = d.suggestion;
             converted.push_back(std::move(out));

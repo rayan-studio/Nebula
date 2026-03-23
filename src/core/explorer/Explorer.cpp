@@ -2896,13 +2896,13 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
 
                 DrawIndentGuides(item, baseLeft);
 
-                ExplorerItem previewItem;
-                previewItem.name = inlineText_;
-                previewItem.fullPath = inlineText_;
-                previewItem.isDirectory = isFolderPreview;
-                if (!previewItem.isDirectory)
-                    previewItem.extension = std::filesystem::path(inlineText_).extension().string();
-                ID2D1Bitmap *previewIcon = GetIconForItem(ctx, previewItem, hwnd);
+                ExplorerItem inlinePreviewItem;
+                inlinePreviewItem.name = inlineText_;
+                inlinePreviewItem.fullPath = inlineText_;
+                inlinePreviewItem.isDirectory = isFolderPreview;
+                if (!inlinePreviewItem.isDirectory)
+                    inlinePreviewItem.extension = std::filesystem::path(inlineText_).extension().string();
+                ID2D1Bitmap *previewIcon = GetIconForItem(ctx, inlinePreviewItem, hwnd);
                 if (previewIcon)
                 {
                     float iconY = std::round(item.yPosition + (item.height - iconPx) * 0.5f);
@@ -2953,13 +2953,13 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
                 // File icon preview (based on typed extension)
                 if (inlineType_ == Input::Type::File)
                 {
-                    ExplorerItem previewItem;
-                    previewItem.isDirectory = false;
+                    ExplorerItem inlineFileItem;
+                    inlineFileItem.isDirectory = false;
                     if (!inlineText_.empty())
                     {
-                        previewItem.extension = std::filesystem::path(inlineText_).extension().string();
+                        inlineFileItem.extension = std::filesystem::path(inlineText_).extension().string();
                     }
-                    ID2D1Bitmap *icon = GetIconForItem(ctx, previewItem, hwnd);
+                    ID2D1Bitmap *icon = GetIconForItem(ctx, inlineFileItem, hwnd);
                     if (icon)
                     {
                         float iconY = std::round(item.yPosition + (item.height - iconPx) * 0.5f);
@@ -3018,7 +3018,6 @@ void ExplorerManager::DrawItems(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
                         {
                             DWRITE_TEXT_METRICS metrics;
                             selLayout->GetMetrics(&metrics);
-                            float fullWidth = metrics.width;
                             std::wstring before = inlineText_.substr(0, a);
                             std::wstring selected = inlineText_.substr(0, b);
 
@@ -3432,7 +3431,7 @@ void ExplorerManager::OnCharSearch(wchar_t ch)
     {
         UpdateSearchResults();
     }
-    catch (const std::exception &e)
+    catch (const std::exception &)
     {
         Logger::Instance().Log(L"Explorer: UpdateSearchResults exception");
     }

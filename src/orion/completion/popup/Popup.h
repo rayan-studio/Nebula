@@ -10,6 +10,12 @@ namespace Orion
     class CompletionPopup
     {
     public:
+        struct PopupItem
+        {
+            std::wstring label;
+            std::wstring description; // right-side hint (e.g. "std", "project", "sdk")
+        };
+
         CompletionPopup();
         ~CompletionPopup();
 
@@ -17,7 +23,7 @@ namespace Orion
         void Hide();
         bool IsVisible() const { return visible_; }
 
-        void SetItems(const std::vector<std::wstring>& items);
+        void SetItems(const std::vector<PopupItem>& items);
         const std::wstring& GetSelectedItem() const;
 
         void UpdateLayout(float x, float y, float maxWidth, float itemHeight);
@@ -34,7 +40,7 @@ namespace Orion
 
     private:
         bool visible_ = false;
-        std::vector<std::wstring> items_;
+        std::vector<PopupItem> items_;
         int selected_ = 0;
         D2D1_RECT_F rect_;
         float itemHeight_ = 20.0f;

@@ -6,22 +6,6 @@
 
 namespace UI
 {
-namespace
-{
-static std::wstring GetDefaultSourceReposPath()
-{
-    PWSTR profilePath = nullptr;
-    std::wstring out;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Profile, 0, nullptr, &profilePath)) && profilePath)
-    {
-        std::filesystem::path base(profilePath);
-        CoTaskMemFree(profilePath);
-        out = (base / L"source" / L"repos").wstring();
-    }
-    return out;
-}
-}
-
 void NewProjectHomeView::Draw(Window &window, ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, const NewProjectRenderContext &rc)
 {
     (void)dwrite;

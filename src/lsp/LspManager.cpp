@@ -1,15 +1,27 @@
 #include "LspManager.h"
+#include "ClangdClient.h"
 #include "core/window/Window.h"
 #include "utils/logger/Logger.h"
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
 #include <thread>
+#include <chrono>
 #include <cwctype>
 #include <unordered_set>
 
 namespace Lsp
 {
+    static std::string WideToUtf8(const std::wstring& w)
+    {
+        if (w.empty()) return {};
+        int size = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+        if (size <= 0) return {};
+        std::string result(size, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), result.data(), size, nullptr, nullptr);
+        return result;
+    }
+
     // Standard Library completions database
     static const std::vector<CompletionItem> GetStdCompletions()
     {
@@ -208,20 +220,18 @@ namespace Lsp
 
         if (!projectRoot.empty())
         {
-            AddPathIfExists(roots,  std::filesystem::path(projectRoot) /"external" /"Nebula Studio 2026" /"toolchains" /"mingw64" /"include" /"c++");
-            AddPathIfExists(roots,  std::filesystem::path(projectRoot) /"external" /"Nebula Studio 2026" /"toolchains" /"mingw64" /"include");
-            AddPathIfExists(roots,  std::filesystem::path(projectRoot) /"external" /"toolchains" /"mingw64" /"include" /"c++");
-            AddPathIfExists(roots,  std::filesystem::path(projectRoot) /"external" /"toolchains" /"mingw64" /"include");
+            AddPathIfExists(roots,  std::filesystem::path(projectRoot) /"external" /"mingw" /"include" /"c++");
+            AddPathIfExists(roots,  std::filesystem::path(projectRoot) /"external" /"mingw" /"include");
         }
 
         std::wstring exeDir = GetExeDir();
         for (int i = 0; i < 5 && !exeDir.empty(); ++i)
         {
             std::filesystem::path base(exeDir);
-            AddPathIfExists(roots,  base /"external" /"Nebula Studio 2026" /"toolchains" /"mingw64" /"include" /"c++");
-            AddPathIfExists(roots,  base /"external" /"Nebula Studio 2026" /"toolchains" /"mingw64" /"include");
-            AddPathIfExists(roots,  base /"toolchains" /"mingw64" /"include" /"c++");
-            AddPathIfExists(roots,  base /"toolchains" /"mingw64" /"include");
+            AddPathIfExists(roots,  base /"external" /"mingw" /"include" /"c++");
+            AddPathIfExists(roots,  base /"external" /"mingw" /"include");
+            AddPathIfExists(roots,  base /"mingw" /"include" /"c++");
+            AddPathIfExists(roots,  base /"mingw" /"include");
             size_t pos = exeDir.find_last_of(L"\\/");
             if (pos == std::wstring::npos)
             break;
@@ -540,6 +550,17 @@ namespace Lsp
             projectRoot_ = NormalizePath(rootPath);
         }
         StartProjectIndexAsync();
+
+        // Start the real clangd LSP client for this project
+        ClangdClient::Instance().Start(rootPath);
+        ClangdClient::Instance().SetDiagnosticsCallback(
+            [](const std::wstring& filePath, int tabIndex, HWND hwnd, const std::vector<Diagnostic>& diags) {
+                auto* payload = new LspDiagnosticsResult();
+                payload->tabIndex   = tabIndex;
+                payload->filePath   = filePath;
+                payload->diagnostics = diags;
+                PostMessageW(hwnd, WM_LSP_DIAGNOSTICS, 0, (LPARAM)payload);
+            });
     }
 
     void LspManager::StartProjectIndexAsync()
@@ -1638,26 +1659,68 @@ namespace Lsp
         std::wstring pathCopy = filePath;
         std::vector<std::wstring> linesCopy = lines;
 
-        std::thread([this,  hwnd,  tabIndex,  pathCopy,  linesCopy]()
-        {
-            auto diags = AnalyzeDiagnostics(pathCopy,  linesCopy);
-            {
-                std::lock_guard<std::mutex> lk(mutex_);
-                diagnostics_[pathCopy] = diags;
-            }
+        // Register context so clangd callback can post WM_LSP_DIAGNOSTICS
+        ClangdClient::Instance().SetContext(pathCopy, hwnd, tabIndex);
 
-            auto *payload = new LspDiagnosticsResult();
-            payload->tabIndex = tabIndex;
-            payload->filePath = pathCopy;
-            payload->diagnostics = std::move(diags);
-            PostMessageW(hwnd,  WM_LSP_DIAGNOSTICS,  0,  (LPARAM)payload);
-        })
-        .detach();
+        // Send file content to clangd (if running) for real diagnostics
+        if (ClangdClient::Instance().IsRunning()) {
+            std::string content;
+            content.reserve(linesCopy.size() * 40);
+            for (size_t i = 0; i < linesCopy.size(); i++) {
+                content += WideToUtf8(linesCopy[i]);
+                if (i + 1 < linesCopy.size()) content += "\n";
+            }
+            static std::unordered_map<std::wstring, int> s_versions;
+            static std::mutex s_versionsMutex;
+            int ver = 0;
+            {
+                std::lock_guard<std::mutex> lk(s_versionsMutex);
+                ver = ++s_versions[pathCopy];
+            }
+            if (ver == 1) {
+                ClangdClient::Instance().DidOpen(pathCopy, content, 1);
+            } else {
+                // Debounce: envoyer à clangd 300ms après le dernier keystroke
+                {
+                    std::lock_guard<std::mutex> lk(mutex_);
+                    clangdPendingVer_[pathCopy] = ver;
+                }
+                std::thread([this, pathCopy, content, ver]() {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                    std::lock_guard<std::mutex> lk(mutex_);
+                    auto it = clangdPendingVer_.find(pathCopy);
+                    if (it != clangdPendingVer_.end() && it->second == ver) {
+                        ClangdClient::Instance().DidChange(pathCopy, content, ver);
+                        clangdPendingVer_.erase(it);
+                    }
+                }).detach();
+            }
+        }
+
+        // Quand clangd tourne, il fournit des diagnostics complets et précis.
+        // L'analyse locale ne doit pas écraser les résultats de clangd.
+        if (!ClangdClient::Instance().IsRunning()) {
+            std::thread([this,  hwnd,  tabIndex,  pathCopy,  linesCopy]()
+            {
+                auto diags = AnalyzeDiagnostics(pathCopy,  linesCopy);
+                {
+                    std::lock_guard<std::mutex> lk(mutex_);
+                    diagnostics_[pathCopy] = diags;
+                }
+
+                auto *payload = new LspDiagnosticsResult();
+                payload->tabIndex = tabIndex;
+                payload->filePath = pathCopy;
+                payload->diagnostics = std::move(diags);
+                PostMessageW(hwnd,  WM_LSP_DIAGNOSTICS,  0,  (LPARAM)payload);
+            })
+            .detach();
+        }
     }
 
     std::optional<Location> LspManager::ResolveIncludeAtCursor(const std::wstring &filePath,
     const std::wstring &lineText,
-    int column) const
+    int /*column*/) const
     {
         std::wstring projectRootCopy;
         {

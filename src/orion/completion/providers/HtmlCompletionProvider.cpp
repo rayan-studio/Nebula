@@ -68,7 +68,7 @@ namespace Orion::Completion
         {
             if (prefix.empty() || tag.rfind(lowerPrefix, 0) == 0)
             {
-                items.push_back({ tag, tag, false });
+                items.push_back({ tag, tag, L"html", false });
                 if (items.size() >= 200) break;
             }
         }
@@ -79,6 +79,6 @@ namespace Orion::Completion
     {
         return { L"HTML5 boilerplate",
                  L"<!DOCTYPE html>\n<html>\n<head>\n  <meta charset=\"utf-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n  <title>Document</title>\n</head>\n<body>\n\n</body>\n</html>",
-                 true };
+                 L"html", true };
     }
 }

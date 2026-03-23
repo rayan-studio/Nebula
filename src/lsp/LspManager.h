@@ -84,6 +84,7 @@ namespace Lsp
         std::unordered_map<std::wstring, Location> symbolIndexDef_;
         std::unordered_map<std::wstring, Location> symbolIndexDecl_;
         std::unordered_map<std::wstring, DWORD> lastDiagTick_;
+        std::unordered_map<std::wstring, int>   clangdPendingVer_;
         bool indexing_ = false;
     };
 }

@@ -129,10 +129,10 @@ bool Panel::IsPointInResizeZone(POINT clientPoint) const
     float top = state_.topEdge;
     float bottom = state_.bottomEdge;
 
-    return (clientPoint.x >= (int)std::floor(resizeEdgeX - RESIZE_ZONE_WIDTH) &&
-            clientPoint.x <= (int)std::ceil(resizeEdgeX + RESIZE_ZONE_WIDTH) &&
-            clientPoint.y >= (int)top &&
-            clientPoint.y <= (int)bottom);
+    return (clientPoint.x >= static_cast<int>(std::floor(resizeEdgeX - RESIZE_ZONE_WIDTH)) &&
+            clientPoint.x <= static_cast<int>(std::ceil(resizeEdgeX + RESIZE_ZONE_WIDTH)) &&
+            clientPoint.y >= static_cast<int>(top) &&
+            clientPoint.y <= static_cast<int>(bottom));
 }
 
 bool Panel::HandleResizeMouseMove(HWND hwnd, POINT clientPoint)

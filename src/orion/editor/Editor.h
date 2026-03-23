@@ -283,6 +283,7 @@ namespace Orion
             int startCol = 0;
             int endCol = 0;
             bool isError = false;
+            bool isHint  = false;
             std::wstring message;
             std::wstring suggestion;
         };

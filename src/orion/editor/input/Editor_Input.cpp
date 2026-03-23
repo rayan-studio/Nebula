@@ -783,7 +783,7 @@ namespace Orion
         state_.lastBlinkTime = GetTickCount();
     }
 
-    void Editor::OnMouseMove(HWND hwnd, POINT pt)
+    void Editor::OnMouseMove([[maybe_unused]] HWND hwnd, POINT pt)
     {
         if (isGitSplitDiffView_)
         {
@@ -849,7 +849,6 @@ namespace Orion
             }
             return;
         }
-        (void)hwnd;
         (void)hwnd;
 
         // vertical scrollbar
