@@ -18,7 +18,9 @@
       "Bash(python -c \"import sys,json; r=json.load\\(sys.stdin\\); print\\(r.get\\(''''message'''',''''ok''''\\)\\)\")",
       "Bash(curl -s \"https://api.github.com/repos/mstorsjo/llvm-mingw/releases/latest\")",
       "Bash(/tmp/summary.txt:*)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(python scripts/build.py)",
+      "Bash(python scripts/build.py --reconfigure)"
     ]
   }
 }

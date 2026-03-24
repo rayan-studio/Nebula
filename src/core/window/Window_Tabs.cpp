@@ -10,6 +10,7 @@
 #include <string>
 
 static const std::wstring kSettingsTabPath = L"__settings__";
+static const std::wstring kMarketplaceTabPrefix = L"__marketplace_lib__:";
 
 static std::wstring ToLower(std::wstring value)
 {
@@ -105,15 +106,51 @@ const std::wstring &Window::SettingsTabPath()
     return kSettingsTabPath;
 }
 
+const std::wstring &Window::MarketplaceTabPrefix()
+{
+    return kMarketplaceTabPrefix;
+}
+
+std::wstring Window::MarketplaceLibraryNameFromTabPath(const std::wstring &tabPath)
+{
+    if (tabPath.rfind(kMarketplaceTabPrefix, 0) != 0)
+        return std::wstring();
+    return tabPath.substr(kMarketplaceTabPrefix.size());
+}
+
 bool Window::IsSettingsTabIndex(int tabIndex) const
 {
     const Tab *tab = tabBar_.GetTab(tabIndex);
     return tab && tab->filePath == kSettingsTabPath;
 }
 
+bool Window::IsMarketplaceTabIndex(int tabIndex) const
+{
+    const Tab *tab = tabBar_.GetTab(tabIndex);
+    return tab && tab->filePath.rfind(kMarketplaceTabPrefix, 0) == 0;
+}
+
 bool Window::IsSettingsTabActive() const
 {
     return IsSettingsTabIndex(tabBar_.GetActiveTabIndex());
+}
+
+void Window::OpenMarketplaceLibraryTab(const std::wstring &libraryName)
+{
+    if (libraryName.empty())
+        return;
+
+    const std::wstring tabPath = kMarketplaceTabPrefix + libraryName;
+    int existing = tabBar_.FindTabIndexByFilePath(tabPath);
+    if (existing >= 0)
+    {
+        tabBar_.SetActiveTab(existing);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+
+    tabBar_.AddTab(tabPath, libraryName);
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void Window::OpenFileInNewTab(const std::wstring &filePath, int lineNumber, int column)

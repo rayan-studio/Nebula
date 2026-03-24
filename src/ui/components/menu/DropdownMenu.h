@@ -6,6 +6,11 @@
 #include <string>
 #include <vector>
 
+// Layout constants shared between DropdownMenu.cpp and its callers
+inline constexpr float kDropdownItemH    = 32.0f;
+inline constexpr float kDropdownSepH     = 10.0f;
+inline constexpr float kDropdownInnerPad =  5.0f;
+
 struct MenuItem
 {
     std::wstring label;
@@ -40,9 +45,15 @@ int GetDropdownHoveredItem(POINT pt);
 void SetDropdownHoveredItem(int index);
 bool IsPointInDropdown(POINT pt);
 MenuDropdown &GetActiveDropdown();
-void ShowContextMenuDropdown(HWND hwnd, const std::vector<std::wstring> &items, D2D1_POINT_2F position, int baseId);
+// separators[i] = true  →  draw a thin separator line BEFORE item i
+// enabled[i]    = false →  item is greyed out and non-clickable
+void ShowContextMenuDropdown(HWND hwnd, const std::vector<std::wstring> &items, D2D1_POINT_2F position, int baseId,
+                             const std::vector<bool>         &separators = {},
+                             const std::vector<std::wstring> &shortcuts  = {},
+                             const std::vector<bool>         &enabled    = {});
 
-void ShowSubmenuDropdown(HWND hwnd, const std::vector<std::wstring> &items, D2D1_POINT_2F position, int baseId);
+void ShowSubmenuDropdown(HWND hwnd, const std::vector<std::wstring> &items, D2D1_POINT_2F position, int baseId,
+                         const std::vector<bool> &separators = {});
 void HideSubmenuDropdown(HWND hwnd);
 bool IsSubmenuDropdownVisible();
 void DrawSubmenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);

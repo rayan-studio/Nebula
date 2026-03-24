@@ -59,6 +59,9 @@ file(GLOB_RECURSE NEBULA_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/src/*.rc"
 )
 
+# Exclude temporary backup/experiment files to avoid duplicate symbols.
+list(FILTER NEBULA_SOURCES EXCLUDE REGEX ".*_new\\.(c|cc|cpp|cxx)$")
+
 add_executable(Nebula WIN32 ${NEBULA_SOURCES})
 
 target_compile_definitions(Nebula PRIVATE UNICODE _UNICODE)
@@ -66,7 +69,7 @@ target_compile_definitions(Nebula PRIVATE NEBULA_APP_VERSION="${NEBULA_APP_VERSI
 
 if (MSVC)
   # /FS avoids PDB write contention when compiling many files in parallel.
-  target_compile_options(Nebula PRIVATE /W4 /permissive- /FS)
+  target_compile_options(Nebula PRIVATE /W4 /permissive- /FS /utf-8)
 endif()
 
 target_include_directories(Nebula PRIVATE src)
@@ -143,6 +146,7 @@ target_link_libraries(Nebula PRIVATE
   crypt32
   winhttp
   ws2_32
+  comctl32
   winmm  # Pour waveOut
   dbghelp
 )

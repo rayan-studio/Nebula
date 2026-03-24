@@ -43,6 +43,7 @@
 #include "ui/panels/terminal/TerminalPanel.h"
 #include "orion/font/CustomFontLoader.h"
 #include "ui/screens/SettingsTab.h"
+#include "ui/screens/MarketplaceExtensionTab.h"
 #include <dwrite_1.h>
 #include "ui/panels/ggwave/GGWavePanel.h"
 #include "utils/logger/Logger.h"
@@ -981,6 +982,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         return 0;
     }
 
+    case WM_OPEN_MARKETPLACE_LIBRARY:
+    {
+        auto *pName = reinterpret_cast<std::wstring *>(lParam);
+        if (pName)
+        {
+            OpenMarketplaceLibraryTab(*pName);
+            delete pName;
+        }
+        return 0;
+    }
+
     case WM_USER + 201:
     {
         // Posted from TerminalPanel::ReadThread - lParam is heap buffer, wParam is length
@@ -1074,6 +1086,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     {
         POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
 
+        // Dismiss any open context-menu popup when the user clicks anywhere
+        if (IsCustomPopupVisible())
+            CloseCustomPopup();
+
         if (newProjectVisible_)
         {
             if (HandleNewProjectMouseDown(hwnd_, pt))
@@ -1135,9 +1151,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                             L"Class Header (.h)",
                             L"Class Source (.cpp)"};
                         D2D1_RECT_F r = dd.rect;
-                        float itemHeight = (r.bottom - r.top) / (dd.items.empty() ? 1.0f : (float)dd.items.size());
-                        D2D1_RECT_F itemRect = D2D1::RectF(r.left, r.top + itemIndex * itemHeight, r.right, r.top + (itemIndex + 1) * itemHeight);
-                        ShowSubmenuDropdown(hwnd_, items, D2D1::Point2F(itemRect.right - 1.0f, itemRect.top), 9000);
+                        
+                        float itemTopY = r.top + kDropdownInnerPad;
+                        for (int j = 0; j < itemIndex; ++j) {
+                            if (!dd.separators.empty() && (j+1) < (int)dd.separators.size() && dd.separators[j+1]) itemTopY += kDropdownSepH;
+                            itemTopY += kDropdownItemH;
+                        }
+                        ShowSubmenuDropdown(hwnd_, items, D2D1::Point2F(r.right - 1.0f, itemTopY), 9000);
                         InvalidateRect(hwnd_, nullptr, FALSE);
                         return 0;
                     }
@@ -1449,6 +1469,27 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
+        if (IsMarketplaceTabIndex(tabBar_.GetActiveTabIndex()) && marketplaceTab_ && marketplaceTab_->IsPointInView(pt))
+        {
+            if (GetPanelManager().IsPanelActive(PanelId::Search))
+            {
+                SearchPanel *searchPanel = GetPanelManager().GetPanelAs<SearchPanel>(PanelId::Search);
+                if (searchPanel && searchPanel->IsInputFocused())
+                    searchPanel->UnfocusInput();
+            }
+            if (GetPanelManager().IsPanelActive(PanelId::Git))
+            {
+                GitPanel *gitPanel = GetPanelManager().GetPanelAs<GitPanel>(PanelId::Git);
+                if (gitPanel && gitPanel->IsInputFocused())
+                    gitPanel->UnfocusInputs();
+            }
+
+            GetTerminalPanel().Unfocus();
+            marketplaceTab_->OnLeftButtonDown(hwnd_, pt);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+
         Orion::Editor *editor = GetEditor();
         if (editor && editor->IsPointInEditorBounds(pt))
         {
@@ -1676,6 +1717,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
+        if (IsMarketplaceTabIndex(tabBar_.GetActiveTabIndex()) && marketplaceTab_ && marketplaceTab_->IsPointInView(pt))
+        {
+            return 0;
+        }
+
         // Route wheel to editor when not over panel (pass Ctrl state for zoom)
         {
             int delta = GET_WHEEL_DELTA_WPARAM(wParam);
@@ -1885,6 +1931,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 settingsTab_->OnMouseMove(hwnd_, pt);
                 return 0;
             }
+            if (IsMarketplaceTabIndex(tabBar_.GetActiveTabIndex()) && marketplaceTab_)
+            {
+                marketplaceTab_->OnMouseMove(hwnd_, pt);
+                return 0;
+            }
             Orion::Editor* editor = GetEditor();
             if (editor && (GetCapture() == hwnd_ || editor->IsPointInEditorBounds(pt)))
             {
@@ -1930,9 +1981,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                         L"Class Header (.h)",
                         L"Class Source (.cpp)"};
                     D2D1_RECT_F r = dd.rect;
-                    float itemHeight = (r.bottom - r.top) / (dd.items.empty() ? 1.0f : (float)dd.items.size());
-                    D2D1_RECT_F itemRect = D2D1::RectF(r.left, r.top + hoveredItem * itemHeight, r.right, r.top + (hoveredItem + 1) * itemHeight);
-                    ShowSubmenuDropdown(hwnd_, items, D2D1::Point2F(itemRect.right - 1.0f, itemRect.top), 9000);
+                    
+                    float itemTopY = r.top + kDropdownInnerPad;
+                    for (int j = 0; j < hoveredItem; ++j) {
+                        if (!dd.separators.empty() && (j+1) < (int)dd.separators.size() && dd.separators[j+1]) itemTopY += kDropdownSepH;
+                        itemTopY += kDropdownItemH;
+                    }
+                    ShowSubmenuDropdown(hwnd_, items, D2D1::Point2F(r.right - 1.0f, itemTopY), 9000);
                 }
                 else if (IsSubmenuDropdownVisible() && !IsPointInSubmenu(pt))
                 {
@@ -1960,11 +2015,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 if (items.empty())
                     items.push_back(L"(Aucun recent)");
 
-                D2D1_RECT_F r = GetActiveDropdown().rect;
-                float itemHeight = (r.bottom - r.top) / (GetActiveDropdown().items.empty() ? 1.0f : (float)GetActiveDropdown().items.size());
-                D2D1_RECT_F itemRect = D2D1::RectF(r.left, r.top + hoveredItem * itemHeight, r.right, r.top + (hoveredItem + 1) * itemHeight);
-                // Keep submenu flush with main menu to avoid mouse gap.
-                ShowSubmenuDropdown(hwnd_, items, D2D1::Point2F(itemRect.right - 1.0f, itemRect.top), 8000);
+                const MenuDropdown &mainDd = GetActiveDropdown();
+                D2D1_RECT_F r = mainDd.rect;
+                
+                float itemTopY = r.top + kDropdownInnerPad;
+                for (int j = 0; j < hoveredItem; ++j) {
+                    if (!mainDd.separators.empty() && (j+1) < (int)mainDd.separators.size() && mainDd.separators[j+1]) itemTopY += kDropdownSepH;
+                    itemTopY += kDropdownItemH;
+                }
+                ShowSubmenuDropdown(hwnd_, items, D2D1::Point2F(r.right - 1.0f, itemTopY), 8000);
                 if (items.size() == 1 && recentProjects_.empty())
                 {
                     MenuDropdown &dd = GetSubmenuDropdown();
@@ -2052,6 +2111,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                     {
                         settingsTab_->OnMouseMove(hwnd_, pt);
                     }
+                    else if (IsMarketplaceTabIndex(tabBar_.GetActiveTabIndex()) && marketplaceTab_)
+                    {
+                        marketplaceTab_->OnMouseMove(hwnd_, pt);
+                    }
                     else
                     {
                         Orion::Editor* editor = GetEditor();
@@ -2118,48 +2181,6 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         GGWavePanel &ggwaveUp = GetGGWavePanel();
         ggwaveUp.OnLeftButtonUp(hwnd_);
 
-        int hoveredMenu = GetHoveredMenuItem(hwnd_, pt);
-
-        if (hoveredMenu >= 0)
-        {
-            {
-                std::wstringstream ss;
-                ss << L"Window::WM_LBUTTONUP - hoveredMenu=" << hoveredMenu << L" (client pt=" << pt.x << L"," << pt.y << L")";
-                Logger::Instance().Log(ss.str());
-            }
-            POINT screenPt = pt;
-            ClientToScreen(hwnd_, &screenPt);
-
-            std::vector<std::wstring> popupItems;
-            switch (hoveredMenu)
-            {
-            case 0:
-                popupItems = {L"New", L"Open", L"Save", L"Close"};
-                break;
-            case 1:
-                popupItems = {L"Undo", L"Cut", L"Copy", L"Paste", L"Delete", L"Select All"};
-                break;
-            case 2:
-                popupItems = {L"Definir Tampon...", L"Effacer Tampon", L"Voir Tampon"};
-                break;
-            case 3:
-                popupItems = {L"Select All", L"Expand Selection", L"Shrink Selection", L"Select Line"};
-                break;
-            case 6:
-                popupItems = {L"New Terminal", L"Split Terminal", L"Kill Terminal"};
-                break;
-            default:
-                popupItems = {L"Item 1", L"Item 2", L"Item 3"};
-                break;
-            }
-
-            RECT title_bar_rect = win32_titlebar_rect(hwnd_);
-            screenPt.y += (title_bar_rect.bottom - title_bar_rect.top);
-
-            ShowCustomPopup(hwnd_, popupItems, screenPt, 3000 + hoveredMenu * 100);
-            return 0;
-        }
-
         // If click wasn't on a menu popup, forward to Explorer or editor to handle mouse-up
         if (GetExplorerManager().IsVisible() &&
             (GetExplorerManager().IsPointInExplorer(pt) || GetExplorerManager().IsScrollbarDragging()))
@@ -2173,6 +2194,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             if (IsSettingsTabActive() && settingsTab_)
             {
                 settingsTab_->OnLeftButtonUp(hwnd_);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+
+            if (IsMarketplaceTabIndex(tabBar_.GetActiveTabIndex()) && marketplaceTab_)
+            {
+                marketplaceTab_->OnLeftButtonUp(hwnd_);
                 InvalidateRect(hwnd_, nullptr, FALSE);
                 return 0;
             }
@@ -2759,20 +2787,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         Orion::Editor *editor = GetEditor();
         if (editor)
         {
-            // Build context menu in French: Couper, Copier, Coller, Aller a la definition, Envoyer avec ggwave
+            // Build context menu — compute enabled flags before showing
             pendingContextGoto_ = editor->TryGoToDefinitionAtPoint(pt);
-            std::vector<std::wstring> items = {L"Couper", L"Copier", L"Coller", L"Aller a la definition", L"Envoyer avec ggwave"};
-            D2D1_POINT_2F pos = D2D1::Point2F((float)pt.x, (float)pt.y);
-            ShowContextMenuDropdown(hwnd_, items, pos, 7000);
+            std::vector<std::wstring> items     = {L"Couper", L"Copier", L"Coller", L"Aller a la definition", L"Envoyer avec ggwave"};
+            std::vector<bool>         seps      = {false,    false,    false,    true,                     true};
+            std::vector<std::wstring> shortcuts = {L"Ctrl+X", L"Ctrl+C", L"Ctrl+V", L"F12", L""};
 
-            // Set enabled flags: Cut/Copy enabled only if selection exists; Paste enabled only if clipboard has text
-            std::vector<bool> enabled(items.size(), true);
             std::wstring sel = editor->GetSelectionText();
             bool hasSelection = !sel.empty();
-            enabled[0] = hasSelection; // Couper
-            enabled[1] = hasSelection; // Copier
-
-            // Check clipboard for Unicode text
             bool canPaste = false;
             if (OpenClipboard(NULL))
             {
@@ -2780,24 +2802,23 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 if (hData)
                 {
                     wchar_t *clip = static_cast<wchar_t *>(GlobalLock(hData));
-                    if (clip)
-                    {
-                        std::wstring txt(clip);
-                        if (!txt.empty())
-                            canPaste = true;
-                        GlobalUnlock(hData);
-                    }
+                    if (clip && clip[0] != L'\0')
+                        canPaste = true;
+                    if (clip) GlobalUnlock(hData);
                 }
                 CloseClipboard();
             }
-            enabled[2] = canPaste;                              // Coller
-            enabled[3] = pendingContextGoto_.has_value();       // Aller a la definition
-            enabled[4] = hasSelection;                          // Envoyer avec ggwave
 
-            // Apply to active dropdown
-            MenuDropdown &dd = GetActiveDropdown();
-            dd.enabled.clear();
-            dd.enabled = enabled;
+            std::vector<bool> enabled = {
+                hasSelection,                       // Couper
+                hasSelection,                       // Copier
+                canPaste,                           // Coller
+                pendingContextGoto_.has_value(),    // Aller a la definition
+                hasSelection,                       // Envoyer avec ggwave
+            };
+
+            D2D1_POINT_2F pos = D2D1::Point2F((float)pt.x, (float)pt.y);
+            ShowContextMenuDropdown(hwnd_, items, pos, 7000, seps, shortcuts, enabled);
 
             return 0;
         }
@@ -2955,6 +2976,7 @@ Window::Window(HINSTANCE hInstance)
 {
     untitledCounter_ = 1;
     settingsTab_ = std::make_unique<SettingsTabView>();
+    marketplaceTab_ = std::make_unique<MarketplaceExtensionTabView>();
     LoadRecentProjects();
 }
 

@@ -5,6 +5,7 @@
 #include "git/GitPanel.h"
 #include "search/SearchPanel.h"
 #include "settings/SettingsPanel.h"
+#include "MarketplacePanel.h"
 
 // ============================================================================
 // Panel System Initialization
@@ -31,6 +32,10 @@ void InitializePanelSystem()
     auto settingsPanel = std::make_unique<SettingsPanel>();
     manager.RegisterPanel(std::move(settingsPanel));
     
+    // Register Marketplace panel
+    auto marketplacePanel = std::make_unique<MarketplacePanel>();
+    manager.RegisterPanel(std::move(marketplacePanel));
+    
     // Set Explorer as the default active panel
     manager.SetActivePanel(PanelId::Explorer);
 }
@@ -44,4 +49,9 @@ inline ExplorerPanel* GetExplorerPanelPtr()
 inline SearchPanel* GetSearchPanelPtr()
 {
     return GetPanelManager().GetPanelAs<SearchPanel>(PanelId::Search);
+}
+
+inline MarketplacePanel* GetMarketplacePanelPtr()
+{
+    return GetPanelManager().GetPanelAs<MarketplacePanel>(PanelId::Marketplace);
 }

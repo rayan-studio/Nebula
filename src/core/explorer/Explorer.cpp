@@ -557,7 +557,8 @@ void ExplorerManager::Initialize(const std::wstring &rootPath)
 
     Lsp::LspManager::Instance().SetProjectRoot(rootPath);
 
-    // No background language server startup.
+    // Parse CMakeLists.txt to populate External Libraries section
+    ParseExternalLibs();
 }
 
 void ExplorerManager::PreloadIconMapAsync()
@@ -1239,9 +1240,10 @@ void ExplorerManager::UpdateLayout(HWND hwnd)
         }
     }
 
-    // AJOUTEZ CES LIGNES :
-    float contentTop = state_.topEdge + state_.titleHeight + state_.topPadding;
-    float viewportHeight = state_.bottomEdge - contentTop;
+    float contentTop    = state_.topEdge + state_.titleHeight + state_.topPadding;
+    // Reserve space at the bottom for External Libraries section (only when a project is open)
+    float extLibsH      = (!state_.rootPath.empty() && !searchMode_) ? extLibs_.TotalHeight() : 0.f;
+    float viewportHeight = (state_.bottomEdge - extLibsH) - contentTop;
     float contentHeight = state_.items.size() * (state_.itemHeight + state_.itemSpacing);
 
     scrollbar_.UpdateLayout(
@@ -1358,6 +1360,19 @@ void ExplorerManager::OnMouseMove(HWND hwnd, POINT clientPoint)
         }
     }
 
+    // Hover for External Libraries section
+    if (!state_.rootPath.empty() && !searchMode_)
+    {
+        float extLibsY = state_.bottomEdge - extLibs_.TotalHeight();
+        int oldExtHov  = extLibs_.hoveredItem;
+        if ((float)clientPoint.y >= extLibsY)
+            extLibs_.hoveredItem = HitTestExtLib(clientPoint, extLibsY);
+        else
+            extLibs_.hoveredItem = -1;
+        if (extLibs_.hoveredItem != oldExtHov)
+            InvalidateRect(hwnd, nullptr, FALSE);
+    }
+
     if (oldHovered != state_.hoveredItemIndex ||
         oldFileHover != state_.newFileButtonHovered || oldFolderHover != state_.newFolderButtonHovered)
     {
@@ -1367,6 +1382,18 @@ void ExplorerManager::OnMouseMove(HWND hwnd, POINT clientPoint)
 
 void ExplorerManager::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
 {
+    // Click in External Libraries section (pinned at bottom)
+    if (!state_.rootPath.empty() && !searchMode_)
+    {
+        float extLibsY = state_.bottomEdge - extLibs_.TotalHeight();
+        if ((float)clientPoint.y >= extLibsY)
+        {
+            int idx = HitTestExtLib(clientPoint, extLibsY);
+            HandleExtLibClick(hwnd, idx);
+            return;
+        }
+    }
+
     // Click bouton "Ouvrir un projet" quand pas de projet
     if (state_.rootPath.empty() && !searchMode_)
     {
@@ -1727,14 +1754,13 @@ void ExplorerManager::OnRightButtonUp(HWND hwnd, POINT clientPoint)
     D2D1_POINT_2F pos = D2D1::Point2F((float)clientPoint.x, (float)clientPoint.y);
     int baseId = 5000;
 
+    // Separators: before "Ajouter" (idx 3) and before "Delete" (idx 6)
+    std::vector<bool> seps(menuItems.size(), false);
+    if (menuItems.size() > 3) seps[3] = true;
+    if (menuItems.size() > 6) seps[6] = true;
+
     contextItemIndex_ = idx;
-    ShowContextMenuDropdown(hwnd, menuItems, pos, baseId);
-    MenuDropdown &dd = GetActiveDropdown();
-    dd.hasSubmenu.assign(menuItems.size(), false);
-    if (menuItems.size() > 3)
-        dd.hasSubmenu[3] = true;
-    
-    // Submenu for "Ajouter" opens on hover (handled in WM_MOUSEMOVE).
+    ShowContextMenuDropdown(hwnd, menuItems, pos, baseId, seps);
 }
 
 void ExplorerManager::HandleContextCommand(int commandId)
@@ -2031,14 +2057,20 @@ void ExplorerManager::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
         DrawSearchPanel(ctx, dwrite, hwnd);
     else
     {
+        float extLibsH   = !state_.rootPath.empty() ? extLibs_.TotalHeight() : 0.f;
+        float itemsBottom = state_.bottomEdge - extLibsH;
+
         D2D1_RECT_F itemsClip = D2D1::RectF(
             state_.leftEdge,
             state_.topEdge + state_.titleHeight + state_.topPadding,
             state_.rightEdge,
-            state_.bottomEdge);
+            itemsBottom);
         ctx->PushAxisAlignedClip(itemsClip, D2D1_ANTIALIAS_MODE_ALIASED);
         DrawItems(ctx, dwrite, hwnd);
         ctx->PopAxisAlignedClip();
+
+        if (!state_.rootPath.empty())
+            DrawExternalLibsSection(ctx, dwrite);
     }
     DrawRightBorder(ctx);
     scrollbar_.Draw(ctx);

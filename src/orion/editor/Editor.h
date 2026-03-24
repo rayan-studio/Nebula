@@ -508,9 +508,29 @@ namespace Orion
         Geometry::IndentConfig GetIndentConfig() const;
         bool GetWordAtColumn(const std::wstring &line, int column, std::wstring &outWord, int &startCol, int &endCol) const;
         bool FindLocalDefinition(const std::wstring &word, int fromLine, int &outLine, int &outCol) const;
-        // Brush cache for syntax highlighting (color -> brush)
+        // Brush cache for syntax highlighting — O(1) hash lookup
+        struct ColorHash {
+            size_t operator()(const D2D1_COLOR_F& c) const noexcept {
+                uint32_t r, g, b, a;
+                memcpy(&r, &c.r, 4); memcpy(&g, &c.g, 4);
+                memcpy(&b, &c.b, 4); memcpy(&a, &c.a, 4);
+                size_t h = r;
+                h = h * 2654435761u ^ g;
+                h = h * 2654435761u ^ b;
+                h = h * 2654435761u ^ a;
+                return h;
+            }
+        };
+        struct ColorEq {
+            bool operator()(const D2D1_COLOR_F& x, const D2D1_COLOR_F& y) const noexcept {
+                return memcmp(&x, &y, sizeof(D2D1_COLOR_F)) == 0;
+            }
+        };
         ID2D1SolidColorBrush *GetOrCreateBrush(ID2D1RenderTarget *ctx, const D2D1_COLOR_F &color);
-        std::vector<std::pair<D2D1_COLOR_F, ID2D1SolidColorBrush *>> brushCache_;
+        std::unordered_map<D2D1_COLOR_F, ID2D1SolidColorBrush*, ColorHash, ColorEq> brushCache_;
+
+        // Cached ligature typography object (JetBrains Mono liga/calt/dlig)
+        IDWriteTypography *cachedTypography_ = nullptr;
 
         std::wstring GetFileExtension() const;
 

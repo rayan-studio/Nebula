@@ -1,0 +1,82 @@
+#pragma once
+#include "Panel.h"
+#include "LibraryDatabase.h"
+#include <memory>
+#include <vector>
+
+// ============================================================================
+// Marketplace Panel - Modern C++ Library Marketplace UI
+// ============================================================================
+
+struct LibraryCard {
+    LibraryInfo* library;
+    D2D1_RECT_F bounds;             // Full card bounds
+    D2D1_RECT_F iconRect;           // Icon area (48x48)
+    D2D1_RECT_F headerRect;         // Title + author
+    D2D1_RECT_F ratingRect;         // Rating stars + downloads
+    D2D1_RECT_F descRect;           // Description text
+    D2D1_RECT_F tagsRect;           // Tags area
+    D2D1_RECT_F installButtonBounds;
+    D2D1_RECT_F uninstallButtonBounds;
+    bool isHoveringCard = false;
+    bool isHoveringInstallBtn = false;
+    bool isHoveringUninstallBtn = false;
+};
+
+class MarketplacePanel : public Panel {
+public:
+    MarketplacePanel();
+    
+    // Panel interface
+    void Initialize() override;
+    void Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND hwnd) override;
+    void UpdateLayout(HWND hwnd) override;
+    
+    void OnMouseMove(HWND hwnd, POINT clientPoint) override;
+    void OnLeftButtonDown(HWND hwnd, POINT clientPoint) override;
+    void OnLeftButtonUp(HWND hwnd) override;
+    void OnMouseWheel(HWND hwnd, int delta) override;
+    
+private:
+    // Drawing helpers
+    void DrawSearchBar(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite);
+    void DrawLibraryCard(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, 
+                        LibraryCard& card);
+    void DrawCardIcon(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
+                     const D2D1_RECT_F& rect, const std::wstring& icon);
+    void DrawCardHeader(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
+                       const D2D1_RECT_F& rect, const LibraryInfo* lib);
+    void DrawRatingStars(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
+                        const D2D1_RECT_F& rect, float rating, int downloads);
+    void DrawDescription(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
+                        const D2D1_RECT_F& rect, const std::wstring& desc);
+    void DrawTags(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
+                 const D2D1_RECT_F& rect, const LibraryInfo* lib);
+    void DrawCardCategory(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
+                         const std::wstring& category, D2D1_COLOR_F color,
+                         float x, float y);
+    void DrawInstallButton(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
+                          const D2D1_RECT_F& bounds, bool hover);
+    void DrawInstalledButton(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
+                            const D2D1_RECT_F& bounds, bool hover);
+    void DrawButton(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
+                   const D2D1_RECT_F& bounds, const std::wstring& text,
+                   bool isHovering, bool isActive);
+    
+    void UpdateCardLayout();
+    void HandleInstallLibrary(HWND hwnd, LibraryCard* card);
+    void HandleUninstallLibrary(HWND hwnd, LibraryCard* card);
+    
+    std::vector<LibraryCard> cards_;
+    float scrollOffset_ = 0.0f;
+    std::wstring searchQuery_;
+    D2D1_RECT_F searchBarBounds_;
+    std::wstring lastKnownRootPath_;  // detect project change
+    
+    // Modern design constants
+    const float SEARCH_BAR_HEIGHT = 36.0f;
+    const float CARD_HEIGHT = 220.0f;     // Increased for more content
+    const float CARD_PADDING = 12.0f;
+    const float ICON_SIZE = 48.0f;
+    const float CARD_CORNER_RADIUS = 8.0f;
+};

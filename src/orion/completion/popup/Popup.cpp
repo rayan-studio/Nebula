@@ -6,7 +6,69 @@
 namespace Orion
 {
     CompletionPopup::CompletionPopup() {}
-    CompletionPopup::~CompletionPopup() {}
+    CompletionPopup::~CompletionPopup() { ReleaseResources(); }
+
+    void CompletionPopup::ReleaseResources()
+    {
+        auto safeRelease = [](auto*& p) { if (p) { p->Release(); p = nullptr; } };
+        safeRelease(brShadow_);   safeRelease(brBg_);       safeRelease(brBorder_);
+        safeRelease(brDivider_);  safeRelease(brText_);     safeRelease(brDim_);
+        safeRelease(brDesc_);     safeRelease(brIconStd_);  safeRelease(brIconProj_);
+        safeRelease(brIconDef_);  safeRelease(brSelection_);safeRelease(brScrollbar_);
+        safeRelease(tfMain_);     safeRelease(tfDesc_);     safeRelease(tfIcon_);
+    }
+
+    void CompletionPopup::EnsureResources(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite)
+    {
+        // Brushes
+        if (!brShadow_)    ctx->CreateSolidColorBrush(D2D1::ColorF(0.0f,  0.0f,  0.0f,  0.25f), &brShadow_);
+        if (!brBg_)        ctx->CreateSolidColorBrush(D2D1::ColorF(0.095f,0.100f,0.112f,0.98f),  &brBg_);
+        if (!brBorder_)    ctx->CreateSolidColorBrush(D2D1::ColorF(0.28f, 0.32f, 0.40f, 0.75f),  &brBorder_);
+        if (!brDivider_)   ctx->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.24f, 0.28f, 0.50f),  &brDivider_);
+        if (!brText_)      ctx->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.93f, 0.95f, 1.0f),   &brText_);
+        if (!brDim_)       ctx->CreateSolidColorBrush(D2D1::ColorF(0.72f, 0.74f, 0.78f, 1.0f),   &brDim_);
+        if (!brDesc_)      ctx->CreateSolidColorBrush(D2D1::ColorF(0.50f, 0.53f, 0.58f, 1.0f),   &brDesc_);
+        if (!brIconStd_)   ctx->CreateSolidColorBrush(D2D1::ColorF(0.36f, 0.63f, 0.90f, 0.90f),  &brIconStd_);
+        if (!brIconProj_)  ctx->CreateSolidColorBrush(D2D1::ColorF(0.50f, 0.80f, 0.55f, 0.90f),  &brIconProj_);
+        if (!brIconDef_)   ctx->CreateSolidColorBrush(D2D1::ColorF(0.70f, 0.55f, 0.85f, 0.90f),  &brIconDef_);
+        if (!brSelection_) ctx->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.27f, 0.42f, 0.95f),  &brSelection_);
+        if (!brScrollbar_) ctx->CreateSolidColorBrush(D2D1::ColorF(0.32f, 0.34f, 0.38f, 0.85f),  &brScrollbar_);
+
+        // Text formats
+        if (dwrite && !tfMain_)
+        {
+            dwrite->CreateTextFormat(L"JetBrains Mono", nullptr,
+                DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL, 12.5f, L"en-us", &tfMain_);
+            if (tfMain_) {
+                tfMain_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                tfMain_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                tfMain_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            }
+        }
+        if (dwrite && !tfDesc_)
+        {
+            dwrite->CreateTextFormat(L"Segoe UI", nullptr,
+                DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL, 10.5f, L"en-us", &tfDesc_);
+            if (tfDesc_) {
+                tfDesc_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+                tfDesc_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                tfDesc_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            }
+        }
+        if (dwrite && !tfIcon_)
+        {
+            dwrite->CreateTextFormat(L"JetBrains Mono", nullptr,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL, 11.0f, L"en-us", &tfIcon_);
+            if (tfIcon_) {
+                tfIcon_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                tfIcon_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                tfIcon_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            }
+        }
+    }
 
     void CompletionPopup::Show()
     {
@@ -53,252 +115,162 @@ namespace Orion
     {
         if (!visible_ || items_.empty()) return;
 
-        const float radius        = 6.0f;
-        const float borderThick   = 1.0f;
-        const float iconAreaW     = 28.0f;  // left column for the bracket icon
-        const float padX          = 8.0f;
-        const float descMaxW      = 70.0f;  // right column for "std" / "project" hint
+        EnsureResources(ctx, dwrite);
+
+        const float radius      = 6.0f;
+        const float borderThick = 1.0f;
+        const float iconAreaW   = 28.0f;
+        const float padX        = 8.0f;
+        const float descMaxW    = 70.0f;
 
         // ---- Shadow ----
+        if (brShadow_)
         {
-            ID2D1SolidColorBrush* sh = nullptr;
-            ctx->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.25f), &sh);
-            if (sh)
-            {
-                D2D1_ROUNDED_RECT sr = D2D1::RoundedRect(
-                    D2D1::RectF(rect_.left + 2.0f, rect_.top + 3.0f, rect_.right + 2.0f, rect_.bottom + 3.0f),
-                    radius, radius);
-                ctx->FillRoundedRectangle(sr, sh);
-                sh->Release();
-            }
+            D2D1_ROUNDED_RECT sr = D2D1::RoundedRect(
+                D2D1::RectF(rect_.left + 2.0f, rect_.top + 3.0f, rect_.right + 2.0f, rect_.bottom + 3.0f),
+                radius, radius);
+            ctx->FillRoundedRectangle(sr, brShadow_);
         }
 
         // ---- Background ----
-        {
-            ID2D1SolidColorBrush* bg = nullptr;
-            ctx->CreateSolidColorBrush(D2D1::ColorF(0.095f, 0.100f, 0.112f, 0.98f), &bg);
-            if (bg)
-            {
-                ctx->FillRoundedRectangle(D2D1::RoundedRect(rect_, radius, radius), bg);
-                bg->Release();
-            }
-        }
+        if (brBg_)
+            ctx->FillRoundedRectangle(D2D1::RoundedRect(rect_, radius, radius), brBg_);
 
         // ---- Border ----
+        if (brBorder_)
         {
-            ID2D1SolidColorBrush* brd = nullptr;
-            ctx->CreateSolidColorBrush(D2D1::ColorF(0.28f, 0.32f, 0.40f, 0.75f), &brd);
-            if (brd)
-            {
-                D2D1_ANTIALIAS_MODE prev = ctx->GetAntialiasMode();
-                ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-                ctx->DrawRoundedRectangle(D2D1::RoundedRect(rect_, radius, radius), brd, borderThick);
-                ctx->SetAntialiasMode(prev);
-                brd->Release();
-            }
+            D2D1_ANTIALIAS_MODE prev = ctx->GetAntialiasMode();
+            ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            ctx->DrawRoundedRectangle(D2D1::RoundedRect(rect_, radius, radius), brBorder_, borderThick);
+            ctx->SetAntialiasMode(prev);
         }
 
         // ---- Left icon divider line ----
+        if (brDivider_)
         {
-            ID2D1SolidColorBrush* div = nullptr;
-            ctx->CreateSolidColorBrush(D2D1::ColorF(0.22f, 0.24f, 0.28f, 0.50f), &div);
-            if (div)
-            {
-                float lx = rect_.left + iconAreaW;
-                ctx->DrawLine(
-                    D2D1::Point2F(lx, rect_.top + 6.0f),
-                    D2D1::Point2F(lx, rect_.bottom - 6.0f),
-                    div, 1.0f);
-                div->Release();
-            }
+            float lx = rect_.left + iconAreaW;
+            ctx->DrawLine(D2D1::Point2F(lx, rect_.top + 6.0f),
+                          D2D1::Point2F(lx, rect_.bottom - 6.0f), brDivider_, 1.0f);
         }
-
-        // ---- Text formats ----
-        IDWriteTextFormat* tfMain = nullptr;
-        IDWriteTextFormat* tfDesc = nullptr;
-        IDWriteTextFormat* tfIcon = nullptr;
-        if (dwrite)
-        {
-            dwrite->CreateTextFormat(L"JetBrains Mono", nullptr,
-                DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL, 12.5f, L"en-us", &tfMain);
-            dwrite->CreateTextFormat(L"Segoe UI", nullptr,
-                DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL, 10.5f, L"en-us", &tfDesc);
-            dwrite->CreateTextFormat(L"JetBrains Mono", nullptr,
-                DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL, 11.0f, L"en-us", &tfIcon);
-
-            for (auto* tf : { tfMain, tfDesc, tfIcon })
-                if (tf)
-                {
-                    tf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-                    tf->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-                    tf->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-                }
-            if (tfDesc)
-                tfDesc->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
-        }
-
-        // ---- Brushes ----
-        ID2D1SolidColorBrush* textBrush   = nullptr; // normal label color
-        ID2D1SolidColorBrush* dimBrush    = nullptr; // unselected label (dimmer)
-        ID2D1SolidColorBrush* descBrush   = nullptr; // right-side hint
-        ID2D1SolidColorBrush* iconStdBr   = nullptr; // icon color for system headers
-        ID2D1SolidColorBrush* iconProjBr  = nullptr; // icon color for project headers
-        ID2D1SolidColorBrush* iconDefBr   = nullptr; // default icon color
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.93f, 0.95f, 1.0f),  &textBrush);
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.72f, 0.74f, 0.78f, 1.0f),  &dimBrush);
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.50f, 0.53f, 0.58f, 1.0f),  &descBrush);
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.36f, 0.63f, 0.90f, 0.90f), &iconStdBr);
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.50f, 0.80f, 0.55f, 0.90f), &iconProjBr);
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.70f, 0.55f, 0.85f, 0.90f), &iconDefBr);
 
         // ---- Scroll state ----
         int total    = (int)items_.size();
         int maxShown = (int)((rect_.bottom - rect_.top) / itemHeight_);
-        if (maxShown <= 0) goto cleanup;
+        if (maxShown <= 0) return;
         if (scrollIndex_ < 0) scrollIndex_ = 0;
         if (scrollIndex_ > total - maxShown) scrollIndex_ = (total - maxShown) < 0 ? 0 : (total - maxShown);
 
+        int   visibleCount  = (std::min)(total, maxShown);
+        bool  needScrollbar = total > visibleCount;
+        float contentRight  = rect_.right - (needScrollbar ? scrollbarWidth_ + 6.0f : 4.0f);
+
+        ctx->PushAxisAlignedClip(rect_, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+        for (int i = 0; i < visibleCount; ++i)
         {
-            int visibleCount  = (std::min)(total, maxShown);
-            bool needScrollbar = total > visibleCount;
-            float contentRight = rect_.right - (needScrollbar ? scrollbarWidth_ + 6.0f : 4.0f);
+            int   idx     = scrollIndex_ + i;
+            float itemTop = rect_.top + i * itemHeight_;
+            bool  isSel   = (idx == selected_);
 
-            ctx->PushAxisAlignedClip(rect_, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-
-            for (int i = 0; i < visibleCount; ++i)
+            // Selection highlight
+            if (isSel && brSelection_)
             {
-                int   idx     = scrollIndex_ + i;
-                float itemTop = rect_.top + i * itemHeight_;
-                bool  isSel   = (idx == selected_);
+                D2D1_RECT_F sr = D2D1::RectF(rect_.left + 2.0f, itemTop + 1.5f,
+                                              contentRight - 1.0f, itemTop + itemHeight_ - 1.5f);
+                ctx->FillRoundedRectangle(D2D1::RoundedRect(sr, 4.0f, 4.0f), brSelection_);
+            }
 
-                // Selection highlight
-                if (isSel)
+            const auto& item = items_[idx];
+
+            // ---- Icon bracket (left column) ----
+            if (tfIcon_ && dwrite)
+            {
+                bool isStd  = item.description == L"std" || item.description == L"sdk";
+                bool isProj = item.description == L"project";
+                ID2D1SolidColorBrush* iconBr = isStd ? brIconStd_ : (isProj ? brIconProj_ : brIconDef_);
+                std::wstring iconSym = isStd ? L"<>" : (isProj ? L"\"\"" : L"#");
+
+                D2D1_RECT_F ir = D2D1::RectF(rect_.left + 2.0f, itemTop,
+                                              rect_.left + iconAreaW - 2.0f, itemTop + itemHeight_);
+                if (iconBr)
                 {
-                    ID2D1SolidColorBrush* sel = nullptr;
-                    ctx->CreateSolidColorBrush(D2D1::ColorF(0.18f, 0.27f, 0.42f, 0.95f), &sel);
-                    if (sel)
+                    IDWriteTextLayout* iconLay = nullptr;
+                    dwrite->CreateTextLayout(iconSym.c_str(), (UINT32)iconSym.size(),
+                        tfIcon_, ir.right - ir.left, ir.bottom - ir.top, &iconLay);
+                    if (iconLay)
                     {
-                        D2D1_RECT_F sr = D2D1::RectF(rect_.left + 2.0f, itemTop + 1.5f,
-                                                      contentRight - 1.0f, itemTop + itemHeight_ - 1.5f);
-                        ctx->FillRoundedRectangle(D2D1::RoundedRect(sr, 4.0f, 4.0f), sel);
-                        sel->Release();
-                    }
-                }
-
-                const auto& item = items_[idx];
-
-                // ---- Icon bracket (left column) ----
-                if (tfIcon)
-                {
-                    bool isStd  = item.description == L"std" || item.description == L"sdk";
-                    bool isProj = item.description == L"project";
-                    ID2D1SolidColorBrush* iconBr = isStd ? iconStdBr : (isProj ? iconProjBr : iconDefBr);
-
-                    // pick symbol: <> for system, "" for project, # for other
-                    std::wstring iconSym = isStd ? L"<>" : (isProj ? L"\"\"" : L"#");
-
-                    D2D1_RECT_F ir = D2D1::RectF(rect_.left + 2.0f, itemTop,
-                                                  rect_.left + iconAreaW - 2.0f, itemTop + itemHeight_);
-                    if (iconBr)
-                    {
-                        IDWriteTextLayout* iconLay = nullptr;
-                        dwrite->CreateTextLayout(iconSym.c_str(), (UINT32)iconSym.size(),
-                            tfIcon, ir.right - ir.left, ir.bottom - ir.top, &iconLay);
-                        if (iconLay)
-                        {
-                            iconLay->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-                            ctx->DrawTextLayout(D2D1::Point2F(ir.left, ir.top), iconLay, iconBr);
-                            iconLay->Release();
-                        }
-                    }
-                }
-
-                if (tfMain && dwrite)
-                {
-                    // ---- Label (center) ----
-                    float labelLeft  = rect_.left + iconAreaW + padX;
-                    float labelRight = contentRight - (item.description.empty() ? padX : descMaxW + padX);
-                    D2D1_RECT_F lr = D2D1::RectF(labelLeft, itemTop, labelRight, itemTop + itemHeight_);
-
-                    IDWriteTextLayout* lay = nullptr;
-                    dwrite->CreateTextLayout(item.label.c_str(), (UINT32)item.label.size(),
-                        tfMain, lr.right - lr.left, lr.bottom - lr.top, &lay);
-                    if (lay)
-                    {
-                        DWRITE_TRIMMING trim = { DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0 };
-                        IDWriteInlineObject* ell = nullptr;
-                        dwrite->CreateEllipsisTrimmingSign(tfMain, &ell);
-                        lay->SetTrimming(&trim, ell);
-                        if (ell) ell->Release();
-
-                        ctx->DrawTextLayout(D2D1::Point2F(lr.left, lr.top), lay,
-                                            isSel ? textBrush : dimBrush);
-                        lay->Release();
-                    }
-
-                    // ---- Description right-side hint ----
-                    if (!item.description.empty() && tfDesc && descBrush)
-                    {
-                        D2D1_RECT_F dr = D2D1::RectF(contentRight - descMaxW - padX, itemTop,
-                                                       contentRight - padX,            itemTop + itemHeight_);
-                        IDWriteTextLayout* dlay = nullptr;
-                        dwrite->CreateTextLayout(item.description.c_str(), (UINT32)item.description.size(),
-                            tfDesc, dr.right - dr.left, dr.bottom - dr.top, &dlay);
-                        if (dlay)
-                        {
-                            dlay->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
-                            ctx->DrawTextLayout(D2D1::Point2F(dr.left, dr.top), dlay, descBrush);
-                            dlay->Release();
-                        }
+                        iconLay->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                        ctx->DrawTextLayout(D2D1::Point2F(ir.left, ir.top), iconLay, iconBr);
+                        iconLay->Release();
                     }
                 }
             }
 
-            ctx->PopAxisAlignedClip();
-
-            // ---- Scrollbar ----
-            if (needScrollbar)
+            if (tfMain_ && dwrite)
             {
-                float trackLeft   = rect_.right - scrollbarWidth_ - 3.0f;
-                float trackTop    = rect_.top    + 4.0f;
-                float trackRight  = rect_.right  - 3.0f;
-                float trackBottom = rect_.bottom - 4.0f;
-                float trackH      = trackBottom - trackTop;
+                // ---- Label (center) ----
+                float labelLeft  = rect_.left + iconAreaW + padX;
+                float labelRight = contentRight - (item.description.empty() ? padX : descMaxW + padX);
+                D2D1_RECT_F lr = D2D1::RectF(labelLeft, itemTop, labelRight, itemTop + itemHeight_);
 
-                float thumbMin = 16.0f;
-                float thumbH   = (visibleCount / (float)total) * trackH;
-                if (thumbH < thumbMin) thumbH = thumbMin;
-                float avail    = trackH - thumbH;
-                float thumbY   = trackTop;
-                if (total > visibleCount)
-                    thumbY = trackTop + ((float)scrollIndex_ / (float)(total - visibleCount)) * avail;
-
-                ID2D1SolidColorBrush* thumbBr = nullptr;
-                ctx->CreateSolidColorBrush(D2D1::ColorF(0.32f, 0.34f, 0.38f, 0.85f), &thumbBr);
-                if (thumbBr)
+                IDWriteTextLayout* lay = nullptr;
+                dwrite->CreateTextLayout(item.label.c_str(), (UINT32)item.label.size(),
+                    tfMain_, lr.right - lr.left, lr.bottom - lr.top, &lay);
+                if (lay)
                 {
-                    ctx->FillRoundedRectangle(
-                        D2D1::RoundedRect(D2D1::RectF(trackLeft + 2.0f, thumbY,
-                                                       trackRight - 2.0f, thumbY + thumbH), 3.0f, 3.0f),
-                        thumbBr);
-                    thumbBr->Release();
+                    DWRITE_TRIMMING trim = { DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0 };
+                    IDWriteInlineObject* ell = nullptr;
+                    dwrite->CreateEllipsisTrimmingSign(tfMain_, &ell);
+                    lay->SetTrimming(&trim, ell);
+                    if (ell) ell->Release();
+
+                    ctx->DrawTextLayout(D2D1::Point2F(lr.left, lr.top), lay,
+                                        isSel ? brText_ : brDim_);
+                    lay->Release();
+                }
+
+                // ---- Description right-side hint ----
+                if (!item.description.empty() && tfDesc_ && brDesc_)
+                {
+                    D2D1_RECT_F dr = D2D1::RectF(contentRight - descMaxW - padX, itemTop,
+                                                   contentRight - padX,            itemTop + itemHeight_);
+                    IDWriteTextLayout* dlay = nullptr;
+                    dwrite->CreateTextLayout(item.description.c_str(), (UINT32)item.description.size(),
+                        tfDesc_, dr.right - dr.left, dr.bottom - dr.top, &dlay);
+                    if (dlay)
+                    {
+                        dlay->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+                        ctx->DrawTextLayout(D2D1::Point2F(dr.left, dr.top), dlay, brDesc_);
+                        dlay->Release();
+                    }
                 }
             }
         }
 
-    cleanup:
-        if (textBrush)  textBrush->Release();
-        if (dimBrush)   dimBrush->Release();
-        if (descBrush)  descBrush->Release();
-        if (iconStdBr)  iconStdBr->Release();
-        if (iconProjBr) iconProjBr->Release();
-        if (iconDefBr)  iconDefBr->Release();
-        if (tfMain)     tfMain->Release();
-        if (tfDesc)     tfDesc->Release();
-        if (tfIcon)     tfIcon->Release();
+        ctx->PopAxisAlignedClip();
+
+        // ---- Scrollbar ----
+        if (needScrollbar && brScrollbar_)
+        {
+            float trackLeft   = rect_.right - scrollbarWidth_ - 3.0f;
+            float trackTop    = rect_.top    + 4.0f;
+            float trackRight  = rect_.right  - 3.0f;
+            float trackBottom = rect_.bottom - 4.0f;
+            float trackH      = trackBottom - trackTop;
+
+            float thumbMin = 16.0f;
+            float thumbH   = (visibleCount / (float)total) * trackH;
+            if (thumbH < thumbMin) thumbH = thumbMin;
+            float avail  = trackH - thumbH;
+            float thumbY = trackTop;
+            if (total > visibleCount)
+                thumbY = trackTop + ((float)scrollIndex_ / (float)(total - visibleCount)) * avail;
+
+            ctx->FillRoundedRectangle(
+                D2D1::RoundedRect(D2D1::RectF(trackLeft + 2.0f, thumbY,
+                                               trackRight - 2.0f, thumbY + thumbH), 3.0f, 3.0f),
+                brScrollbar_);
+        }
     }
 
     void CompletionPopup::OnKeyDown(WPARAM key)

@@ -15,6 +15,7 @@ enum class PanelId {
     Search,
     Git,
     Settings,
+    Marketplace,
     Count
 };
 

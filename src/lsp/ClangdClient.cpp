@@ -406,8 +406,8 @@ static std::wstring TranslateClangdMessage(const std::wstring& msg)
     // "Included header 'X' is not used directly"  →  clearer hint
     if (startsWith(L"Included header") && msg.find(L"not used directly") != std::wstring::npos) {
         std::wstring sym = extractQuoted(0);
-        if (!sym.empty()) return L"'" + sym + L"' n'est pas utilisé dans ce fichier";
-        return L"Header non utilisé dans ce fichier";
+        if (!sym.empty()) return L"'" + sym + L"' is included but not used";
+        return L"Included but not used";
     }
 
     // "Use of undeclared identifier 'X'"  →  "Cannot resolve symbol 'X'"
@@ -439,8 +439,8 @@ static std::wstring TranslateClangdMessage(const std::wstring& msg)
     // → clearer message explaining the likely cause
     if (startsWith(L"Reference to overloaded function could not be resolved")) {
         std::wstring sym = extractQuoted(0);
-        if (!sym.empty()) return L"'" + sym + L"' est ambigu — mauvais nom ou mauvais type d'argument ?";
-        return L"Appel ambigu — mauvais nom ou mauvais type d'argument ?";
+        if (!sym.empty()) return L"'" + sym + L"' is ambiguous — wrong name or argument types?";
+        return L"Ambiguous call — wrong name or argument types?";
     }
 
     // "Too many arguments to function call, expected N, have M"  →  "Too many arguments"

@@ -51,6 +51,26 @@ namespace Orion
         bool isDraggingThumb_ = false;
         int dragStartY_ = 0;
         int dragStartIndex_ = 0;
+
+        // Cached D2D/DWrite resources — created once, reused every frame
+        ID2D1SolidColorBrush* brShadow_    = nullptr;
+        ID2D1SolidColorBrush* brBg_        = nullptr;
+        ID2D1SolidColorBrush* brBorder_    = nullptr;
+        ID2D1SolidColorBrush* brDivider_   = nullptr;
+        ID2D1SolidColorBrush* brText_      = nullptr;
+        ID2D1SolidColorBrush* brDim_       = nullptr;
+        ID2D1SolidColorBrush* brDesc_      = nullptr;
+        ID2D1SolidColorBrush* brIconStd_   = nullptr;
+        ID2D1SolidColorBrush* brIconProj_  = nullptr;
+        ID2D1SolidColorBrush* brIconDef_   = nullptr;
+        ID2D1SolidColorBrush* brSelection_ = nullptr;
+        ID2D1SolidColorBrush* brScrollbar_ = nullptr;
+        IDWriteTextFormat*    tfMain_      = nullptr;
+        IDWriteTextFormat*    tfDesc_      = nullptr;
+        IDWriteTextFormat*    tfIcon_      = nullptr;
+
+        void EnsureResources(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite);
+        void ReleaseResources();
     };
 
 } // namespace Orion

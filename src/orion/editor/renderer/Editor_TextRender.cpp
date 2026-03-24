@@ -48,20 +48,16 @@ namespace Orion
 
     ID2D1SolidColorBrush *Editor::GetOrCreateBrush(ID2D1RenderTarget *ctx, const D2D1_COLOR_F &color)
     {
-        // Try to find an existing brush with identical color
-        for (auto &p : brushCache_)
-        {
-            D2D1_COLOR_F c = p.first;
-            if (memcmp(&c, &color, sizeof(D2D1_COLOR_F)) == 0)
-                return p.second;
-        }
+        auto it = brushCache_.find(color);
+        if (it != brushCache_.end())
+            return it->second;
 
         ID2D1SolidColorBrush *b = nullptr;
         if (ctx)
             ctx->CreateSolidColorBrush(color, &b);
 
         if (b)
-            brushCache_.push_back(std::make_pair(color, b));
+            brushCache_.emplace(color, b);
 
         return b;
     }
@@ -129,36 +125,11 @@ namespace Orion
 
         float contentLeft = state_.leftEdge + metrics_.gutterWidth + metrics_.leftPadding;
 
-        const D2D1_COLOR_F colColorsArr[] = {
-            theme_.keyword,
-            theme_.string,
-            theme_.comment,
-            theme_.number,
-            theme_.function,
-            theme_.variable};
-        const size_t colCount = sizeof(colColorsArr) / sizeof(colColorsArr[0]);
-
-        ID2D1SolidColorBrush *colBrushesArr[16] = {0};
-        for (size_t idx = 0; idx < colCount; ++idx)
-        {
-            D2D1_COLOR_F tmp = colColorsArr[idx];
-            tmp.a = 0.85f;
-            ID2D1SolidColorBrush *b = nullptr;
-            ctx->CreateSolidColorBrush(tmp, &b);
-            colBrushesArr[idx] = b;
-        }
-
-        ID2D1SolidColorBrush *fallbackBrush = nullptr;
         D2D1_COLOR_F fallbackColor = theme_.text;
         fallbackColor.a = 0.5f;
-        ctx->CreateSolidColorBrush(fallbackColor, &fallbackBrush);
+        ID2D1SolidColorBrush *fallbackBrush = GetOrCreateBrush(ctx, fallbackColor);
         if (!fallbackBrush)
-        {
-            for (size_t idx = 0; idx < colCount; ++idx)
-                if (colBrushesArr[idx])
-                    colBrushesArr[idx]->Release();
             return;
-        }
 
         for (int v = firstVisibleLine; v < lastVisibleLine; ++v)
         {
@@ -203,11 +174,6 @@ namespace Orion
             }
         }
 
-        for (size_t idx = 0; idx < colCount; ++idx)
-            if (colBrushesArr[idx])
-                colBrushesArr[idx]->Release();
-        if (fallbackBrush)
-            fallbackBrush->Release();
     }
 
     void Editor::DrawTextContent(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
@@ -376,22 +342,24 @@ namespace Orion
                 {
                     layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
 
-                    IDWriteTypography *typography = nullptr;
-                    if (SUCCEEDED(pDWriteFactory_->CreateTypography(&typography)) && typography)
+                    // Create ligature typography once, reuse every line
+                    if (!cachedTypography_ && pDWriteFactory_)
                     {
-                        // JetBrains Mono ligatures (liga/calt/dlig)
-                        DWRITE_FONT_FEATURE features[] = {
-                            {DWRITE_MAKE_FONT_FEATURE_TAG('l', 'i', 'g', 'a'), 1},
-                            {DWRITE_MAKE_FONT_FEATURE_TAG('c', 'a', 'l', 't'), 1},
-                            {DWRITE_MAKE_FONT_FEATURE_TAG('d', 'l', 'i', 'g'), 1},
-                        };
-
-                        for (auto &f : features)
-                            typography->AddFontFeature(f);
-
+                        if (SUCCEEDED(pDWriteFactory_->CreateTypography(&cachedTypography_)) && cachedTypography_)
+                        {
+                            DWRITE_FONT_FEATURE features[] = {
+                                {DWRITE_MAKE_FONT_FEATURE_TAG('l', 'i', 'g', 'a'), 1},
+                                {DWRITE_MAKE_FONT_FEATURE_TAG('c', 'a', 'l', 't'), 1},
+                                {DWRITE_MAKE_FONT_FEATURE_TAG('d', 'l', 'i', 'g'), 1},
+                            };
+                            for (auto &f : features)
+                                cachedTypography_->AddFontFeature(f);
+                        }
+                    }
+                    if (cachedTypography_)
+                    {
                         DWRITE_TEXT_RANGE fullRange = {0, (UINT32)displayLine.size()};
-                        layout->SetTypography(typography, fullRange);
-                        typography->Release();
+                        layout->SetTypography(cachedTypography_, fullRange);
                     }
                 }
             }

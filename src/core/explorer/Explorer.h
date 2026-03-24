@@ -9,6 +9,7 @@
 #include "ui/components/scrollbar/Scrollbar.h"
 #include "ui/components/input/InputTypeFixed.h"
 #include "ui/components/button/Button.h"
+#include "core/cmake/CmakeParser.h"
 #include <atomic>
 
 // Structure pour représenter un item de l'explorer
@@ -105,6 +106,10 @@ public:
     void OnRightButtonUp(HWND hwnd, POINT clientPoint);
     void OnMouseWheel(HWND hwnd, int delta);
     bool HandleExternalDrop(HWND hwnd, POINT clientPoint, const std::vector<std::wstring> &droppedPaths);
+    bool InstallLibraryFromGitUrl(HWND hwnd,
+                                  const std::wstring &gitUrl,
+                                  const std::wstring &displayName,
+                                  std::wstring *outError = nullptr);
 
     void HandleContextCommand(int commandId);
     void HandleContextSubmenuCommand(int commandId);
@@ -196,6 +201,34 @@ private:
     bool searchMode_ = false;
     std::wstring searchQuery_;
     std::vector<SearchResult> searchResults_;
+
+    // External Libraries section (pinned at bottom of explorer panel)
+    struct ExtLibSection
+    {
+        CmakeProjectInfo cmake;   // parsed info for the current project
+        bool expanded    = true;  // whether the section is expanded
+        int  hoveredItem = -1;    // -1=none, 0=header, 1=add-button, 2+= lib entries
+
+        static constexpr float kHeaderH  = 28.f;
+        static constexpr float kItemH    = 22.f;
+        static constexpr float kAddBtnH  = 26.f;
+        static constexpr float kCloneBtnH = 26.f;
+
+        float TotalHeight() const
+        {
+            float h = kHeaderH;
+            if (expanded)
+                h += (float)cmake.libraries.size() * kItemH + kAddBtnH + kCloneBtnH;
+            return h;
+        }
+    } extLibs_;
+
+    void ParseExternalLibs();
+    void DrawExternalLibsSection(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
+    int  HitTestExtLib(POINT pt, float sectionY) const;
+    void HandleExtLibClick(HWND hwnd, int virtualIdx);
+    void AddLibraryDialog(HWND hwnd);
+    void CloneLibraryDialog(HWND hwnd);
 
 public:
     // Preview API used by Input overlay
