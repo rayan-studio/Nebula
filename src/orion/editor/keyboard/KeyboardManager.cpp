@@ -6,6 +6,7 @@
 #include "core/explorer/Explorer.h"
 #include "ui/panels/PanelManager.h"
 #include "ui/panels/git/GitPanel.h"
+#include "ui/panels/MarketplacePanel.h"
 #include "ui/panels/search/SearchPanel.h"
 #include "ui/panels/terminal/TerminalPanel.h"
 #include "ui/components/menu/DropdownMenu.h"
@@ -742,6 +743,18 @@ bool KeyboardManager::RouteKeyDownToFocused(WPARAM wParam)
         }
     }
 
+    // Marketplace search input
+    if (GetPanelManager().IsPanelActive(PanelId::Marketplace))
+    {
+        MarketplacePanel *marketplacePanel = GetPanelManager().GetPanelAs<MarketplacePanel>(PanelId::Marketplace);
+        if (marketplacePanel && marketplacePanel->IsVisible() && marketplacePanel->IsSearchInputFocused())
+        {
+            marketplacePanel->OnKeyDown(wParam);
+            InvalidateRect(window_->GetHwnd(), nullptr, FALSE);
+            return true;
+        }
+    }
+
     // Git panel focused input
     if (GetPanelManager().IsPanelActive(PanelId::Git))
     {
@@ -802,6 +815,18 @@ bool KeyboardManager::RouteCharToFocused(WPARAM wParam)
         if (searchPanel && searchPanel->IsInputFocused())
         {
             searchPanel->OnChar((wchar_t)wParam);
+            InvalidateRect(window_->GetHwnd(), nullptr, FALSE);
+            return true;
+        }
+    }
+
+    // Marketplace search input
+    if (GetPanelManager().IsPanelActive(PanelId::Marketplace))
+    {
+        MarketplacePanel *marketplacePanel = GetPanelManager().GetPanelAs<MarketplacePanel>(PanelId::Marketplace);
+        if (marketplacePanel && marketplacePanel->IsVisible() && marketplacePanel->IsSearchInputFocused())
+        {
+            marketplacePanel->OnChar((wchar_t)wParam);
             InvalidateRect(window_->GetHwnd(), nullptr, FALSE);
             return true;
         }

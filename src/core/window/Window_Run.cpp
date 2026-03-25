@@ -1132,10 +1132,8 @@ void Window::RunActiveProject()
         }
         if (compiler == SimpleCompiler::None)
         {
-            MessageBoxW(hwnd_,
-                        L"Aucun compilateur dÃ©tectÃ©.\nInstalle Visual Studio Build Tools (MSVC) ou MinGW-w64 (g++), puis relance.",
-                        L"Run",
-                        MB_OK | MB_ICONWARNING);
+            ShowRunErrorPopup(hwnd_, L"Aucun compilateur detecte",
+                L"Installe Visual Studio Build Tools (MSVC) ou MinGW-w64 (g++), puis relance.");
             return;
         }
 
@@ -1177,7 +1175,7 @@ void Window::RunActiveProject()
             DWORD exitCode = 0;
             if (!RunCommandInNewConsole(cmd, buildDir, exitCode, &envBlock, true))
             {
-                MessageBoxW(hwnd, L"Compilation echouee. Verifie la console.", L"Run", MB_OK | MB_ICONERROR);
+                ShowRunErrorPopup(hwnd, L"Compilation echouee", L"Verifie la console.");
                 return;
             }
 
@@ -1190,7 +1188,7 @@ void Window::RunActiveProject()
 
     if (!hasCMake)
     {
-        MessageBoxW(hwnd_, L"Le lancement automatique supporte seulement CMake pour le moment.", L"Run", MB_OK | MB_ICONINFORMATION);
+        ShowRunErrorPopup(hwnd_, L"Run", L"Le lancement automatique supporte seulement CMake pour le moment.");
         return;
     }
 

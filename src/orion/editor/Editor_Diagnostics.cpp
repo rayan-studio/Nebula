@@ -72,6 +72,7 @@ namespace Orion
                 L"cmake-build-debug", L"cmake-build-release",
                 L"cmake-build-relwithdebinfo", L"cmake-build-minsizerel",
                 L"build", L"Build", L"out", L"Out", L"_build", L".build",
+                L".clangd",
                 L"x64", L"x86",
             };
 

@@ -63,8 +63,9 @@ public:
     // Update installation status
     void SetInstalled(const std::wstring& name, bool installed);
     
-    // Refresh installation status from filesystem
-    void RefreshInstallationStatus();
+    // Refresh installation status from filesystem.
+    // If projectRoot is empty, falls back to detecting from executable location.
+    void RefreshInstallationStatus(const std::wstring& projectRoot = L"");
     
 private:
     LibraryDatabase();

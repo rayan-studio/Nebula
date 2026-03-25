@@ -5,6 +5,29 @@
 
 namespace fs = std::filesystem;
 
+static std::wstring RepoFolderFromGitUrl(const std::wstring& gitUrl)
+{
+    if (gitUrl.empty())
+        return {};
+
+    std::wstring u = gitUrl;
+    while (!u.empty() && (u.back() == L'/' || u.back() == L'\\'))
+        u.pop_back();
+
+    if (u.size() >= 4)
+    {
+        std::wstring tail = u.substr(u.size() - 4);
+        std::transform(tail.begin(), tail.end(), tail.begin(), ::towlower);
+        if (tail == L".git")
+            u = u.substr(0, u.size() - 4);
+    }
+
+    size_t pos = u.find_last_of(L"/:\\");
+    if (pos != std::wstring::npos && pos + 1 < u.size())
+        return u.substr(pos + 1);
+    return u;
+}
+
 LibraryDatabase& LibraryDatabase::Instance()
 {
     static LibraryDatabase instance;
@@ -201,33 +224,57 @@ void LibraryDatabase::SetInstalled(const std::wstring& name, bool installed)
         lib->isInstalled = installed;
 }
 
-void LibraryDatabase::RefreshInstallationStatus()
+void LibraryDatabase::RefreshInstallationStatus(const std::wstring& projectRoot)
 {
-    // Walk up from the exe directory to find the project root (contains CMakeLists.txt)
-    WCHAR exePath[MAX_PATH];
-    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    // Always reset first so stale status from a previous project cannot leak.
+    for (auto& lib : libraries_)
+        lib.isInstalled = false;
 
-    fs::path dir = fs::path(exePath).parent_path();
     fs::path externalDir;
 
-    for (int i = 0; i < 6; ++i)
+    if (!projectRoot.empty())
     {
-        if (fs::exists(dir / L"CMakeLists.txt"))
+        // Use active project root when provided by the caller.
+        externalDir = fs::path(projectRoot) / L"external";
+    }
+    else
+    {
+        // Backward-compatible fallback: walk up from exe directory.
+        WCHAR exePath[MAX_PATH];
+        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+
+        fs::path dir = fs::path(exePath).parent_path();
+        for (int i = 0; i < 6; ++i)
         {
-            externalDir = dir / L"external";
-            break;
+            if (fs::exists(dir / L"CMakeLists.txt"))
+            {
+                externalDir = dir / L"external";
+                break;
+            }
+            fs::path parent = dir.parent_path();
+            if (parent == dir) break;  // filesystem root
+            dir = parent;
         }
-        fs::path parent = dir.parent_path();
-        if (parent == dir) break;  // filesystem root
-        dir = parent;
     }
 
-    if (externalDir.empty())
-        return; // Cannot determine project root — leave all as not installed
+    if (externalDir.empty() || !fs::exists(externalDir) || !fs::is_directory(externalDir))
+        return;
 
     for (auto& lib : libraries_)
     {
-        fs::path libPath = externalDir / lib.name;
-        lib.isInstalled = fs::exists(libPath) && fs::is_directory(libPath);
+        // Prefer repository folder name (from URL), fallback to display name.
+        std::wstring repoFolder = RepoFolderFromGitUrl(lib.gitUrl);
+        fs::path libPath = repoFolder.empty() ? (externalDir / lib.name)
+                                              : (externalDir / repoFolder);
+
+        bool installed = fs::exists(libPath) && fs::is_directory(libPath);
+
+        if (!installed)
+        {
+            fs::path fallbackPath = externalDir / lib.name;
+            installed = fs::exists(fallbackPath) && fs::is_directory(fallbackPath);
+        }
+
+        lib.isInstalled = installed;
     }
 }

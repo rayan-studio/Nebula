@@ -396,6 +396,32 @@ def ensure_external_dependencies():
             )
 
 
+# ── source-file snapshot (detect new/removed .cpp files without --reconfigure) ─
+
+def _src_snapshot_path(build_dir: Path) -> Path:
+    return build_dir / ".nebula_src_snapshot"
+
+def _current_src_files() -> set:
+    return {p.as_posix() for p in (ROOT / "src").rglob("*.cpp")}
+
+def _saved_src_files(build_dir: Path) -> set:
+    snap = _src_snapshot_path(build_dir)
+    if not snap.exists():
+        return set()
+    return set(snap.read_text(encoding="utf-8").splitlines())
+
+def _save_src_snapshot(build_dir: Path):
+    _src_snapshot_path(build_dir).write_text(
+        "\n".join(sorted(_current_src_files())), encoding="utf-8"
+    )
+
+def src_files_changed(build_dir: Path) -> bool:
+    """Return True if .cpp files were added or removed since last configure."""
+    if not (build_dir / "CMakeCache.txt").exists():
+        return True
+    return _current_src_files() != _saved_src_files(build_dir)
+
+
 # ── cmake helpers ─────────────────────────────────────────────────────────────
 
 def pick_generator(force_ninja=False):
@@ -465,7 +491,6 @@ def main():
     force_fast        = "--fast" in args
     force_ninja       = "--ninja" in args or force_fast
     force_reconfigure = "--reconfigure" in args or "--configure" in args
-    skip_configure    = not force_reconfigure
 
     if "clean" in args or "--clean" in args or "-c" in args:
         CLEAN_DIRS = [
@@ -518,6 +543,10 @@ def main():
         active_gen   = cache_gen
         is_multi_config = is_multi_config_generator(cache_gen)
 
+    cache_exists   = (build_dir / "CMakeCache.txt").exists()
+    new_sources    = src_files_changed(build_dir)
+    skip_configure = not force_reconfigure and not new_sources and cache_exists
+
     if skip_configure and cache_gen and gen_name != "(default)" and not generator_matches(gen_name, cache_gen):
         log(f"  note: using cached generator ({cache_gen})", C.D)
 
@@ -545,8 +574,7 @@ def main():
     print()
 
     # ── configure ─────────────────────────────────────────────────────────────
-    cache_exists = (build_dir / "CMakeCache.txt").exists()
-    if skip_configure and cache_exists:
+    if skip_configure:
         log(f"Configuring...  {C.D}skipped  (use --reconfigure to force){C.R}", "")
     else:
         sys.stdout.write(f"Configuring...  ")
@@ -567,6 +595,7 @@ def main():
                 log(f"  {ln}", C.D)
             return r.returncode
 
+        _save_src_snapshot(build_dir)
         print(f"{C.G}done{C.R}")
 
     print()

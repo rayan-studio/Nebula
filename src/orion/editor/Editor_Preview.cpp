@@ -692,6 +692,90 @@ namespace
         return true;
     }
 
+    std::wstring StripHtmlTags(const std::wstring &text)
+    {
+        std::wstring out;
+        out.reserve(text.size());
+        size_t i = 0;
+        while (i < text.size())
+        {
+            if (text[i] == L'<')
+            {
+                size_t end = text.find(L'>', i + 1);
+                if (end != std::wstring::npos)
+                {
+                    i = end + 1;
+                    continue;
+                }
+            }
+            out.push_back(text[i]);
+            i++;
+        }
+        return out;
+    }
+
+    bool ParseAnchorHref(const std::wstring &anchorTag, std::wstring &outHref)
+    {
+        outHref.clear();
+        size_t i = 0;
+        while (i < anchorTag.size() && anchorTag[i] != L'<') i++;
+        if (i >= anchorTag.size())
+            return false;
+        i++;
+        if (i >= anchorTag.size() || towlower(anchorTag[i]) != L'a')
+            return false;
+        i++;
+
+        while (i < anchorTag.size())
+        {
+            while (i < anchorTag.size() && (iswspace(anchorTag[i]) || anchorTag[i] == L'/' || anchorTag[i] == L'>'))
+                i++;
+            size_t nameStart = i;
+            while (i < anchorTag.size() && (iswalnum(anchorTag[i]) || anchorTag[i] == L'-' || anchorTag[i] == L':' || anchorTag[i] == L'_'))
+                i++;
+            if (i <= nameStart)
+                break;
+
+            std::wstring name = ToLower(anchorTag.substr(nameStart, i - nameStart));
+            while (i < anchorTag.size() && iswspace(anchorTag[i]))
+                i++;
+            if (i >= anchorTag.size() || anchorTag[i] != L'=')
+                continue;
+            i++;
+            while (i < anchorTag.size() && iswspace(anchorTag[i]))
+                i++;
+            if (i >= anchorTag.size())
+                break;
+
+            std::wstring value;
+            if (anchorTag[i] == L'"' || anchorTag[i] == L'\'')
+            {
+                wchar_t quote = anchorTag[i++];
+                size_t valueStart = i;
+                size_t valueEnd = anchorTag.find(quote, valueStart);
+                if (valueEnd == std::wstring::npos)
+                    break;
+                value = anchorTag.substr(valueStart, valueEnd - valueStart);
+                i = valueEnd + 1;
+            }
+            else
+            {
+                size_t valueStart = i;
+                while (i < anchorTag.size() && !iswspace(anchorTag[i]) && anchorTag[i] != L'>')
+                    i++;
+                value = anchorTag.substr(valueStart, i - valueStart);
+            }
+
+            if (name == L"href")
+            {
+                outHref = NormalizeImageRef(value);
+                return !outHref.empty();
+            }
+        }
+
+        return false;
+    }
+
 
     std::wstring StripMarkdownLinks(const std::wstring &line)
     {
@@ -700,22 +784,102 @@ namespace
         size_t i = 0;
         while (i < line.size())
         {
-            if (line[i] == L'[')
+            if (line[i] == L'<' && i + 1 < line.size() && towlower(line[i + 1]) == L'a')
             {
-                size_t close = line.find(L']', i + 1);
-                size_t openParen = (close == std::wstring::npos) ? std::wstring::npos : line.find(L'(', close + 1);
-                size_t closeParen = (openParen == std::wstring::npos) ? std::wstring::npos : line.find(L')', openParen + 1);
-                if (close != std::wstring::npos && openParen == close + 1 && closeParen != std::wstring::npos)
+                size_t openEnd = line.find(L'>', i + 2);
+                if (openEnd != std::wstring::npos)
                 {
-                    out.append(line.substr(i + 1, close - i - 1));
+                    size_t closeStart = FindNoCase(line, L"</a>", openEnd + 1);
+                    std::wstring href;
+                    ParseAnchorHref(line.substr(i, openEnd - i + 1), href);
+
+                    std::wstring inner;
+                    if (closeStart != std::wstring::npos)
+                        inner = line.substr(openEnd + 1, closeStart - (openEnd + 1));
+
+                    inner = Trim(StripHtmlTags(inner));
+                    if (!inner.empty())
+                        out.append(inner);
+                    else if (!href.empty())
+                        out.append(href);
+
+                    i = (closeStart == std::wstring::npos) ? (openEnd + 1) : (closeStart + 4);
+                    continue;
+                }
+            }
+
+            if (line[i] == L'!' && i + 1 < line.size() && line[i + 1] == L'[')
+            {
+                size_t altClose = line.find(L']', i + 2);
+                size_t openParen = (altClose == std::wstring::npos) ? std::wstring::npos : line.find(L'(', altClose + 1);
+                size_t closeParen = FindMatchingParen(line, openParen);
+                if (altClose != std::wstring::npos && openParen == altClose + 1 && closeParen != std::wstring::npos)
+                {
+                    out.append(line.substr(i + 2, altClose - (i + 2)));
                     i = closeParen + 1;
                     continue;
                 }
             }
+
+            if (line[i] == L'[')
+            {
+                size_t close = line.find(L']', i + 1);
+                size_t openParen = (close == std::wstring::npos) ? std::wstring::npos : line.find(L'(', close + 1);
+                size_t closeParen = FindMatchingParen(line, openParen);
+                if (close != std::wstring::npos && openParen == close + 1 && closeParen != std::wstring::npos)
+                {
+                    std::wstring label = line.substr(i + 1, close - i - 1);
+
+                    // Badge-style nested link: [![alt](badge-url)](target-url)
+                    if (label.size() > 3 && label[0] == L'!' && label[1] == L'[')
+                    {
+                        size_t innerAltClose = label.find(L']', 2);
+                        size_t innerOpenParen = (innerAltClose == std::wstring::npos) ? std::wstring::npos : label.find(L'(', innerAltClose + 1);
+                        size_t innerCloseParen = FindMatchingParen(label, innerOpenParen);
+                        if (innerAltClose != std::wstring::npos && innerOpenParen == innerAltClose + 1 && innerCloseParen == label.size() - 1)
+                        {
+                            label = label.substr(2, innerAltClose - 2);
+                        }
+                    }
+
+                    out.append(label);
+                    i = closeParen + 1;
+                    continue;
+                }
+            }
+
+            if (line[i] == L'<')
+            {
+                size_t tagEnd = line.find(L'>', i + 1);
+                if (tagEnd != std::wstring::npos)
+                {
+                    i = tagEnd + 1;
+                    continue;
+                }
+            }
+
             out.push_back(line[i]);
             i++;
         }
         return out;
+    }
+
+    std::wstring NormalizeTableCellText(const std::wstring &cell)
+    {
+        std::wstring text = StripMarkdownLinks(cell);
+
+        // Tables use plain text rendering; strip strong markers that would
+        // otherwise appear literally (e.g., **main**).
+        size_t pos = 0;
+        while ((pos = text.find(L"**", pos)) != std::wstring::npos)
+            text.erase(pos, 2);
+        pos = 0;
+        while ((pos = text.find(L"__", pos)) != std::wstring::npos)
+            text.erase(pos, 2);
+
+        // Keep inline code content but drop backtick delimiters in table cells.
+        text.erase(std::remove(text.begin(), text.end(), L'`'), text.end());
+        return Trim(text);
     }
 
     bool IsHorizontalRule(const std::wstring &trimmed)
@@ -1463,9 +1627,31 @@ namespace
     {
         std::vector<std::wstring> cells;
         std::wstring cur;
+        bool escaped = false;
+        bool inInlineCode = false;
         for (wchar_t ch : line)
         {
-            if (ch == L'|')
+            if (escaped)
+            {
+                cur.push_back(ch);
+                escaped = false;
+                continue;
+            }
+
+            if (ch == L'\\')
+            {
+                escaped = true;
+                continue;
+            }
+
+            if (ch == L'`')
+            {
+                inInlineCode = !inInlineCode;
+                cur.push_back(ch);
+                continue;
+            }
+
+            if (ch == L'|' && !inInlineCode)
             {
                 cells.push_back(Trim(cur));
                 cur.clear();
@@ -2235,9 +2421,100 @@ namespace Orion
                 }
                 else if (blk.type == MarkdownBlock::Type::Table)
                 {
-                    float rowH = 24.0f;
-                    float rows = (float)blk.tableRows.size();
-                    float advance = rows * rowH + kTableGap;
+                    float advance = kTableGap;
+                    if (!blk.tableRows.empty())
+                    {
+                        size_t colCount = 0;
+                        for (const auto &row : blk.tableRows)
+                            colCount = (std::max)(colCount, row.size());
+
+                        if (colCount > 0)
+                        {
+                            const float paddingX = 8.0f;
+                            const float paddingY = 6.0f;
+                            std::vector<float> colWidths(colCount, 0.0f);
+
+                            for (size_t r = 0; r < blk.tableRows.size(); ++r)
+                            {
+                                const auto &row = blk.tableRows[r];
+                                for (size_t c = 0; c < colCount; ++c)
+                                {
+                                    std::wstring cellRaw = (c < row.size()) ? row[c] : L"";
+                                    std::wstring cell = NormalizeTableCellText(cellRaw);
+                                    IDWriteTextFormat *fmt = nullptr;
+                                    DWRITE_FONT_WEIGHT weight = (r == 0) ? DWRITE_FONT_WEIGHT_BOLD : DWRITE_FONT_WEIGHT_NORMAL;
+                                    if (SUCCEEDED(dwrite->CreateTextFormat(
+                                            L"Segoe UI",
+                                            nullptr,
+                                            weight,
+                                            DWRITE_FONT_STYLE_NORMAL,
+                                            DWRITE_FONT_STRETCH_NORMAL,
+                                            13.5f,
+                                            L"",
+                                            &fmt)))
+                                    {
+                                        IDWriteTextLayout *layout = nullptr;
+                                        if (SUCCEEDED(dwrite->CreateTextLayout(cell.c_str(), (UINT32)cell.size(), fmt, 10000.0f, 10000.0f, &layout)))
+                                        {
+                                            DWRITE_TEXT_METRICS metrics = {};
+                                            layout->GetMetrics(&metrics);
+                                            colWidths[c] = (std::max)(colWidths[c], metrics.width + paddingX * 2.0f);
+                                            layout->Release();
+                                        }
+                                        fmt->Release();
+                                    }
+                                }
+                            }
+
+                            float tableWidth = 0.0f;
+                            for (float w : colWidths)
+                                tableWidth += w;
+                            if (tableWidth > blockAvailW && tableWidth > 0.0f)
+                            {
+                                float scale = blockAvailW / tableWidth;
+                                for (float &w : colWidths)
+                                    w *= scale;
+                            }
+
+                            float tableHeight = 0.0f;
+                            for (size_t r = 0; r < blk.tableRows.size(); ++r)
+                            {
+                                const auto &row = blk.tableRows[r];
+                                float rowHeight = 22.0f;
+                                for (size_t c = 0; c < colCount; ++c)
+                                {
+                                    std::wstring cellRaw = (c < row.size()) ? row[c] : L"";
+                                    std::wstring cell = NormalizeTableCellText(cellRaw);
+                                    IDWriteTextFormat *fmt = nullptr;
+                                    DWRITE_FONT_WEIGHT weight = (r == 0) ? DWRITE_FONT_WEIGHT_BOLD : DWRITE_FONT_WEIGHT_NORMAL;
+                                    if (SUCCEEDED(dwrite->CreateTextFormat(
+                                            L"Segoe UI",
+                                            nullptr,
+                                            weight,
+                                            DWRITE_FONT_STYLE_NORMAL,
+                                            DWRITE_FONT_STRETCH_NORMAL,
+                                            13.5f,
+                                            L"",
+                                            &fmt)))
+                                    {
+                                        IDWriteTextLayout *layout = nullptr;
+                                        float cellWidth = (std::max)(24.0f, colWidths[c] - paddingX * 2.0f);
+                                        if (SUCCEEDED(dwrite->CreateTextLayout(cell.c_str(), (UINT32)cell.size(), fmt, cellWidth, 10000.0f, &layout)))
+                                        {
+                                            DWRITE_TEXT_METRICS metrics = {};
+                                            layout->GetMetrics(&metrics);
+                                            rowHeight = (std::max)(rowHeight, metrics.height + paddingY * 2.0f);
+                                            layout->Release();
+                                        }
+                                        fmt->Release();
+                                    }
+                                }
+                                tableHeight += rowHeight;
+                            }
+
+                            advance = tableHeight + kTableGap;
+                        }
+                    }
                     if (measurePendingFloat)
                     {
                         advance = (std::max)(advance, measurePendingFloatHeight + kFloatGap);
@@ -2677,14 +2954,15 @@ namespace Orion
                     }
 
                     std::vector<float> colWidths(colCount, 0.0f);
-                    std::vector<float> rowHeights(rowCount, 0.0f);
+                    std::vector<float> rowHeights(rowCount, 22.0f);
 
                     for (size_t r = 0; r < rowCount; ++r)
                     {
                         const auto &row = blk.tableRows[r];
                         for (size_t c = 0; c < colCount; ++c)
                         {
-                            std::wstring cell = (c < row.size()) ? row[c] : L"";
+                            std::wstring cellRaw = (c < row.size()) ? row[c] : L"";
+                            std::wstring cell = NormalizeTableCellText(cellRaw);
                             IDWriteTextFormat *fmt = nullptr;
                             DWRITE_FONT_WEIGHT weight = (r == 0) ? DWRITE_FONT_WEIGHT_BOLD : DWRITE_FONT_WEIGHT_NORMAL;
                             if (SUCCEEDED(dwrite->CreateTextFormat(
@@ -2703,7 +2981,6 @@ namespace Orion
                                     DWRITE_TEXT_METRICS metrics = {};
                                     layout->GetMetrics(&metrics);
                                     colWidths[c] = (std::max)(colWidths[c], metrics.width + paddingX * 2.0f);
-                                    rowHeights[r] = (std::max)(rowHeights[r], metrics.height + paddingY * 2.0f);
                                     layout->Release();
                                 }
                                 fmt->Release();
@@ -2720,6 +2997,40 @@ namespace Orion
                         for (float &w : colWidths)
                             w *= scale;
                         tableWidth = localAvailW;
+                    }
+
+                    // Recompute row heights using wrapped width to prevent cell overlap.
+                    for (size_t r = 0; r < rowCount; ++r)
+                    {
+                        const auto &row = blk.tableRows[r];
+                        for (size_t c = 0; c < colCount; ++c)
+                        {
+                            std::wstring cellRaw = (c < row.size()) ? row[c] : L"";
+                            std::wstring cell = NormalizeTableCellText(cellRaw);
+                            IDWriteTextFormat *fmt = nullptr;
+                            DWRITE_FONT_WEIGHT weight = (r == 0) ? DWRITE_FONT_WEIGHT_BOLD : DWRITE_FONT_WEIGHT_NORMAL;
+                            if (SUCCEEDED(dwrite->CreateTextFormat(
+                                    L"Segoe UI",
+                                    nullptr,
+                                    weight,
+                                    DWRITE_FONT_STYLE_NORMAL,
+                                    DWRITE_FONT_STRETCH_NORMAL,
+                                    13.5f,
+                                    L"",
+                                    &fmt)))
+                            {
+                                IDWriteTextLayout *layout = nullptr;
+                                float cellWidth = (std::max)(24.0f, colWidths[c] - paddingX * 2.0f);
+                                if (SUCCEEDED(dwrite->CreateTextLayout(cell.c_str(), (UINT32)cell.size(), fmt, cellWidth, 10000.0f, &layout)))
+                                {
+                                    DWRITE_TEXT_METRICS metrics = {};
+                                    layout->GetMetrics(&metrics);
+                                    rowHeights[r] = (std::max)(rowHeights[r], metrics.height + paddingY * 2.0f);
+                                    layout->Release();
+                                }
+                                fmt->Release();
+                            }
+                        }
                     }
 
                     float x0 = localLeft;
@@ -2757,7 +3068,8 @@ namespace Orion
                         const auto &row = blk.tableRows[r];
                         for (size_t c = 0; c < colCount; ++c)
                         {
-                            std::wstring cell = (c < row.size()) ? row[c] : L"";
+                            std::wstring cellRaw = (c < row.size()) ? row[c] : L"";
+                            std::wstring cell = NormalizeTableCellText(cellRaw);
                             IDWriteTextFormat *fmt = nullptr;
                             DWRITE_FONT_WEIGHT weight = (r == 0) ? DWRITE_FONT_WEIGHT_BOLD : DWRITE_FONT_WEIGHT_NORMAL;
                             if (SUCCEEDED(dwrite->CreateTextFormat(

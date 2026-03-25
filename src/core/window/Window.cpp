@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <cstring>
+#include <cstdlib>
 #include <cmath>
 #include <windows.h>
 #include <windowsx.h>
@@ -30,6 +31,7 @@
 #include "ui/components/titlebar/TitleBar.h"
 #include "ui/components/popups/CustomPopup.h"
 #include "ui/components/popups/PopupWindow.h"
+#include "ui/components/dialogs/Dialog.h"
 #include "ui/components/footer/Footer.h"
 #include "utils/ggwave/ggwave_integration.h"
 #include "core/explorer/Explorer.h"
@@ -94,7 +96,7 @@ static void SetDwmBorderColor(HWND hwnd, bool focused)
 
     // DWMWA_BORDER_COLOR = 34 (Windows 11+). Use COLORREF (0x00bbggrr).
     const DWORD DWMWA_BORDER_COLOR = 34;
-    COLORREF color = focused ? RGB(61, 143, 242) : RGB(51, 51, 51);
+    COLORREF color = focused ? RGB(61, 143, 242) : RGB(70, 70, 75);
     pDwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &color, sizeof(color));
 
     FreeLibrary(hDwm);
@@ -616,13 +618,6 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         std::wstring *title = reinterpret_cast<std::wstring *>(lParam);
         if (title)
         {
-            RECT rc;
-            GetWindowRect(hwnd_, &rc);
-            UINT dpi = win32_get_dpi_for_window(hwnd_);
-            int width = win32_dpi_scale(520, dpi);
-            int height = win32_dpi_scale(220, dpi);
-            int x = rc.left + (rc.right - rc.left - width) / 2;
-            int y = rc.top + (rc.bottom - rc.top - height) / 3;
             size_t split = title->find(L'\n');
             std::wstring msgTitle = *title;
             std::wstring msgBody;
@@ -631,7 +626,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 msgTitle = title->substr(0, split);
                 msgBody = title->substr(split + 1);
             }
-            ShowPopupWindow(hwnd_, x, y, width, height, msgTitle, msgBody);
+            ShowDialog(hwnd_, msgTitle, msgBody, DialogKind::Error);
             delete title;
         }
         return 0;
@@ -936,11 +931,51 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         auto *payload = reinterpret_cast<LspDiagnosticsResult *>(lParam);
         if (payload)
         {
+            auto isLspTraceEnabled = []() {
+                char* env = nullptr;
+                size_t envLen = 0;
+                errno_t err = _dupenv_s(&env, &envLen, "NEBULA_LSP_TRACE");
+                bool enabled = (err == 0 && env && env[0] != '\0' && env[0] != '0');
+                if (env)
+                    free(env);
+                return enabled;
+            };
+
             Orion::Editor *ed = GetEditorForTab(payload->tabIndex);
+            int targetTab = payload->tabIndex;
+
+            if (!(ed && ed->GetFilePath() == payload->filePath))
+            {
+                int byPath = tabBar_.FindTabIndexByFilePath(payload->filePath);
+                if (byPath >= 0)
+                {
+                    targetTab = byPath;
+                    ed = GetEditorForTab(byPath);
+                }
+            }
+
             if (ed && ed->GetFilePath() == payload->filePath)
             {
                 ed->SetDiagnostics(payload->diagnostics);
                 InvalidateRect(hwnd_, nullptr, FALSE);
+
+                if (isLspTraceEnabled())
+                {
+                    Logger::Instance().Log(
+                        L"[LSP-TRACE] ApplyDiagnostics tab=" + std::to_wstring(targetTab) +
+                        L" file=" + payload->filePath +
+                        L" count=" + std::to_wstring((unsigned long long)payload->diagnostics.size()));
+                }
+            }
+            else
+            {
+                if (isLspTraceEnabled())
+                {
+                    Logger::Instance().Log(
+                        L"[LSP-TRACE] DropDiagnostics tab=" + std::to_wstring(payload->tabIndex) +
+                        L" file=" + payload->filePath +
+                        L" reason=no-matching-editor");
+                }
             }
             delete payload;
         }
@@ -1462,6 +1497,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 if (gitPanel && gitPanel->IsInputFocused())
                     gitPanel->UnfocusInputs();
             }
+            if (GetPanelManager().IsPanelActive(PanelId::Marketplace))
+            {
+                MarketplacePanel *marketplacePanel = GetPanelManager().GetPanelAs<MarketplacePanel>(PanelId::Marketplace);
+                if (marketplacePanel && marketplacePanel->IsSearchInputFocused())
+                    marketplacePanel->UnfocusSearchInput();
+            }
 
             GetTerminalPanel().Unfocus();
             settingsTab_->OnLeftButtonDown(hwnd_, pt);
@@ -1482,6 +1523,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 GitPanel *gitPanel = GetPanelManager().GetPanelAs<GitPanel>(PanelId::Git);
                 if (gitPanel && gitPanel->IsInputFocused())
                     gitPanel->UnfocusInputs();
+            }
+            if (GetPanelManager().IsPanelActive(PanelId::Marketplace))
+            {
+                MarketplacePanel *marketplacePanel = GetPanelManager().GetPanelAs<MarketplacePanel>(PanelId::Marketplace);
+                if (marketplacePanel && marketplacePanel->IsSearchInputFocused())
+                    marketplacePanel->UnfocusSearchInput();
             }
 
             GetTerminalPanel().Unfocus();
@@ -1507,6 +1554,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 GitPanel *gitPanel = GetPanelManager().GetPanelAs<GitPanel>(PanelId::Git);
                 if (gitPanel && gitPanel->IsInputFocused())
                     gitPanel->UnfocusInputs();
+            }
+            if (GetPanelManager().IsPanelActive(PanelId::Marketplace))
+            {
+                MarketplacePanel *marketplacePanel = GetPanelManager().GetPanelAs<MarketplacePanel>(PanelId::Marketplace);
+                if (marketplacePanel && marketplacePanel->IsSearchInputFocused())
+                    marketplacePanel->UnfocusSearchInput();
             }
 
             // Unfocus terminal when clicking in editor
@@ -1637,6 +1690,15 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 return 0;
             }
         }
+        // Dispatch to MarketplacePanel search input
+        if (GetPanelManager().IsPanelActive(PanelId::Marketplace))
+        {
+            MarketplacePanel* mp = GetPanelManager().GetPanelAs<MarketplacePanel>(PanelId::Marketplace);
+            if (mp && mp->HandleSearchChar(static_cast<wchar_t>(wParam))) {
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+        }
         if (keyboard_.OnChar(wParam))
             return 0;
 
@@ -1657,6 +1719,16 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         {
             if (settingsTab_->OnKeyDown(wParam))
             {
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+        }
+        // Dispatch to MarketplacePanel search input
+        if (GetPanelManager().IsPanelActive(PanelId::Marketplace))
+        {
+            MarketplacePanel* mp = GetPanelManager().GetPanelAs<MarketplacePanel>(PanelId::Marketplace);
+            const bool ctrlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            if (mp && !(ctrlDown && (wParam == 'W' || wParam == 'w')) && mp->HandleSearchKeyDown(wParam)) {
                 InvalidateRect(hwnd_, nullptr, FALSE);
                 return 0;
             }
@@ -1719,6 +1791,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 
         if (IsMarketplaceTabIndex(tabBar_.GetActiveTabIndex()) && marketplaceTab_ && marketplaceTab_->IsPointInView(pt))
         {
+            int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            marketplaceTab_->OnMouseWheel(hwnd_, delta);
             return 0;
         }
 
@@ -1922,6 +1996,23 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 
         // GGWave button hover
         GetGGWavePanel().OnMouseMove(hwnd_, pt);
+
+        // Marketplace panel hover must win over explorer fallback routing,
+        // otherwise row hover can be swallowed by other hit-tests.
+        {
+            Panel* activePanelNow = GetPanelManager().GetActivePanel();
+            if (activePanelNow && activePanelNow->IsVisible() &&
+                activePanelNow->GetId() == PanelId::Marketplace)
+            {
+                if (activePanelNow->IsResizing() ||
+                    activePanelNow->IsPointInResizeZone(pt) ||
+                    activePanelNow->IsPointInPanel(pt))
+                {
+                    GetPanelManager().OnMouseMove(hwnd_, pt);
+                    return 0;
+                }
+            }
+        }
 
         // If left button is down, prioritize editor dragging selection
         if (lmbDown)
@@ -2156,6 +2247,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         {
             GetPanelManager().OnLeftButtonUp(hwnd_);
             return 0;
+        }
+
+        // Forward mouse-up to active panel so TextInput can release SetCapture
+        if (GetCapture() == hwnd_)
+        {
+            Panel* activePanel = GetPanelManager().GetActivePanel();
+            if (activePanel && activePanel->IsVisible())
+                activePanel->OnLeftButtonUp(hwnd_);
         }
 
         // Check if terminal was resizing

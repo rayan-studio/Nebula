@@ -9,9 +9,31 @@
 #include <chrono>
 #include <cwctype>
 #include <unordered_set>
+#include <cstdlib>
 
 namespace Lsp
 {
+    static bool IsLspTraceEnabled()
+    {
+        static int cached = -1;
+        if (cached == -1)
+        {
+            char* env = nullptr;
+            size_t envLen = 0;
+            errno_t err = _dupenv_s(&env, &envLen, "NEBULA_LSP_TRACE");
+            cached = (err == 0 && env && env[0] != '\0' && env[0] != '0') ? 1 : 0;
+            if (env)
+                free(env);
+        }
+        return cached == 1;
+    }
+
+    static void TraceLsp(const std::wstring& msg)
+    {
+        if (IsLspTraceEnabled())
+            Logger::Instance().Log(L"[LSP-TRACE] " + msg);
+    }
+
     static std::string WideToUtf8(const std::wstring& w)
     {
         if (w.empty()) return {};
@@ -551,8 +573,17 @@ namespace Lsp
         }
         StartProjectIndexAsync();
 
-        // Start the real clangd LSP client for this project
-        ClangdClient::Instance().Start(rootPath);
+        // Start the real clangd LSP client for this project.
+        // If clangd is already running (project switch), restart it for the new root.
+        if (ClangdClient::Instance().IsRunning())
+            ClangdClient::Instance().RestartForProject(rootPath);
+        else
+            ClangdClient::Instance().Start(rootPath);
+
+        // If there's no compile_commands.json yet, regenerate it in the background
+        // and restart clangd once it's ready — fixes "iostream not found" on first launch.
+        ClangdClient::Instance().EnsureCompileCommandsAsync(rootPath);
+
         ClangdClient::Instance().SetDiagnosticsCallback(
             [](const std::wstring& filePath, int tabIndex, HWND hwnd, const std::vector<Diagnostic>& diags) {
                 auto* payload = new LspDiagnosticsResult();
@@ -1612,6 +1643,11 @@ namespace Lsp
         if (!hwnd)
         return;
 
+        TraceLsp(L"RequestDiagnosticsAsync tab=" + std::to_wstring(tabIndex) +
+             L" file=" + filePath +
+             L" lines=" + std::to_wstring((unsigned long long)lines.size()) +
+             (ClangdClient::Instance().IsRunning() ? L" clangd=running" : L" clangd=stopped"));
+
         // Check if an #include line was just added/modified
         bool hasIncludeChange = false;
         {
@@ -1643,6 +1679,8 @@ namespace Lsp
             {
                 hasIncludeChange = true;
                 fileIncludes_[filePath].assign(newIncludes.begin(),  newIncludes.end());
+                TraceLsp(L"IncludesChanged file=" + filePath +
+                         L" includeCount=" + std::to_wstring((unsigned long long)newIncludes.size()));
             }
         }
 
@@ -1662,39 +1700,38 @@ namespace Lsp
         // Register context so clangd callback can post WM_LSP_DIAGNOSTICS
         ClangdClient::Instance().SetContext(pathCopy, hwnd, tabIndex);
 
-        // Send file content to clangd (if running) for real diagnostics
-        if (ClangdClient::Instance().IsRunning()) {
-            std::string content;
-            content.reserve(linesCopy.size() * 40);
-            for (size_t i = 0; i < linesCopy.size(); i++) {
-                content += WideToUtf8(linesCopy[i]);
-                if (i + 1 < linesCopy.size()) content += "\n";
-            }
-            static std::unordered_map<std::wstring, int> s_versions;
-            static std::mutex s_versionsMutex;
-            int ver = 0;
+        // Always send (or buffer) file content to clangd.
+        // This avoids first-open stale diagnostics when clangd starts slightly later.
+        std::string content;
+        content.reserve(linesCopy.size() * 40);
+        for (size_t i = 0; i < linesCopy.size(); i++) {
+            content += WideToUtf8(linesCopy[i]);
+            if (i + 1 < linesCopy.size()) content += "\n";
+        }
+        static std::unordered_map<std::wstring, int> s_versions;
+        static std::mutex s_versionsMutex;
+        int ver = 0;
+        {
+            std::lock_guard<std::mutex> lk(s_versionsMutex);
+            ver = ++s_versions[pathCopy];
+        }
+        if (ver == 1) {
+            ClangdClient::Instance().DidOpen(pathCopy, content, 1);
+        } else {
+            // Debounce: envoyer à clangd 300ms après le dernier keystroke
             {
-                std::lock_guard<std::mutex> lk(s_versionsMutex);
-                ver = ++s_versions[pathCopy];
+                std::lock_guard<std::mutex> lk(mutex_);
+                clangdPendingVer_[pathCopy] = ver;
             }
-            if (ver == 1) {
-                ClangdClient::Instance().DidOpen(pathCopy, content, 1);
-            } else {
-                // Debounce: envoyer à clangd 300ms après le dernier keystroke
-                {
-                    std::lock_guard<std::mutex> lk(mutex_);
-                    clangdPendingVer_[pathCopy] = ver;
+            std::thread([this, pathCopy, content, ver]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                std::lock_guard<std::mutex> lk(mutex_);
+                auto it = clangdPendingVer_.find(pathCopy);
+                if (it != clangdPendingVer_.end() && it->second == ver) {
+                    ClangdClient::Instance().DidChange(pathCopy, content, ver);
+                    clangdPendingVer_.erase(it);
                 }
-                std::thread([this, pathCopy, content, ver]() {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(300));
-                    std::lock_guard<std::mutex> lk(mutex_);
-                    auto it = clangdPendingVer_.find(pathCopy);
-                    if (it != clangdPendingVer_.end() && it->second == ver) {
-                        ClangdClient::Instance().DidChange(pathCopy, content, ver);
-                        clangdPendingVer_.erase(it);
-                    }
-                }).detach();
-            }
+            }).detach();
         }
 
         // Quand clangd tourne, il fournit des diagnostics complets et précis.

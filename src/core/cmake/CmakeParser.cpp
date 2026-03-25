@@ -4,6 +4,7 @@
 #include <sstream>
 #include <algorithm>
 #include <filesystem>
+#include <unordered_map>
 
 namespace fs = std::filesystem;
 
@@ -42,7 +43,9 @@ static std::string ToNarrow(const std::wstring &w)
 // Lower-case a string for case-insensitive keyword matching
 static std::string Lower(std::string s)
 {
-    std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
     return s;
 }
 
@@ -92,6 +95,174 @@ static bool IsScopeKeyword(const std::string &t)
     return false;
 }
 
+static std::string StripQuotes(std::string s)
+{
+    if (s.size() >= 2)
+    {
+        if ((s.front() == '"' && s.back() == '"') ||
+            (s.front() == '\'' && s.back() == '\''))
+            return s.substr(1, s.size() - 2);
+    }
+    return s;
+}
+
+static std::string NormalizeSlashes(std::string s)
+{
+    std::replace(s.begin(), s.end(), '\\', '/');
+    return s;
+}
+
+static std::string ResolveCmakeVarToken(const std::string &token,
+                                        const std::unordered_map<std::string, std::string> &vars)
+{
+    std::string t = StripQuotes(token);
+    if (t.size() < 4 || t.rfind("${", 0) != 0)
+        return t;
+
+    size_t close = t.find('}');
+    if (close == std::string::npos)
+        return t;
+
+    std::string varName = Lower(t.substr(2, close - 2));
+    auto it = vars.find(varName);
+    if (it == vars.end())
+        return t;
+
+    std::string suffix = t.substr(close + 1);
+    return it->second + suffix;
+}
+
+static bool TryExtractExternalRel(const std::string &valueRaw, std::string &outRel)
+{
+    std::string value = NormalizeSlashes(valueRaw);
+    std::string lower = Lower(value);
+
+    size_t pos = lower.find("/external/");
+    if (pos == std::string::npos)
+    {
+        if (lower.rfind("external/", 0) == 0)
+            pos = static_cast<size_t>(-1); // already starts with external/
+        else
+            return false;
+    }
+
+    std::string rel;
+    if (pos == static_cast<size_t>(-1))
+        rel = value;
+    else
+        rel = value.substr(pos + 1); // keep "external/..."
+
+    // Keep at most external/<lib>
+    std::string relLower = Lower(rel);
+    size_t extPos = relLower.find("external/");
+    if (extPos == std::string::npos)
+        return false;
+
+    std::string tail = rel.substr(extPos + 9);
+    size_t slash = tail.find('/');
+    std::string libName = (slash == std::string::npos) ? tail : tail.substr(0, slash);
+    if (libName.empty())
+        return false;
+
+    outRel = "external/" + libName;
+    return true;
+}
+
+static bool ContainsAny(const std::string &textLower, const std::vector<std::string> &needles)
+{
+    for (const auto &n : needles)
+    {
+        if (!n.empty() && textLower.find(n) != std::string::npos)
+            return true;
+    }
+    return false;
+}
+
+static std::string ReadFileUtf8BestEffort(const fs::path &p)
+{
+    std::ifstream f(p, std::ios::binary);
+    if (!f.is_open())
+        return {};
+    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+static std::string ToLowerCopy(std::string s)
+{
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return s;
+}
+
+struct AutoSystemDeps
+{
+    bool needsOpenGL = false;
+    bool needsWinsock = false;
+    bool needsThreads = false;
+};
+
+static AutoSystemDeps DetectAutoSystemDeps(const fs::path &projectCmakePath, const std::string &subdirRel)
+{
+    AutoSystemDeps deps;
+
+    fs::path projectRoot;
+    try { projectRoot = projectCmakePath.parent_path(); }
+    catch (...) { return deps; }
+
+    fs::path libRoot = (projectRoot / fs::path(subdirRel)).lexically_normal();
+    std::error_code ec;
+    if (!fs::exists(libRoot, ec) || !fs::is_directory(libRoot, ec))
+        return deps;
+
+    // 1) Look at the library CMakeLists.txt first (fast + most reliable signal).
+    std::string cmakeLower;
+    {
+        fs::path libCmake = libRoot / "CMakeLists.txt";
+        cmakeLower = ToLowerCopy(ReadFileUtf8BestEffort(libCmake));
+    }
+
+    deps.needsOpenGL = ContainsAny(cmakeLower, {
+        "find_package(opengl", "opengl::gl", "opengl_gl_preference", "glad", "glew"
+    });
+
+    deps.needsThreads = ContainsAny(cmakeLower, {
+        "find_package(threads", "threads::threads", "pthread"
+    });
+
+    deps.needsWinsock = ContainsAny(cmakeLower, {
+        "ws2_32", "winsock", "ws2tcpip"
+    });
+
+    // 2) Fallback signal from source/include tree (limited scan) for libs that
+    // rely on system APIs without declaring them explicitly in top-level cmake.
+    int scannedFiles = 0;
+    const int kMaxFiles = 120;
+    for (fs::recursive_directory_iterator it(libRoot, fs::directory_options::skip_permission_denied, ec), end;
+         it != end && scannedFiles < kMaxFiles; ++it)
+    {
+        if (ec) break;
+        if (!it->is_regular_file(ec)) continue;
+
+        std::string ext = ToLowerCopy(it->path().extension().string());
+        if (ext != ".h" && ext != ".hpp" && ext != ".hh" && ext != ".c" && ext != ".cpp" && ext != ".cc" && ext != ".cxx")
+            continue;
+
+        std::string txt = ToLowerCopy(ReadFileUtf8BestEffort(it->path()));
+        if (txt.empty())
+            continue;
+
+        if (!deps.needsOpenGL && ContainsAny(txt, {"#include <gl/", "#include <glad/", "#include <glew/"}))
+            deps.needsOpenGL = true;
+
+        if (!deps.needsWinsock && ContainsAny(txt, {"#include <winsock2.h>", "#include <ws2tcpip.h>"}))
+            deps.needsWinsock = true;
+
+        ++scannedFiles;
+    }
+
+    return deps;
+}
+
 // ---------------------------------------------------------------------------
 // ParseCmakeLists
 // ---------------------------------------------------------------------------
@@ -100,6 +271,22 @@ CmakeProjectInfo ParseCmakeLists(const std::wstring &cmakePath)
     CmakeProjectInfo info;
     std::wstring firstExecutableTarget;
     std::wstring firstLibraryTarget;
+    std::unordered_map<std::string, std::string> cmakeVars;
+
+    auto appendLibIfNew = [&info](const CmakeSubLib &candidate)
+    {
+        std::wstring keyNew = candidate.subdirAbs.empty() ? candidate.subdirRel : candidate.subdirAbs;
+        std::transform(keyNew.begin(), keyNew.end(), keyNew.begin(), ::towlower);
+
+        for (const auto &existing : info.libraries)
+        {
+            std::wstring keyOld = existing.subdirAbs.empty() ? existing.subdirRel : existing.subdirAbs;
+            std::transform(keyOld.begin(), keyOld.end(), keyOld.begin(), ::towlower);
+            if (!keyNew.empty() && keyNew == keyOld)
+                return;
+        }
+        info.libraries.push_back(candidate);
+    };
 
     // Project root = directory containing CMakeLists.txt
     try { info.projectRoot = fs::path(cmakePath).parent_path().wstring(); }
@@ -155,6 +342,44 @@ CmakeProjectInfo ParseCmakeLists(const std::wstring &cmakePath)
         std::vector<std::string> tokens = SplitTokens(args);
         if (tokens.empty()) continue;
 
+        // ── set(VAR value) → keep a lightweight variable map for path resolution ──
+        if (cmd == "set" && tokens.size() >= 2)
+        {
+            std::string var = Lower(StripQuotes(tokens[0]));
+            std::string val = ResolveCmakeVarToken(tokens[1], cmakeVars);
+            if (!var.empty() && !val.empty())
+                cmakeVars[var] = NormalizeSlashes(StripQuotes(val));
+        }
+
+        // ── file(GLOB VAR pattern...) / file(GLOB_RECURSE VAR pattern...) ──
+        else if (cmd == "file" && tokens.size() >= 3)
+        {
+            std::string mode = Lower(StripQuotes(tokens[0]));
+            if (mode == "glob" || mode == "glob_recurse")
+            {
+                std::string outVar = Lower(StripQuotes(tokens[1]));
+                std::string firstPattern;
+
+                for (size_t i = 2; i < tokens.size(); ++i)
+                {
+                    std::string tk = Lower(StripQuotes(tokens[i]));
+                    if (tk == "list_directories" || tk == "follow_symlinks" || tk == "configure_depends")
+                        continue;
+
+                    std::string resolved = ResolveCmakeVarToken(tokens[i], cmakeVars);
+                    resolved = NormalizeSlashes(StripQuotes(resolved));
+                    if (!resolved.empty())
+                    {
+                        firstPattern = resolved;
+                        break;
+                    }
+                }
+
+                if (!outVar.empty() && !firstPattern.empty())
+                    cmakeVars[outVar] = firstPattern;
+            }
+        }
+
         // ── add_executable / add_library → capture target names ──
         if ((cmd == "add_executable" || cmd == "add_library"))
         {
@@ -174,12 +399,46 @@ CmakeProjectInfo ParseCmakeLists(const std::wstring &cmakePath)
                     break;
                 }
             }
+
+            // Detect libraries whose source list comes from external/<name>/...
+            if (cmd == "add_library" && !tokens.empty())
+            {
+                std::string targetName = StripQuotes(tokens[0]);
+                for (size_t i = 1; i < tokens.size(); ++i)
+                {
+                    std::string resolved = ResolveCmakeVarToken(tokens[i], cmakeVars);
+                    std::string relExternal;
+                    if (!TryExtractExternalRel(resolved, relExternal))
+                        continue;
+
+                    CmakeSubLib lib;
+                    lib.subdirRel = ToWide(relExternal);
+                    try { lib.name = ToWide(fs::path(relExternal).filename().string()); }
+                    catch (...) { lib.name = ToWide(targetName); }
+                    try {
+                        lib.subdirAbs = (fs::path(info.projectRoot) / fs::path(relExternal)).lexically_normal().wstring();
+                    } catch (...) {
+                        lib.subdirAbs = lib.subdirRel;
+                    }
+                    appendLibIfNew(lib);
+                    break;
+                }
+            }
         }
 
         // ── add_subdirectory → first arg is path ──
         else if (cmd == "add_subdirectory" && !tokens.empty())
         {
-            std::string subdirRel = tokens[0];
+            std::string subdirRaw = StripQuotes(tokens[0]);
+            std::string resolved = ResolveCmakeVarToken(subdirRaw, cmakeVars);
+            std::string subdirRel = subdirRaw;
+
+            std::string externalRel;
+            if (TryExtractExternalRel(resolved, externalRel))
+                subdirRel = externalRel;
+            else if (!resolved.empty() && resolved.find("${") == std::string::npos)
+                subdirRel = resolved;
+
             // Skip system/external CMake helper directories
             std::string lp = Lower(subdirRel);
             if (lp.find("cmake") == std::string::npos)   // skip cmake utility dirs
@@ -192,9 +451,13 @@ CmakeProjectInfo ParseCmakeLists(const std::wstring &cmakePath)
                 } catch (...) { lib.name = lib.subdirRel; }
                 // Absolute path
                 try {
-                    lib.subdirAbs = (fs::path(info.projectRoot) / subdirRel).lexically_normal().wstring();
+                    fs::path p = fs::path(subdirRel);
+                    if (p.is_absolute())
+                        lib.subdirAbs = p.lexically_normal().wstring();
+                    else
+                        lib.subdirAbs = (fs::path(info.projectRoot) / p).lexically_normal().wstring();
                 } catch (...) { lib.subdirAbs = lib.subdirRel; }
-                info.libraries.push_back(std::move(lib));
+                appendLibIfNew(lib);
             }
         }
 
@@ -249,10 +512,47 @@ bool AddLibraryToCmake(const std::wstring &projectCmakePath,
     std::string targetStr  = ToNarrow(projectTargetName);
     std::string libStr     = ToNarrow(libTargetName);
 
+    auto toLower = [](std::string s) {
+        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        return s;
+    };
+
+    std::string existingLower = toLower(existing);
+    std::string subdirLower = toLower(subdirStr);
+    std::string libLower = toLower(libStr);
+    bool hasOpenGL32 = (existingLower.find("opengl32") != std::string::npos);
+    bool hasWs2_32 = (existingLower.find("ws2_32") != std::string::npos);
+    bool hasThreadsLink = (existingLower.find("threads::threads") != std::string::npos);
+
+    AutoSystemDeps autoDeps = DetectAutoSystemDeps(fs::path(projectCmakePath), subdirStr);
+
     // If the subdirectory is already present, avoid appending duplicate blocks.
     {
-        std::string marker = "add_subdirectory(\"" + subdirStr + "\")";
-        if (existing.find(marker) != std::string::npos)
+        std::string markerQuoted = "add_subdirectory(\"" + subdirStr + "\")";
+        std::string markerBare = "add_subdirectory(" + subdirStr + ")";
+        if (existing.find(markerQuoted) != std::string::npos ||
+            existing.find(markerBare) != std::string::npos ||
+            existingLower.find(subdirLower) != std::string::npos)
+            return true;
+
+        // Built-in dependencies may be added via CMake variables
+        // (e.g. add_subdirectory(${LIBGIT2_DIR} EXCLUDE_FROM_ALL)).
+        if (subdirLower.find("libgit2") != std::string::npos &&
+            existingLower.find("libgit2_dir") != std::string::npos)
+            return true;
+        if (subdirLower.find("ggwave") != std::string::npos &&
+            existingLower.find("ggwave_dir") != std::string::npos)
+            return true;
+        if (subdirLower.find("libvterm") != std::string::npos &&
+            existingLower.find("libvterm_dir") != std::string::npos)
+            return true;
+
+        // If target already links this library, do not append.
+        std::string linkMarker = "target_link_libraries(" + targetStr;
+        if (existingLower.find(toLower(linkMarker)) != std::string::npos &&
+            existingLower.find(libLower) != std::string::npos)
             return true;
     }
 
@@ -264,6 +564,28 @@ bool AddLibraryToCmake(const std::wstring &projectCmakePath,
     if (!includeStr.empty())
         block << "target_include_directories(" << targetStr << " PRIVATE \"" << includeStr << "\")\n";
     block << "target_link_libraries(" << targetStr << " PRIVATE " << libStr << ")\n";
+
+    if (autoDeps.needsOpenGL && !hasOpenGL32)
+    {
+        block << "if (WIN32)\n";
+        block << "  target_link_libraries(" << targetStr << " PRIVATE opengl32)\n";
+        block << "endif()\n";
+    }
+
+    if (autoDeps.needsWinsock && !hasWs2_32)
+    {
+        block << "if (WIN32)\n";
+        block << "  target_link_libraries(" << targetStr << " PRIVATE ws2_32)\n";
+        block << "endif()\n";
+    }
+
+    if (autoDeps.needsThreads && !hasThreadsLink)
+    {
+        block << "find_package(Threads QUIET)\n";
+        block << "if (Threads_FOUND)\n";
+        block << "  target_link_libraries(" << targetStr << " PRIVATE Threads::Threads)\n";
+        block << "endif()\n";
+    }
 
     // Append to the file
     std::ofstream wf(projectCmakePath, std::ios::app);

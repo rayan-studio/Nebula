@@ -5,225 +5,756 @@
 #include "ui/theme/Theme.h"
 #include "utils/logger/Logger.h"
 
+#include <winhttp.h>
+#include <shellapi.h>
 #include <algorithm>
+#include <cmath>
+#include <thread>
+#include <vector>
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+static D2D1_COLOR_F CategoryColor(const std::wstring& cat)
+{
+    std::wstring l = cat;
+    std::transform(l.begin(), l.end(), l.begin(), [](wchar_t c){
+        return (wchar_t)std::tolower((unsigned char)c);
+    });
+    if (l == L"ui")         return D2D1::ColorF(0.32f, 0.58f, 0.89f);
+    if (l == L"graphics")   return D2D1::ColorF(0.15f, 0.65f, 0.60f);
+    if (l == L"math")       return D2D1::ColorF(0.49f, 0.34f, 0.76f);
+    if (l == L"utilities")  return D2D1::ColorF(1.00f, 0.44f, 0.26f);
+    if (l == L"audio")      return D2D1::ColorF(0.93f, 0.25f, 0.48f);
+    if (l == L"networking") return D2D1::ColorF(0.15f, 0.78f, 0.85f);
+    if (l == L"physics")    return D2D1::ColorF(0.94f, 0.33f, 0.31f);
+    if (l == L"testing")    return D2D1::ColorF(0.20f, 0.75f, 0.35f);
+    return D2D1::ColorF(0.50f, 0.55f, 0.65f);
+}
+
+static std::wstring Initials(const std::wstring& name)
+{
+    std::wstring result;
+    bool nextUpper = true;
+    for (wchar_t c : name) {
+        if (c == L'/' || c == L' ' || c == L'_') { nextUpper = true; continue; }
+        if (nextUpper && iswalpha(c)) { result += (wchar_t)towupper(c); nextUpper = false; }
+        else if (iswupper(c) && !result.empty()) result += c;
+        if (result.size() >= 2) break;
+    }
+    if (result.empty() && !name.empty()) result += (wchar_t)towupper(name[0]);
+    if (result.size() == 1 && name.size() > 1) result += (wchar_t)towupper(name[1]);
+    return result;
+}
+
+static std::wstring FormatNumber(int n)
+{
+    if (n >= 1000) {
+        float k = n / 1000.0f;
+        wchar_t buf[32];
+        if (k < 10.0f)
+            swprintf_s(buf, L"%.1fk", k);
+        else
+            swprintf_s(buf, L"%.0fk", k);
+        return buf;
+    }
+    return std::to_wstring(n);
+}
+
+// ---------------------------------------------------------------------------
+// Static network helpers
+// ---------------------------------------------------------------------------
+
+bool MarketplaceExtensionTabView::ParseGitHubUrl(const std::wstring& gitUrl,
+                                                  std::wstring& owner,
+                                                  std::wstring& repo)
+{
+    const std::wstring prefix = L"https://github.com/";
+    if (gitUrl.size() <= prefix.size()) return false;
+    if (gitUrl.substr(0, prefix.size()) != prefix) return false;
+
+    std::wstring rest = gitUrl.substr(prefix.size());
+    // Strip .git suffix
+    if (rest.size() > 4 && rest.substr(rest.size() - 4) == L".git")
+        rest = rest.substr(0, rest.size() - 4);
+
+    auto slash = rest.find(L'/');
+    if (slash == std::wstring::npos) return false;
+
+    owner = rest.substr(0, slash);
+    repo  = rest.substr(slash + 1);
+    return !owner.empty() && !repo.empty();
+}
+
+bool MarketplaceExtensionTabView::FetchRawUrl(const std::wstring& host,
+                                               const std::wstring& path,
+                                               std::string& outBody)
+{
+    outBody.clear();
+
+    HINTERNET hSess = WinHttpOpen(L"Nebula/1.0",
+        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!hSess) return false;
+
+    HINTERNET hConn = WinHttpConnect(hSess, host.c_str(),
+        INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if (!hConn) { WinHttpCloseHandle(hSess); return false; }
+
+    HINTERNET hReq = WinHttpOpenRequest(hConn, L"GET", path.c_str(),
+        nullptr, WINHTTP_NO_REFERER,
+        WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+    if (!hReq) {
+        WinHttpCloseHandle(hConn);
+        WinHttpCloseHandle(hSess);
+        return false;
+    }
+
+    BOOL ok = WinHttpSendRequest(hReq, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+        WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
+    if (ok) ok = WinHttpReceiveResponse(hReq, nullptr);
+
+    bool success = false;
+    if (ok) {
+        DWORD status = 0;
+        DWORD sz = sizeof(status);
+        WinHttpQueryHeaders(hReq,
+            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            WINHTTP_HEADER_NAME_BY_INDEX, &status, &sz,
+            WINHTTP_NO_HEADER_INDEX);
+
+        if (status == 200) {
+            DWORD avail = 0;
+            while (WinHttpQueryDataAvailable(hReq, &avail) && avail > 0) {
+                std::vector<char> buf(avail);
+                DWORD read = 0;
+                WinHttpReadData(hReq, buf.data(), avail, &read);
+                outBody.append(buf.data(), read);
+            }
+            success = true;
+        }
+    }
+
+    WinHttpCloseHandle(hReq);
+    WinHttpCloseHandle(hConn);
+    WinHttpCloseHandle(hSess);
+    return success;
+}
+
+std::wstring MarketplaceExtensionTabView::NormalizeReadmeMarkdown(const std::wstring& md)
+{
+    std::wstring result;
+    result.reserve(md.size());
+
+    for (size_t i = 0; i < md.size(); ++i) {
+        wchar_t ch = md[i];
+        if (ch == L'\r') {
+            if (i + 1 < md.size() && md[i + 1] == L'\n') i++;
+            result.push_back(L'\n');
+        } else {
+            result.push_back(ch);
+        }
+    }
+
+    size_t start = result.find_first_not_of(L"\n\t ");
+    if (start != std::wstring::npos) {
+        result = result.substr(start);
+    } else {
+        result.clear();
+    }
+
+    const size_t kMax = 120000;
+    if (result.size() > kMax) {
+        result.resize(kMax);
+        result += L"\n\n...\n\nREADME truncated for preview.";
+    }
+
+    return result;
+}
+
+void MarketplaceExtensionTabView::FetchReadmeAsync(HWND hwnd,
+                                                    const std::wstring& libName,
+                                                    const std::wstring& gitUrl)
+{
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex_);
+        if (readmeCache_.count(libName)) return;
+        if (lastFetchedFor_ == libName) return;
+        lastFetchedFor_ = libName;
+    }
+
+    std::thread([this, hwnd, libName, gitUrl]() {
+        std::wstring owner, repo;
+        std::wstring content;
+
+        if (ParseGitHubUrl(gitUrl, owner, repo)) {
+            std::string body;
+            for (const wchar_t* branch : { L"master", L"main" }) {
+                std::wstring path = L"/" + owner + L"/" + repo + L"/" + branch + L"/README.md";
+                if (FetchRawUrl(L"raw.githubusercontent.com", path, body))
+                    break;
+                body.clear();
+            }
+
+            if (!body.empty()) {
+                int len = MultiByteToWideChar(CP_UTF8, 0, body.c_str(),
+                    (int)body.size(), nullptr, 0);
+                if (len > 0) {
+                    std::wstring wide(len, L'\0');
+                    MultiByteToWideChar(CP_UTF8, 0, body.c_str(),
+                        (int)body.size(), wide.data(), len);
+                    content = NormalizeReadmeMarkdown(wide);
+                }
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(cacheMutex_);
+            readmeCache_[libName] = content;
+        }
+
+        if (hwnd) InvalidateRect(hwnd, nullptr, FALSE);
+    }).detach();
+}
+
+// ---------------------------------------------------------------------------
 
 void MarketplaceExtensionTabView::SetLibraryName(const std::wstring &name)
 {
+    if (currentLibraryName_ == name) return;
     currentLibraryName_ = name;
+
+    currentPreviewText_.clear();
+    readmePreviewEditor_.CreateEmpty();
+    readmePreviewEditor_.SetMarkdownViewMode(Orion::MarkdownViewMode::Preview);
+    readmePreviewEditor_.SetTextContent(L"Loading README...", false);
+
+    if (!name.empty()) {
+        LibraryInfo* lib = LibraryDatabase::Instance().FindLibrary(name);
+        if (lib) FetchReadmeAsync(hwnd_, name, lib->gitUrl);
+    }
 }
 
-void MarketplaceExtensionTabView::UpdateLayout(HWND hwnd, float left, float top, float right, float bottom)
+void MarketplaceExtensionTabView::UpdateLayout(HWND hwnd, float left, float top,
+                                                float right, float bottom)
 {
+    hwnd_ = hwnd;
     bounds_ = D2D1::RectF(left, top, right, bottom);
 
     const UINT dpi = GetDpiForWindow(hwnd);
-    const float pad = static_cast<float>(MulDiv(24, dpi, 96));
-    const float cardTop = bounds_.top + static_cast<float>(MulDiv(20, dpi, 96));
-    const float cardBottom = (std::min)(bounds_.bottom - pad, cardTop + static_cast<float>(MulDiv(280, dpi, 96)));
+    const float scale = dpi / 96.0f;
+    const float pad   = 24.0f * scale;
 
-    cardRect_ = D2D1::RectF(
-        bounds_.left + pad,
-        cardTop,
+    const float iconSz = 68.0f * scale;
+    const float btnH   = 34.0f * scale;
+    const float btnW   = 120.0f * scale;
+
+    // Button: top-right, aligned with icon top
+    actionButtonRect_ = D2D1::RectF(
+        bounds_.right - pad - btnW,
+        bounds_.top   + pad,
         bounds_.right - pad,
-        cardBottom);
+        bounds_.top   + pad + btnH);
 
-    const float btnH = static_cast<float>(MulDiv(34, dpi, 96));
-    const float btnW = static_cast<float>(MulDiv(140, dpi, 96));
-    const float btnRight = cardRect_.right - static_cast<float>(MulDiv(16, dpi, 96));
-    const float btnTop = cardRect_.bottom - static_cast<float>(MulDiv(16, dpi, 96)) - btnH;
+    // README clip area: below header separator, above bottom stats block
+    const float headerH  = pad + iconSz + 18.0f * scale;
+    const float statsH   = 110.0f * scale;   // stats + repo sections at bottom
+    readmeClipRect_ = D2D1::RectF(
+        bounds_.left,
+        bounds_.top + headerH,
+        bounds_.right,
+        bounds_.bottom - statsH);
 
-    actionButtonRect_ = D2D1::RectF(btnRight - btnW, btnTop, btnRight, btnTop + btnH);
+    // The preview editor uses the same markdown renderer as normal editor tabs.
+    const float previewLabelH = 16.0f * scale;
+    const float previewTop = readmeClipRect_.top + 14.0f * scale + previewLabelH;
+    readmePreviewEditor_.UpdateLayout(
+        hwnd,
+        bounds_.left + pad,
+        previewTop,
+        bounds_.right - pad,
+        readmeClipRect_.bottom);
+
+    cardRect_ = bounds_;
 }
 
 bool MarketplaceExtensionTabView::IsPointInRect(POINT pt, const D2D1_RECT_F &rect) const
 {
-    return pt.x >= rect.left && pt.x <= rect.right && pt.y >= rect.top && pt.y <= rect.bottom;
+    return pt.x >= rect.left && pt.x <= rect.right &&
+           pt.y >= rect.top  && pt.y <= rect.bottom;
 }
 
-void MarketplaceExtensionTabView::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND /*hwnd*/)
+// ---------------------------------------------------------------------------
+// Draw
+// ---------------------------------------------------------------------------
+void MarketplaceExtensionTabView::Draw(ID2D1RenderTarget *ctx,
+                                       IDWriteFactory *dwrite, HWND hwnd)
 {
-    if (!ctx || !dwrite)
-        return;
+    if (!ctx || !dwrite) return;
+    if (hwnd_ != hwnd) { hwnd_ = hwnd; }
 
     LibraryInfo *lib = nullptr;
     if (!currentLibraryName_.empty())
         lib = LibraryDatabase::Instance().FindLibrary(currentLibraryName_);
 
-    ID2D1SolidColorBrush *bgBrush = nullptr;
-    ID2D1SolidColorBrush *cardBrush = nullptr;
-    ID2D1SolidColorBrush *borderBrush = nullptr;
-    ID2D1SolidColorBrush *titleBrush = nullptr;
-    ID2D1SolidColorBrush *mutedBrush = nullptr;
-    ID2D1SolidColorBrush *buttonBrush = nullptr;
-    ID2D1SolidColorBrush *buttonTextBrush = nullptr;
+    repositoryLinkRect_ = D2D1::RectF(0, 0, 0, 0);
 
-    const UI::Theme::Palette &palette = UI::Theme::GetPalette();
-    ctx->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &bgBrush);
-    ctx->CreateSolidColorBrush(palette.inputBackground, &cardBrush);
-    ctx->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &borderBrush);
-    ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &titleBrush);
-    ctx->CreateSolidColorBrush(UI::Theme::MutedText(), &mutedBrush);
-
-    const D2D1_COLOR_F installColor = actionButtonHovered_ ? UI::Theme::AccentStrong() : UI::Theme::Accent();
-    const D2D1_COLOR_F installedColor = actionButtonHovered_ ? D2D1::ColorF(0.80f, 0.36f, 0.36f) : D2D1::ColorF(0.33f, 0.77f, 0.47f);
-    const D2D1_COLOR_F buttonColor = (lib && lib->isInstalled) ? installedColor : installColor;
-    ctx->CreateSolidColorBrush(buttonColor, &buttonBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1), &buttonTextBrush);
-
-    if (bgBrush)
-        ctx->FillRectangle(bounds_, bgBrush);
-    if (cardBrush)
-        ctx->FillRoundedRectangle(D2D1::RoundedRect(cardRect_, 8.0f, 8.0f), cardBrush);
-    if (borderBrush)
-        ctx->DrawRoundedRectangle(D2D1::RoundedRect(cardRect_, 8.0f, 8.0f), borderBrush, 1.0f);
-
-    IDWriteTextFormat *titleFmt = nullptr;
-    IDWriteTextFormat *bodyFmt = nullptr;
-    IDWriteTextFormat *buttonFmt = nullptr;
-
-    dwrite->CreateTextFormat(L"Segoe UI Variable Text", nullptr,
-                             DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
-                             DWRITE_FONT_STRETCH_NORMAL, 24.0f, L"en-us", &titleFmt);
-    dwrite->CreateTextFormat(L"Segoe UI Variable Text", nullptr,
-                             DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                             DWRITE_FONT_STRETCH_NORMAL, 13.0f, L"en-us", &bodyFmt);
-    dwrite->CreateTextFormat(L"Segoe UI Variable Text", nullptr,
-                             DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
-                             DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"en-us", &buttonFmt);
-
-    if (titleFmt)
+    // ── Background ──────────────────────────────────────────────────────────
     {
-        titleFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        titleFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-    }
-    if (bodyFmt)
-    {
-        bodyFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        bodyFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-        bodyFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
-    }
-    if (buttonFmt)
-    {
-        buttonFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        buttonFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        ID2D1SolidColorBrush *bg = nullptr;
+        ctx->CreateSolidColorBrush(UI::Theme::ChromeBackground(), &bg);
+        if (bg) { ctx->FillRectangle(bounds_, bg); bg->Release(); }
     }
 
-    const float x = cardRect_.left + 22.0f;
-    float y = cardRect_.top + 18.0f;
-    const float textRight = cardRect_.right - 22.0f;
-
-    if (!lib)
-    {
-        if (titleFmt && titleBrush)
-        {
-            const wchar_t *missing = L"Extension introuvable";
-            ctx->DrawTextW(missing, static_cast<UINT32>(wcslen(missing)), titleFmt,
-                           D2D1::RectF(x, y, textRight, y + 36.0f), titleBrush);
+    if (!lib) {
+        IDWriteTextFormat *fmt = nullptr;
+        dwrite->CreateTextFormat(L"Segoe UI Variable Text", nullptr,
+            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, 13.0f, L"en-us", &fmt);
+        ID2D1SolidColorBrush *br = nullptr;
+        ctx->CreateSolidColorBrush(UI::Theme::MutedText(), &br);
+        if (fmt && br) {
+            fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            const wchar_t *msg = L"Select a library from the marketplace to view details.";
+            ctx->DrawTextW(msg, (UINT32)wcslen(msg), fmt, bounds_, br);
         }
-        if (bodyFmt && mutedBrush)
-        {
-            const wchar_t *hint = L"Retourne dans Marketplace et clique sur une extension pour ouvrir sa page detail.";
-            ctx->DrawTextW(hint, static_cast<UINT32>(wcslen(hint)), bodyFmt,
-                           D2D1::RectF(x, y + 46.0f, textRight, y + 120.0f), mutedBrush);
+        if (fmt) fmt->Release();
+        if (br)  br->Release();
+        return;
+    }
+
+    const UINT dpi   = GetDpiForWindow(hwnd);
+    const float scale = dpi / 96.0f;
+    const float pad   = 24.0f * scale;
+    const float x     = bounds_.left  + pad;
+    const float xEnd  = bounds_.right - pad;
+
+    D2D1_COLOR_F catColor = CategoryColor(lib->category);
+
+    // ── Large icon block ────────────────────────────────────────────────────
+    const float iconSz  = 68.0f * scale;
+    const float iconTop = bounds_.top + pad;
+    D2D1_RECT_F iconRect = D2D1::RectF(x, iconTop, x + iconSz, iconTop + iconSz);
+
+    {
+        ID2D1SolidColorBrush *ibr = nullptr;
+        ctx->CreateSolidColorBrush(catColor, &ibr);
+        if (ibr) {
+            ctx->FillRoundedRectangle(D2D1::RoundedRect(iconRect, 14.0f, 14.0f), ibr);
+            ibr->Release();
         }
     }
-    else
     {
-        if (titleFmt && titleBrush)
-            ctx->DrawTextW(lib->name.c_str(), static_cast<UINT32>(lib->name.size()), titleFmt,
-                           D2D1::RectF(x, y, textRight, y + 40.0f), titleBrush);
+        IDWriteTextFormat *fmt = nullptr;
+        dwrite->CreateTextFormat(L"Segoe UI Variable Display", nullptr,
+            DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, 22.0f * scale, L"en-us", &fmt);
+        if (!fmt)
+            dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_BOLD,
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                22.0f * scale, L"en-us", &fmt);
+        ID2D1SolidColorBrush *wbr = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(1,1,1,0.95f), &wbr);
+        if (fmt && wbr) {
+            fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            std::wstring ini = Initials(lib->name);
+            ctx->DrawTextW(ini.c_str(), (UINT32)ini.size(), fmt, iconRect, wbr);
+        }
+        if (fmt) fmt->Release();
+        if (wbr) wbr->Release();
+    }
 
-        y += 44.0f;
-        std::wstring meta = L"by " + lib->author + L"    Version " + lib->version + L"    " + lib->category;
-        if (bodyFmt && mutedBrush)
-            ctx->DrawTextW(meta.c_str(), static_cast<UINT32>(meta.size()), bodyFmt,
-                           D2D1::RectF(x, y, textRight, y + 24.0f), mutedBrush);
+    // ── Library name ────────────────────────────────────────────────────────
+    const float nameL   = x + iconSz + 18.0f * scale;
+    const float nameTop = iconTop + 4.0f * scale;
+    {
+        IDWriteTextFormat *fmt = nullptr;
+        dwrite->CreateTextFormat(L"Segoe UI Variable Display", nullptr,
+            DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, 22.0f * scale, L"en-us", &fmt);
+        if (!fmt)
+            dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                22.0f * scale, L"en-us", &fmt);
+        ID2D1SolidColorBrush *br = nullptr;
+        ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &br);
+        if (fmt && br) {
+            fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            float nameR = actionButtonRect_.left - 12.0f * scale;
+            ctx->DrawTextW(lib->name.c_str(), (UINT32)lib->name.size(), fmt,
+                           D2D1::RectF(nameL, nameTop, nameR, nameTop + 30.0f * scale), br);
+        }
+        if (fmt) fmt->Release();
+        if (br)  br->Release();
+    }
 
-        y += 30.0f;
-        if (bodyFmt && titleBrush)
-            ctx->DrawTextW(lib->description.c_str(), static_cast<UINT32>(lib->description.size()), bodyFmt,
-                           D2D1::RectF(x, y, textRight, y + 70.0f), titleBrush);
+    // ── Author + version ────────────────────────────────────────────────────
+    {
+        IDWriteTextFormat *fmt = nullptr;
+        dwrite->CreateTextFormat(L"Segoe UI Variable Text", nullptr,
+            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, 12.0f * scale, L"en-us", &fmt);
+        ID2D1SolidColorBrush *br = nullptr;
+        ctx->CreateSolidColorBrush(UI::Theme::MutedText(), &br);
+        if (fmt && br) {
+            fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            std::wstring meta = L"by " + lib->author + L"   •   v" + lib->version;
+            ctx->DrawTextW(meta.c_str(), (UINT32)meta.size(), fmt,
+                D2D1::RectF(nameL, nameTop + 33.0f * scale, xEnd, nameTop + 48.0f * scale), br);
+        }
+        if (fmt) fmt->Release();
+        if (br)  br->Release();
+    }
 
-        y += 76.0f;
-        std::wstring stats = L"Rating " + std::to_wstring(lib->rating).substr(0, 3) + L" / 5    Downloads " + std::to_wstring(lib->downloads) +
-                             L"    Stars " + std::to_wstring(lib->stars);
-        if (bodyFmt && mutedBrush)
-            ctx->DrawTextW(stats.c_str(), static_cast<UINT32>(stats.size()), bodyFmt,
-                           D2D1::RectF(x, y, textRight, y + 24.0f), mutedBrush);
+    // ── Category pill badge ──────────────────────────────────────────────────
+    {
+        IDWriteTextFormat *fmt = nullptr;
+        dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+            10.0f * scale, L"en-us", &fmt);
+        float badgeW = (float)lib->category.size() * 6.5f * scale + 16.0f * scale;
+        float badgeY = nameTop + 52.0f * scale;
+        D2D1_RECT_F badge = D2D1::RectF(nameL, badgeY, nameL + badgeW, badgeY + 18.0f * scale);
+        ID2D1SolidColorBrush *bgBr = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(catColor.r, catColor.g, catColor.b, 0.18f), &bgBr);
+        if (bgBr) { ctx->FillRoundedRectangle(D2D1::RoundedRect(badge, 3.0f, 3.0f), bgBr); bgBr->Release(); }
+        ID2D1SolidColorBrush *txtBr = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(catColor.r, catColor.g, catColor.b, 0.9f), &txtBr);
+        if (fmt && txtBr) {
+            fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            ctx->DrawTextW(lib->category.c_str(), (UINT32)lib->category.size(), fmt, badge, txtBr);
+        }
+        if (fmt)   fmt->Release();
+        if (txtBr) txtBr->Release();
+    }
 
-        y += 28.0f;
-        if (bodyFmt && mutedBrush)
-            ctx->DrawTextW(lib->gitUrl.c_str(), static_cast<UINT32>(lib->gitUrl.size()), bodyFmt,
-                           D2D1::RectF(x, y, textRight, y + 22.0f), mutedBrush);
+    // ── Action button (Install / Uninstall) ──────────────────────────────────
+    {
+        bool installed = lib->isInstalled;
+        D2D1_COLOR_F btnColor;
+        if (installed) {
+            btnColor = actionButtonHovered_
+                ? D2D1::ColorF(0.75f, 0.20f, 0.20f)
+                : D2D1::ColorF(0.20f, 0.60f, 0.35f);
+        } else {
+            btnColor = actionButtonHovered_
+                ? UI::Theme::AccentStrong()
+                : UI::Theme::Accent();
+        }
+        ID2D1SolidColorBrush *btnBr = nullptr;
+        ctx->CreateSolidColorBrush(btnColor, &btnBr);
+        if (btnBr) {
+            ctx->FillRoundedRectangle(
+                D2D1::RoundedRect(actionButtonRect_, 6.0f, 6.0f), btnBr);
+            btnBr->Release();
+        }
+        IDWriteTextFormat *fmt = nullptr;
+        dwrite->CreateTextFormat(L"Segoe UI Variable Text", nullptr,
+            DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, 12.5f * scale, L"en-us", &fmt);
+        ID2D1SolidColorBrush *txtBr = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(1,1,1), &txtBr);
+        if (fmt && txtBr) {
+            fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            const wchar_t *label = installed
+                ? (actionButtonHovered_ ? L"Remove" : L"Installed \u2713")
+                : L"Install";
+            ctx->DrawTextW(label, (UINT32)wcslen(label), fmt, actionButtonRect_, txtBr);
+        }
+        if (fmt)   fmt->Release();
+        if (txtBr) txtBr->Release();
+    }
 
-        if (buttonBrush)
-            ctx->FillRoundedRectangle(D2D1::RoundedRect(actionButtonRect_, 5.0f, 5.0f), buttonBrush);
-
-        if (buttonFmt && buttonTextBrush)
-        {
-            const wchar_t *label = lib->isInstalled ? L"Uninstall" : L"Install";
-            ctx->DrawTextW(label, static_cast<UINT32>(wcslen(label)), buttonFmt, actionButtonRect_, buttonTextBrush);
+    // ── Separator below header ───────────────────────────────────────────────
+    float sepY = bounds_.top + pad + iconSz + 14.0f * scale;
+    {
+        ID2D1SolidColorBrush *sepBr = nullptr;
+        ctx->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &sepBr);
+        if (sepBr) {
+            ctx->DrawLine(D2D1::Point2F(x, sepY), D2D1::Point2F(xEnd, sepY), sepBr, 0.5f);
+            sepBr->Release();
         }
     }
 
-    if (titleFmt)
-        titleFmt->Release();
-    if (bodyFmt)
-        bodyFmt->Release();
-    if (buttonFmt)
-        buttonFmt->Release();
+    // ── README rendered with the editor markdown preview component ──────────
+    float readmeTop = sepY + 14.0f * scale;
 
-    if (bgBrush)
-        bgBrush->Release();
-    if (cardBrush)
-        cardBrush->Release();
-    if (borderBrush)
-        borderBrush->Release();
-    if (titleBrush)
-        titleBrush->Release();
-    if (mutedBrush)
-        mutedBrush->Release();
-    if (buttonBrush)
-        buttonBrush->Release();
-    if (buttonTextBrush)
-        buttonTextBrush->Release();
+    // Determine text to show
+    std::wstring readmeText;
+    bool fetching = false;
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex_);
+        auto it = readmeCache_.find(currentLibraryName_);
+        if (it != readmeCache_.end())
+            readmeText = it->second;
+        else
+            fetching = (lastFetchedFor_ == currentLibraryName_);
+    }
+
+    // Trigger fetch if needed.
+    if (readmeText.empty() && !fetching)
+        FetchReadmeAsync(hwnd, currentLibraryName_, lib->gitUrl);
+
+    // "DESCRIPTION" label
+    {
+        IDWriteTextFormat *lFmt = nullptr;
+        dwrite->CreateTextFormat(L"Segoe UI Variable Text", nullptr,
+            DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, 10.0f * scale, L"en-us", &lFmt);
+        ID2D1SolidColorBrush *mBr = nullptr;
+        D2D1_COLOR_F mc = UI::Theme::MutedText(); mc.a *= 0.7f;
+        ctx->CreateSolidColorBrush(mc, &mBr);
+        if (lFmt && mBr) {
+            lFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            lFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            const wchar_t *lbl = L"README";
+            ctx->DrawTextW(lbl, (UINT32)wcslen(lbl), lFmt,
+                D2D1::RectF(x, readmeTop, xEnd, readmeTop + 14.0f * scale), mBr);
+        }
+        if (lFmt) lFmt->Release();
+        if (mBr)  mBr->Release();
+        readmeTop += 16.0f * scale;
+    }
+
+    const std::wstring displayText = readmeText.empty()
+        ? (fetching ? L"Loading README..." : lib->description)
+        : readmeText;
+    if (displayText != currentPreviewText_) {
+        currentPreviewText_ = displayText;
+        readmePreviewEditor_.CreateEmpty();
+        readmePreviewEditor_.SetTextContent(currentPreviewText_, false);
+        readmePreviewEditor_.SetMarkdownViewMode(Orion::MarkdownViewMode::Preview);
+    }
+
+    readmePreviewEditor_.Draw(ctx, dwrite);
+
+    float readmeAreaBottom = readmeClipRect_.bottom;
+
+    // ── Stats + Repository (fixed at bottom) ─────────────────────────────────
+    float y = readmeAreaBottom + 10.0f * scale;
+
+    // Separator
+    {
+        ID2D1SolidColorBrush *sepBr = nullptr;
+        ctx->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &sepBr);
+        if (sepBr) {
+            ctx->DrawLine(D2D1::Point2F(x, y), D2D1::Point2F(xEnd, y), sepBr, 0.5f);
+            sepBr->Release();
+        }
+    }
+    y += 12.0f * scale;
+
+    // Stats row
+    {
+        struct StatItem { const wchar_t* label; std::wstring value; };
+        wchar_t ratingBuf[16];
+        swprintf_s(ratingBuf, L"%.1f \u2605", lib->rating);
+        StatItem stats[] = {
+            { L"Rating",    ratingBuf                  },
+            { L"Downloads", FormatNumber(lib->downloads) },
+            { L"Stars",     FormatNumber(lib->stars)     },
+        };
+
+        IDWriteTextFormat *valFmt = nullptr, *lblFmt = nullptr;
+        dwrite->CreateTextFormat(L"Segoe UI Variable Text", nullptr,
+            DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, 13.0f * scale, L"en-us", &valFmt);
+        dwrite->CreateTextFormat(L"Segoe UI Variable Text", nullptr,
+            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, 10.0f * scale, L"en-us", &lblFmt);
+        ID2D1SolidColorBrush *pBr = nullptr, *mBr = nullptr;
+        ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &pBr);
+        D2D1_COLOR_F muted = UI::Theme::MutedText(); muted.a *= 0.75f;
+        ctx->CreateSolidColorBrush(muted, &mBr);
+
+        float statX = x;
+        const float colW = (xEnd - x) / 3.0f;
+        for (auto& s : stats) {
+            if (valFmt && pBr) {
+                valFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                valFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                ctx->DrawTextW(s.value.c_str(), (UINT32)s.value.size(), valFmt,
+                    D2D1::RectF(statX, y, statX + colW - 4.0f, y + 18.0f * scale), pBr);
+            }
+            if (lblFmt && mBr) {
+                lblFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                lblFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                ctx->DrawTextW(s.label, (UINT32)wcslen(s.label), lblFmt,
+                    D2D1::RectF(statX, y + 19.0f * scale, statX + colW - 4.0f, y + 30.0f * scale), mBr);
+            }
+            statX += colW;
+        }
+        if (valFmt) valFmt->Release();
+        if (lblFmt) lblFmt->Release();
+        if (pBr)    pBr->Release();
+        if (mBr)    mBr->Release();
+        y += 38.0f * scale;
+    }
+
+    // Repository
+    {
+        ID2D1SolidColorBrush *sepBr = nullptr;
+        ctx->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &sepBr);
+        if (sepBr) {
+            ctx->DrawLine(D2D1::Point2F(x, y), D2D1::Point2F(xEnd, y), sepBr, 0.5f);
+            sepBr->Release();
+        }
+        y += 10.0f * scale;
+    }
+    {
+        IDWriteTextFormat *lFmt = nullptr;
+        dwrite->CreateTextFormat(L"Segoe UI Variable Text", nullptr,
+            DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, 10.0f * scale, L"en-us", &lFmt);
+        ID2D1SolidColorBrush *mBr = nullptr;
+        D2D1_COLOR_F mc = UI::Theme::MutedText(); mc.a *= 0.7f;
+        ctx->CreateSolidColorBrush(mc, &mBr);
+        if (lFmt && mBr) {
+            lFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            lFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            ctx->DrawTextW(L"REPOSITORY", 10, lFmt,
+                D2D1::RectF(x, y, xEnd, y + 14.0f * scale), mBr);
+        }
+        if (lFmt) lFmt->Release();
+        if (mBr)  mBr->Release();
+        y += 16.0f * scale;
+    }
+    {
+        IDWriteTextFormat *fmt = nullptr;
+        dwrite->CreateTextFormat(L"Segoe UI Variable Text", nullptr,
+            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, 11.5f * scale, L"en-us", &fmt);
+        ID2D1SolidColorBrush *br = nullptr;
+        D2D1_COLOR_F ac = UI::Theme::Accent();
+        ac.a = repositoryLinkHovered_ ? 1.0f : 0.85f;
+        ctx->CreateSolidColorBrush(ac, &br);
+        if (fmt && br) {
+            fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            fmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+            D2D1_RECT_F linkRowRect = D2D1::RectF(x, y, xEnd, y + 18.0f * scale);
+            ctx->DrawTextW(lib->gitUrl.c_str(), (UINT32)lib->gitUrl.size(), fmt,
+                linkRowRect, br,
+                D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+            IDWriteTextLayout *layout = nullptr;
+            if (SUCCEEDED(dwrite->CreateTextLayout(
+                    lib->gitUrl.c_str(),
+                    (UINT32)lib->gitUrl.size(),
+                    fmt,
+                    (std::max)(1.0f, xEnd - x),
+                    24.0f * scale,
+                    &layout)))
+            {
+                DWRITE_TEXT_METRICS metrics{};
+                layout->GetMetrics(&metrics);
+                float linkW = (std::min)(xEnd - x, metrics.widthIncludingTrailingWhitespace);
+                repositoryLinkRect_ = D2D1::RectF(x, y, x + linkW, y + (std::max)(18.0f * scale, metrics.height));
+                layout->Release();
+            }
+            else
+            {
+                repositoryLinkRect_ = linkRowRect;
+            }
+
+            if (repositoryLinkHovered_)
+            {
+                float underlineY = repositoryLinkRect_.bottom - 1.0f;
+                ctx->DrawLine(
+                    D2D1::Point2F(repositoryLinkRect_.left, underlineY),
+                    D2D1::Point2F(repositoryLinkRect_.right, underlineY),
+                    br,
+                    1.0f);
+            }
+        }
+        if (fmt) fmt->Release();
+        if (br)  br->Release();
+    }
 }
+
+// ---------------------------------------------------------------------------
+// Interaction
+// ---------------------------------------------------------------------------
 
 void MarketplaceExtensionTabView::OnMouseMove(HWND hwnd, POINT clientPoint)
 {
     const bool wasHover = actionButtonHovered_;
+    const bool wasRepoHover = repositoryLinkHovered_;
     actionButtonHovered_ = IsPointInRect(clientPoint, actionButtonRect_);
-    if (wasHover != actionButtonHovered_)
+    repositoryLinkHovered_ = IsPointInRect(clientPoint, repositoryLinkRect_);
+
+    if (repositoryLinkHovered_)
+        SetCursor(LoadCursorW(nullptr, IDC_HAND));
+
+    if (wasHover != actionButtonHovered_ || wasRepoHover != repositoryLinkHovered_)
         InvalidateRect(hwnd, nullptr, FALSE);
+}
+
+void MarketplaceExtensionTabView::OnMouseWheel(HWND hwnd, int delta)
+{
+    POINT cursor{};
+    GetCursorPos(&cursor);
+    ScreenToClient(hwnd, &cursor);
+
+    if (readmePreviewEditor_.IsPointInEditorBounds(cursor)) {
+        readmePreviewEditor_.OnMouseWheel(hwnd, delta, false);
+    }
+
+    InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 void MarketplaceExtensionTabView::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
 {
-    if (!IsPointInRect(clientPoint, actionButtonRect_))
+    if (IsPointInRect(clientPoint, repositoryLinkRect_))
+    {
+        if (!currentLibraryName_.empty())
+        {
+            LibraryInfo *lib = LibraryDatabase::Instance().FindLibrary(currentLibraryName_);
+            if (lib && !lib->gitUrl.empty())
+            {
+                HINSTANCE r = ShellExecuteW(hwnd, L"open", lib->gitUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                if ((INT_PTR)r <= 32)
+                {
+                    Logger::Instance().Log(L"Failed to open repository URL: " + lib->gitUrl);
+                }
+            }
+        }
         return;
+    }
 
-    if (currentLibraryName_.empty())
+    if (readmePreviewEditor_.IsPointInEditorBounds(clientPoint)) {
+        readmePreviewEditor_.OnLeftButtonDown(hwnd, clientPoint);
+        InvalidateRect(hwnd, nullptr, FALSE);
         return;
+    }
+
+    if (!IsPointInRect(clientPoint, actionButtonRect_)) return;
+    if (currentLibraryName_.empty()) return;
 
     LibraryInfo *lib = LibraryDatabase::Instance().FindLibrary(currentLibraryName_);
-    if (!lib)
-        return;
+    if (!lib) return;
 
     if (!lib->isInstalled)
     {
         std::wstring installError;
-        bool ok = GetExplorerManager().InstallLibraryFromGitUrl(hwnd, lib->gitUrl, lib->name, &installError);
-        if (ok)
-        {
+        bool ok = GetExplorerManager().InstallLibraryFromGitUrl(
+            hwnd, lib->gitUrl, lib->name, &installError);
+        if (ok) {
             LibraryDatabase::Instance().SetInstalled(currentLibraryName_, true);
             Logger::Instance().Log(L"Installed: " + currentLibraryName_);
-        }
-        else
-        {
-            if (installError.empty())
-                installError = L"Failed to install library.";
-            MessageBoxW(hwnd, installError.c_str(), L"Marketplace Install", MB_OK | MB_ICONERROR);
-            Logger::Instance().Log(L"Install failed: " + currentLibraryName_ + L" - " + installError);
+        } else {
+            if (installError.empty()) installError = L"Failed to install library.";
+            MessageBoxW(hwnd, installError.c_str(), L"Marketplace Install",
+                MB_OK | MB_ICONERROR);
+            Logger::Instance().Log(L"Install failed: " + currentLibraryName_
+                + L" - " + installError);
         }
     }
     else
@@ -236,6 +767,13 @@ void MarketplaceExtensionTabView::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
 
 void MarketplaceExtensionTabView::OnLeftButtonUp(HWND /*hwnd*/)
 {
+    // Keep editor interaction state consistent (selection drag, etc.).
+    POINT cursor{};
+    GetCursorPos(&cursor);
+    if (hwnd_) {
+        ScreenToClient(hwnd_, &cursor);
+        readmePreviewEditor_.OnLeftButtonUp(hwnd_, cursor);
+    }
 }
 
 bool MarketplaceExtensionTabView::IsPointInView(POINT clientPoint) const

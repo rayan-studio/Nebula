@@ -230,7 +230,7 @@ GitPanel::GitPanel()
 {
     config_ = PanelConfig(
         PanelId::Git,
-        L"assets/ressource/icons/git.svg",
+        L"\uEB05",
         L"Source Control",
         true,
         false,
@@ -270,17 +270,6 @@ GitPanel::GitPanel()
 
 GitPanel::~GitPanel()
 {
-    if (quickChevronRightBmp_)
-    {
-        quickChevronRightBmp_->Release();
-        quickChevronRightBmp_ = nullptr;
-    }
-    if (quickChevronUpBmp_)
-    {
-        quickChevronUpBmp_->Release();
-        quickChevronUpBmp_ = nullptr;
-    }
-
     std::lock_guard<std::mutex> lock(g_libgit2Mutex);
     if (libgit2Ready_ && g_libgit2RefCount > 0)
     {
@@ -358,43 +347,31 @@ void GitPanel::UpdateLayout(HWND hwnd)
     float x0 = state_.leftEdge + state_.leftPadding;
     float x1 = state_.rightEdge - state_.leftPadding;
     float y = state_.topEdge + state_.titleHeight + 8.0f;
-    const float inputH = 30.0f;
-    const float gap = 8.0f;
+    const float inputH  = 30.0f;
+    const float actionH = 30.0f;
+    const float gap     = 6.0f;
+    const float toggleW = 30.0f;
 
-    const float actionPrimaryW = 112.0f;
-    const float actionToggleW = 24.0f;
-    const float actionGap = 8.0f;
-    const float minInputW = 170.0f;
-    const bool showQuickActions = ((x1 - x0) >= (actionPrimaryW + actionToggleW + actionGap + minInputW));
-
-    if (showQuickActions)
-    {
-        quickActionToggleRect_ = D2D1::RectF(x1 - actionToggleW, y, x1, y + inputH);
-        quickActionPrimaryRect_ = D2D1::RectF(quickActionToggleRect_.left - actionPrimaryW, y,
-                                              quickActionToggleRect_.left - 2.0f, y + inputH);
-        float inputRight = quickActionPrimaryRect_.left - actionGap;
-        commitMessageInput_.SetRect(D2D1::RectF(x0, y, inputRight, y + inputH));
-
-        const float menuItemH = inputH;
-        const float menuW = actionPrimaryW + actionToggleW + 2.0f;
-        const float menuTop = y + inputH + 2.0f;
-        quickActionMenuRect_ = D2D1::RectF(
-            quickActionPrimaryRect_.left,
-            menuTop,
-            quickActionPrimaryRect_.left + menuW,
-            menuTop + menuItemH * 4.0f);
-    }
-    else
-    {
-        commitMessageInput_.SetRect(D2D1::RectF(x0, y, x1, y + inputH));
-        quickActionPrimaryRect_ = D2D1::RectF(0, 0, 0, 0);
-        quickActionToggleRect_ = D2D1::RectF(0, 0, 0, 0);
-        quickActionMenuRect_ = D2D1::RectF(0, 0, 0, 0);
-        quickActionMenuOpen_ = false;
-        quickActionHoveredIndex_ = -1;
-    }
+    // Commit message input always full-width
+    commitMessageInput_.SetRect(D2D1::RectF(x0, y, x1, y + inputH));
     y += inputH + gap;
-    if (showQuickActions && quickActionMenuOpen_)
+
+    // Action button row below the input
+    quickActionToggleRect_  = D2D1::RectF(x1 - toggleW, y, x1, y + actionH);
+    quickActionPrimaryRect_ = D2D1::RectF(x0, y, quickActionToggleRect_.left - 1.0f, y + actionH);
+
+    // Dropdown menu: anchored below the button row, right-aligned
+    const float menuItemH = 32.0f;
+    const float menuW     = quickActionToggleRect_.right - quickActionPrimaryRect_.left;
+    const float menuTop   = y + actionH + 2.0f;
+    quickActionMenuRect_ = D2D1::RectF(
+        quickActionPrimaryRect_.left,
+        menuTop,
+        quickActionPrimaryRect_.left + menuW,
+        menuTop + menuItemH * 4.0f);
+
+    y += actionH + gap;
+    if (quickActionMenuOpen_)
         y += (quickActionMenuRect_.bottom - quickActionMenuRect_.top) + 4.0f;
 
     authStatusRect_ = D2D1::RectF(0, 0, 0, 0);
@@ -408,15 +385,49 @@ void GitPanel::UpdateLayout(HWND hwnd)
         infoRect_ = D2D1::RectF(0, 0, 0, 0);
     }
 
+    // Branch bar (fixed, not scrolled)
+    if (isGitRepo_)
+    {
+        branchBarRect_ = D2D1::RectF(x0, y, x1, y + kBranchBarH);
+        y += kBranchBarH + 2.0f;
+
+        // Toolbar buttons inside branch bar
+        const float btnSz = 22.0f;
+        const float btnY  = branchBarRect_.top + (kBranchBarH - btnSz) * 0.5f;
+        refreshBtnRect_ = D2D1::RectF(x1 - btnSz, btnY, x1, btnY + btnSz);
+        pullBtnRect_    = D2D1::RectF(refreshBtnRect_.left - btnSz - 4.0f, btnY,
+                                       refreshBtnRect_.left - 4.0f, btnY + btnSz);
+    }
+    else
+    {
+        branchBarRect_  = D2D1::RectF(0, 0, 0, 0);
+        pullBtnRect_    = D2D1::RectF(0, 0, 0, 0);
+        refreshBtnRect_ = D2D1::RectF(0, 0, 0, 0);
+    }
+
     float changesBottom = state_.bottomEdge - 4.0f;
-    if (changesBottom < y + 120.0f)
-        changesBottom = y + 120.0f;
+    if (changesBottom < y + 80.0f)
+        changesBottom = y + 80.0f;
     changesRect_ = D2D1::RectF(x0, y, x1, changesBottom);
 
     float changesViewport = (changesRect_.bottom - changesRect_.top);
     if (changesViewport < 0.0f)
         changesViewport = 0.0f;
-    float changesContent = static_cast<float>(changes_.size()) * changeRowHeight_;
+
+    // Content height accounts for section headers
+    float changesContent = 0.0f;
+    const std::vector<int> *sectionItems[3] = {&conflictIndices_, &stagedIndices_, &changesIndices_};
+    for (int s = 0; s < 3; ++s)
+    {
+        if (sectionItems[s]->empty())
+            continue;
+        changesContent += kSectionHeaderH;
+        if (!sectionCollapsed_[s])
+            changesContent += (float)sectionItems[s]->size() * changeRowHeight_;
+    }
+    if (changesContent == 0.0f && !changes_.empty())
+        changesContent = changeRowHeight_; // fallback: should never happen
+
     changesScrollbar_.UpdateLayout(changesRect_.left, changesRect_.top,
                                    changesRect_.right - changesRect_.left, changesViewport, changesContent);
 }
@@ -460,6 +471,7 @@ void GitPanel::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
             warnBrush->Release();
     }
 
+    DrawBranchBar(ctx, dwrite, hwnd);
     DrawChanges(ctx, dwrite, hwnd);
     changesScrollbar_.Draw(ctx);
     DrawQuickActions(ctx, dwrite, hwnd);
@@ -469,43 +481,206 @@ void GitPanel::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
 
 }
 
+void GitPanel::DrawBranchBar(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
+{
+    if (branchBarRect_.right <= branchBarRect_.left)
+        return;
+
+    const UI::Theme::Palette &palette = UI::Theme::GetPalette();
+    const bool light = (UI::Theme::GetMode() == UI::Theme::Mode::Light);
+
+    ID2D1SolidColorBrush *textBrush    = nullptr;
+    ID2D1SolidColorBrush *dimBrush     = nullptr;
+    ID2D1SolidColorBrush *hoverBrush   = nullptr;
+    ID2D1SolidColorBrush *aheadBrush   = nullptr;
+    ID2D1SolidColorBrush *behindBrush  = nullptr;
+    ID2D1SolidColorBrush *sepBrush     = nullptr;
+
+    D2D1_COLOR_F primary = UI::Theme::PrimaryText();
+    ctx->CreateSolidColorBrush(primary, &textBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(primary.r, primary.g, primary.b, 0.45f), &dimBrush);
+    ctx->CreateSolidColorBrush(palette.explorerRowHover, &hoverBrush);
+    ctx->CreateSolidColorBrush(light ? D2D1::ColorF(0.18f, 0.58f, 0.24f) : D2D1::ColorF(0.42f, 0.78f, 0.38f), &aheadBrush);
+    ctx->CreateSolidColorBrush(light ? D2D1::ColorF(0.17f, 0.45f, 0.82f) : D2D1::ColorF(0.39f, 0.67f, 0.93f), &behindBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(primary.r, primary.g, primary.b, 0.08f), &sepBrush);
+
+    IDWriteTextFormat *iconFmt = nullptr;
+    IDWriteTextFormat *branchFmt = nullptr;
+    IDWriteTextFormat *countFmt  = nullptr;
+
+    dwrite->CreateTextFormat(L"Segoe Fluent Icons", NULL, DWRITE_FONT_WEIGHT_NORMAL,
+                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 13.0f, L"en-us", &iconFmt);
+    if (!iconFmt)
+        dwrite->CreateTextFormat(L"Segoe MDL2 Assets", NULL, DWRITE_FONT_WEIGHT_NORMAL,
+                                 DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 13.0f, L"en-us", &iconFmt);
+
+    dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"en-us", &branchFmt);
+    dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL,
+                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 11.0f, L"en-us", &countFmt);
+
+    if (iconFmt)
+    {
+        iconFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        iconFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
+    if (branchFmt)
+    {
+        branchFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        branchFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        branchFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+    if (countFmt)
+    {
+        countFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        countFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        countFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+
+    const D2D1_RECT_F &bar = branchBarRect_;
+
+    // Bottom separator line
+    if (sepBrush)
+        ctx->FillRectangle(D2D1::RectF(bar.left, bar.bottom - 1.0f, bar.right, bar.bottom), sepBrush);
+
+    // Branch glyph + name
+    float x = bar.left;
+    if (iconFmt && dimBrush)
+    {
+        D2D1_RECT_F glyphRect = D2D1::RectF(x, bar.top, x + 22.0f, bar.bottom);
+        const std::wstring branchGlyph = L"\uEB05"; // BranchFork (Segoe Fluent)
+        ctx->DrawTextW(branchGlyph.c_str(), 1, iconFmt, glyphRect, dimBrush);
+        x += 22.0f;
+    }
+
+    // Compute right boundary (where buttons start)
+    float rightBoundary = pullBtnRect_.left > bar.left ? pullBtnRect_.left - 6.0f : bar.right - 4.0f;
+
+    if (!currentBranch_.empty() && branchFmt && textBrush)
+    {
+        // Leave room for ahead/behind badges (up to ~50px)
+        float nameBoundary = rightBoundary - 52.0f;
+        if (nameBoundary < x + 10.0f)
+            nameBoundary = rightBoundary;
+        D2D1_RECT_F nameRect = D2D1::RectF(x, bar.top, nameBoundary, bar.bottom);
+        ctx->DrawTextW(currentBranch_.c_str(), (UINT32)currentBranch_.size(), branchFmt, nameRect, textBrush);
+
+        // Ahead/behind badges (small, right of branch name)
+        float badgeX = nameBoundary + 4.0f;
+        if (aheadCount_ > 0 && countFmt && aheadBrush)
+        {
+            std::wstring s = L"\u2191" + std::to_wstring(aheadCount_); // ↑N
+            D2D1_RECT_F r = D2D1::RectF(badgeX, bar.top, badgeX + 22.0f, bar.bottom);
+            ctx->DrawTextW(s.c_str(), (UINT32)s.size(), countFmt, r, aheadBrush);
+            badgeX += 24.0f;
+        }
+        if (behindCount_ > 0 && countFmt && behindBrush)
+        {
+            std::wstring s = L"\u2193" + std::to_wstring(behindCount_); // ↓N
+            D2D1_RECT_F r = D2D1::RectF(badgeX, bar.top, badgeX + 22.0f, bar.bottom);
+            ctx->DrawTextW(s.c_str(), (UINT32)s.size(), countFmt, r, behindBrush);
+        }
+    }
+
+    // Toolbar buttons: Pull (↓), Refresh (⟳)
+    struct BtnDef { const D2D1_RECT_F &rect; bool hovered; const wchar_t *glyph; };
+    BtnDef buttons[] = {
+        {pullBtnRect_,    pullBtnHovered_,    L"\uE895"}, // download/pull (Segoe MDL2)
+        {refreshBtnRect_, refreshBtnHovered_, L"\uE72C"}, // refresh
+    };
+    for (auto &b : buttons)
+    {
+        if (b.rect.right <= b.rect.left)
+            continue;
+        if (b.hovered && hoverBrush)
+        {
+            D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
+            ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            ctx->FillRoundedRectangle(D2D1::RoundedRect(b.rect, 4.0f, 4.0f), hoverBrush);
+            ctx->SetAntialiasMode(oldAA);
+        }
+        if (iconFmt && dimBrush)
+            ctx->DrawTextW(b.glyph, 1, iconFmt, b.rect, dimBrush);
+    }
+
+    if (textBrush)   textBrush->Release();
+    if (dimBrush)    dimBrush->Release();
+    if (hoverBrush)  hoverBrush->Release();
+    if (aheadBrush)  aheadBrush->Release();
+    if (behindBrush) behindBrush->Release();
+    if (sepBrush)    sepBrush->Release();
+    if (iconFmt)     iconFmt->Release();
+    if (branchFmt)   branchFmt->Release();
+    if (countFmt)    countFmt->Release();
+}
+
 void GitPanel::DrawQuickActions(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
 {
     if (quickActionPrimaryRect_.right <= quickActionPrimaryRect_.left ||
-        quickActionToggleRect_.right <= quickActionToggleRect_.left)
+        quickActionToggleRect_.right  <= quickActionToggleRect_.left)
         return;
 
-    UINT dpi = win32_get_dpi_for_window(hwnd);
-    float iconPx = (float)win32_dpi_scale(12, dpi);
-    if (!quickChevronRightBmp_)
-    {
-        quickChevronRightBmp_ = GetExplorerManager().LoadSvgIconPublic(
-            ctx, "assets\\ressource\\icons\\chevron-right.svg", (int)iconPx, dpi);
-    }
-    if (!quickChevronUpBmp_)
-    {
-        quickChevronUpBmp_ = GetExplorerManager().LoadSvgIconPublic(
-            ctx, "assets\\ressource\\icons\\chevron-up.svg", (int)iconPx, dpi);
-    }
+    const UI::Theme::Palette &palette = UI::Theme::GetPalette();
+    const bool light = (UI::Theme::GetMode() == UI::Theme::Mode::Light);
 
-    ID2D1SolidColorBrush *textBrush = nullptr;
-    ID2D1SolidColorBrush *hoverBrush = nullptr;
+    D2D1_COLOR_F accent    = UI::Theme::Accent();
+    D2D1_COLOR_F accentBg  = D2D1::ColorF(accent.r, accent.g, accent.b, light ? 0.90f : 0.80f);
+    auto clamp1 = [](float v) { return v > 1.0f ? 1.0f : v; };
+    D2D1_COLOR_F accentHov = D2D1::ColorF(
+        clamp1(accent.r + 0.08f),
+        clamp1(accent.g + 0.08f),
+        clamp1(accent.b + 0.08f),
+        1.0f);
+    D2D1_COLOR_F dividerCol = D2D1::ColorF(1.0f, 1.0f, 1.0f, light ? 0.25f : 0.20f);
 
-    ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &textBrush);
-    ctx->CreateSolidColorBrush(UI::Theme::GetPalette().explorerRowHover, &hoverBrush);
+    // Brushes
+    ID2D1SolidColorBrush *btnBgBrush  = nullptr;
+    ID2D1SolidColorBrush *btnHovBrush = nullptr;
+    ID2D1SolidColorBrush *btnTxtBrush = nullptr;
+    ID2D1SolidColorBrush *divBrush    = nullptr;
+    ID2D1SolidColorBrush *menuBgBrush = nullptr;
+    ID2D1SolidColorBrush *menuBdBrush = nullptr;
+    ID2D1SolidColorBrush *menuTxtBrush = nullptr;
+    ID2D1SolidColorBrush *menuHovBrush = nullptr;
+    ID2D1SolidColorBrush *menuSelTxtBrush = nullptr;
 
-    IDWriteTextFormat *buttonFmt = nullptr;
+    ctx->CreateSolidColorBrush(accentBg,  &btnBgBrush);
+    ctx->CreateSolidColorBrush(accentHov, &btnHovBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.95f), &btnTxtBrush);
+    ctx->CreateSolidColorBrush(dividerCol, &divBrush);
+
+    // Menu card colours
+    D2D1_COLOR_F menuBg = light
+        ? D2D1::ColorF(0.18f, 0.18f, 0.18f, 1.0f)
+        : D2D1::ColorF(0.14f, 0.14f, 0.14f, 1.0f);
+    D2D1_COLOR_F menuBd = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.10f);
+    D2D1_COLOR_F menuHov = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f);
+
+    ctx->CreateSolidColorBrush(menuBg,  &menuBgBrush);
+    ctx->CreateSolidColorBrush(menuBd,  &menuBdBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.92f, 0.92f), &menuTxtBrush);
+    ctx->CreateSolidColorBrush(menuHov, &menuHovBrush);
+    ctx->CreateSolidColorBrush(accent,  &menuSelTxtBrush);
+
+    IDWriteTextFormat *btnFmt  = nullptr;
     IDWriteTextFormat *menuFmt = nullptr;
-    dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
-                             DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"en-us", &buttonFmt);
-    dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                             DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"en-us", &menuFmt);
+    IDWriteTextFormat *iconFmt = nullptr;
 
-    if (buttonFmt)
+    dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+                             DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"en-us", &btnFmt);
+    dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                             DWRITE_FONT_STRETCH_NORMAL, 12.5f, L"en-us", &menuFmt);
+    dwrite->CreateTextFormat(L"Segoe Fluent Icons", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                             DWRITE_FONT_STRETCH_NORMAL, 11.0f, L"en-us", &iconFmt);
+    if (!iconFmt)
+        dwrite->CreateTextFormat(L"Segoe MDL2 Assets", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                                 DWRITE_FONT_STRETCH_NORMAL, 11.0f, L"en-us", &iconFmt);
+
+    if (btnFmt)
     {
-        buttonFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        buttonFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        buttonFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        btnFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        btnFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        btnFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
     if (menuFmt)
     {
@@ -513,131 +688,193 @@ void GitPanel::DrawQuickActions(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, 
         menuFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         menuFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
-
-    auto fillHoverRect = [&](const D2D1_RECT_F &rect)
+    if (iconFmt)
     {
-        if (!hoverBrush)
-            return;
-        D2D1_RECT_F rr = D2D1::RectF(std::round(rect.left), std::round(rect.top), std::round(rect.right), std::round(rect.bottom));
-        D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
-        ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        ctx->FillRoundedRectangle(D2D1::RoundedRect(rr, 4.0f, 4.0f), hoverBrush);
-        ctx->SetAntialiasMode(oldAA);
-    };
+        iconFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        iconFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
 
-    if (quickActionPrimaryHovered_)
-        fillHoverRect(quickActionPrimaryRect_);
-    if (quickActionToggleHovered_)
-        fillHoverRect(quickActionToggleRect_);
+    const D2D1_RECT_F &primR   = quickActionPrimaryRect_;
+    const D2D1_RECT_F &togR    = quickActionToggleRect_;
+    const float kR             = 5.0f; // corner radius
 
-    if (buttonFmt && textBrush)
+    D2D1_ANTIALIAS_MODE savedAA = ctx->GetAntialiasMode();
+    ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    // -- Primary button background --
+    {
+        // Full button background (primary + toggle together = one pill)
+        D2D1_RECT_F fullBtn = D2D1::RectF(std::round(primR.left), std::round(primR.top),
+                                           std::round(togR.right),  std::round(togR.bottom));
+        ID2D1SolidColorBrush *bg = (quickActionPrimaryHovered_ || quickActionToggleHovered_) ? btnHovBrush : btnBgBrush;
+        if (bg)
+            ctx->FillRoundedRectangle(D2D1::RoundedRect(fullBtn, kR, kR), bg);
+
+        // Per-side hover brightening (if only one side hovered)
+        if (quickActionPrimaryHovered_ && !quickActionToggleHovered_ && btnHovBrush)
+        {
+            // Already handled above — whole button brightens; individual side handled implicitly
+        }
+
+        // Divider between primary and toggle
+        if (divBrush)
+        {
+            float dx = std::round(togR.left);
+            ctx->FillRectangle(D2D1::RectF(dx, primR.top + 5.0f, dx + 1.0f, primR.bottom - 5.0f), divBrush);
+        }
+    }
+
+    ctx->SetAntialiasMode(savedAA);
+
+    // Primary button label
+    if (btnFmt && btnTxtBrush)
     {
         const wchar_t *label = GetQuickActionLabel(quickActionPrimaryIndex_);
-        D2D1_RECT_F textRect = D2D1::RectF(
-            std::round(quickActionPrimaryRect_.left + 8.0f),
-            std::round(quickActionPrimaryRect_.top),
-            std::round(quickActionPrimaryRect_.right - 6.0f),
-            std::round(quickActionPrimaryRect_.bottom));
-        ctx->DrawTextW(label, (UINT32)wcslen(label), buttonFmt, textRect, textBrush);
+        ctx->DrawTextW(label, (UINT32)wcslen(label), btnFmt, primR, btnTxtBrush);
     }
 
-    ID2D1Bitmap *chevronBmp = quickActionMenuOpen_ ? quickChevronUpBmp_ : quickChevronRightBmp_;
-    if (chevronBmp)
+    // Toggle chevron glyph (▾ or ▴)
+    if (iconFmt && btnTxtBrush)
     {
-        float cx = std::round((quickActionToggleRect_.left + quickActionToggleRect_.right) * 0.5f);
-        float cy = std::round((quickActionToggleRect_.top + quickActionToggleRect_.bottom) * 0.5f);
-        D2D1_RECT_F dst = D2D1::RectF(
-            std::round(cx - iconPx * 0.5f),
-            std::round(cy - iconPx * 0.5f),
-            std::round(cx + iconPx * 0.5f),
-            std::round(cy + iconPx * 0.5f));
-        D2D1_MATRIX_3X2_F oldTransform;
-        ctx->GetTransform(&oldTransform);
-        if (!quickActionMenuOpen_)
-        {
-            D2D1_MATRIX_3X2_F rotation = D2D1::Matrix3x2F::Rotation(90.0f, D2D1::Point2F(cx, cy));
-            ctx->SetTransform(rotation * oldTransform);
-        }
-        ctx->DrawBitmap(chevronBmp, dst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
-        if (!quickActionMenuOpen_)
-            ctx->SetTransform(oldTransform);
+        const std::wstring chevron = quickActionMenuOpen_ ? L"\u25B4" : L"\u25BE"; // ▴ / ▾
+        ctx->DrawTextW(chevron.c_str(), 1, iconFmt, togR, btnTxtBrush);
     }
 
+    // -- Dropdown card --
     if (quickActionMenuOpen_ &&
         quickActionMenuRect_.right > quickActionMenuRect_.left &&
         quickActionMenuRect_.bottom > quickActionMenuRect_.top)
     {
-        const float rowH = (quickActionMenuRect_.bottom - quickActionMenuRect_.top) / 4.0f;
+        const D2D1_RECT_F &menu = quickActionMenuRect_;
+        const float rowH = (menu.bottom - menu.top) / 4.0f;
+
+        D2D1_ANTIALIAS_MODE aa = ctx->GetAntialiasMode();
+        ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+        // Card background
+        D2D1_RECT_F cardR = D2D1::RectF(std::round(menu.left), std::round(menu.top),
+                                         std::round(menu.right), std::round(menu.bottom));
+        if (menuBgBrush)
+            ctx->FillRoundedRectangle(D2D1::RoundedRect(cardR, kR, kR), menuBgBrush);
+
+        // Card border
+        if (menuBdBrush)
+            ctx->DrawRoundedRectangle(D2D1::RoundedRect(cardR, kR, kR), menuBdBrush, 1.0f);
+
+        ctx->SetAntialiasMode(aa);
+
+        // Row hover + text
         for (int i = 0; i < 4; ++i)
         {
             D2D1_RECT_F rowRect = D2D1::RectF(
-                std::round(quickActionMenuRect_.left),
-                std::round(quickActionMenuRect_.top + rowH * (float)i),
-                std::round(quickActionMenuRect_.right),
-                std::round(quickActionMenuRect_.top + rowH * (float)(i + 1)));
+                std::round(menu.left),
+                std::round(menu.top + rowH * (float)i),
+                std::round(menu.right),
+                std::round(menu.top + rowH * (float)(i + 1)));
 
-            if (i == quickActionHoveredIndex_)
-                fillHoverRect(rowRect);
-
-            if (menuFmt && textBrush)
+            if (i == quickActionHoveredIndex_ && menuHovBrush)
             {
+                // Clip hover to card corners on first/last row
+                D2D1_ANTIALIAS_MODE haa = ctx->GetAntialiasMode();
+                ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                float topR = (i == 0) ? kR : 0.0f;
+                float botR = (i == 3) ? kR : 0.0f;
+                // Approximate with simple fill (rounded clipping not trivial in D2D without layers)
+                ctx->FillRectangle(D2D1::RectF(rowRect.left + 1.0f, rowRect.top + (i == 0 ? 1.0f : 0.0f),
+                                               rowRect.right - 1.0f, rowRect.bottom - (i == 3 ? 1.0f : 0.0f)), menuHovBrush);
+                ctx->SetAntialiasMode(haa);
+            }
+
+            // Separator line between items (except last)
+            if (i < 3 && menuBdBrush)
+            {
+                float sepY = std::round(menu.top + rowH * (float)(i + 1));
+                ctx->FillRectangle(D2D1::RectF(menu.left + 8.0f, sepY, menu.right - 8.0f, sepY + 1.0f), menuBdBrush);
+            }
+
+            if (menuFmt)
+            {
+                // Selected action gets accent color text
+                bool isSelected = (i == quickActionPrimaryIndex_);
+                ID2D1SolidColorBrush *txtBrush = isSelected ? menuSelTxtBrush : menuTxtBrush;
+
                 D2D1_RECT_F textRect = D2D1::RectF(
-                    std::round(rowRect.left + 10.0f),
+                    std::round(rowRect.left + 14.0f),
                     rowRect.top,
                     std::round(rowRect.right - 8.0f),
                     rowRect.bottom);
-                const wchar_t *itemLabel = GetQuickActionLabel(i);
-                ctx->DrawTextW(itemLabel, (UINT32)wcslen(itemLabel), menuFmt, textRect, textBrush);
+                if (txtBrush)
+                    ctx->DrawTextW(GetQuickActionLabel(i), (UINT32)wcslen(GetQuickActionLabel(i)),
+                                   menuFmt, textRect, txtBrush);
             }
         }
     }
 
-    if (buttonFmt)
-        buttonFmt->Release();
-    if (menuFmt)
-        menuFmt->Release();
-    if (textBrush)
-        textBrush->Release();
-    if (hoverBrush)
-        hoverBrush->Release();
+    if (btnBgBrush)   btnBgBrush->Release();
+    if (btnHovBrush)  btnHovBrush->Release();
+    if (btnTxtBrush)  btnTxtBrush->Release();
+    if (divBrush)     divBrush->Release();
+    if (menuBgBrush)  menuBgBrush->Release();
+    if (menuBdBrush)  menuBdBrush->Release();
+    if (menuTxtBrush) menuTxtBrush->Release();
+    if (menuHovBrush) menuHovBrush->Release();
+    if (menuSelTxtBrush) menuSelTxtBrush->Release();
+    if (btnFmt)  btnFmt->Release();
+    if (menuFmt) menuFmt->Release();
+    if (iconFmt) iconFmt->Release();
 }
 
 void GitPanel::DrawChanges(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
 {
-    const UI::Theme::Palette &themePalette = UI::Theme::GetPalette();
-    const bool lightMode = (UI::Theme::GetMode() == UI::Theme::Mode::Light);
+    const UI::Theme::Palette &palette = UI::Theme::GetPalette();
+    const bool light = (UI::Theme::GetMode() == UI::Theme::Mode::Light);
 
-    ID2D1SolidColorBrush *pathBrush = nullptr;
-    ID2D1SolidColorBrush *hoverBrush = nullptr;
+    ID2D1SolidColorBrush *pathBrush     = nullptr;
+    ID2D1SolidColorBrush *dimBrush      = nullptr;
+    ID2D1SolidColorBrush *hoverBrush    = nullptr;
     ID2D1SolidColorBrush *selectedBrush = nullptr;
-    ID2D1SolidColorBrush *statusBrush = nullptr;
+    ID2D1SolidColorBrush *sectionBrush  = nullptr;
+    ID2D1SolidColorBrush *statusBrush   = nullptr;
 
-    ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &pathBrush);
-    ctx->CreateSolidColorBrush(themePalette.explorerRowHover, &hoverBrush);
-    ctx->CreateSolidColorBrush(themePalette.explorerRowActive, &selectedBrush);
+    D2D1_COLOR_F primary = UI::Theme::PrimaryText();
+    ctx->CreateSolidColorBrush(primary, &pathBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(primary.r, primary.g, primary.b, 0.45f), &dimBrush);
+    ctx->CreateSolidColorBrush(palette.explorerRowHover, &hoverBrush);
+    ctx->CreateSolidColorBrush(palette.explorerRowActive, &selectedBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(primary.r, primary.g, primary.b, 0.06f), &sectionBrush);
     ctx->CreateSolidColorBrush(UI::Theme::Accent(), &statusBrush);
-    IDWriteTextFormat *rowFmt = nullptr;
+
+    IDWriteTextFormat *rowFmt     = nullptr;
+    IDWriteTextFormat *dimFmt     = nullptr;
+    IDWriteTextFormat *sectionFmt = nullptr;
+
     dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
                              DWRITE_FONT_STRETCH_NORMAL, 13.0f, L"en-us", &rowFmt);
-    if (rowFmt)
+    dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                             DWRITE_FONT_STRETCH_NORMAL, 11.0f, L"en-us", &dimFmt);
+    dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+                             DWRITE_FONT_STRETCH_NORMAL, 11.0f, L"en-us", &sectionFmt);
+
+    for (IDWriteTextFormat *f : {rowFmt, dimFmt, sectionFmt})
     {
-        rowFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        rowFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        rowFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        if (!f) continue;
+        f->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        f->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        f->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
     D2D1_RECT_F listClip = D2D1::RectF(changesRect_.left, changesRect_.top, changesRect_.right, changesRect_.bottom);
     ctx->PushAxisAlignedClip(listClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
+    const float scroll = changesScrollbar_.GetScrollOffset();
+    const float rowRightInset = changesScrollbar_.IsVisible() ? 16.0f : 4.0f;
     const float insetX = 4.0f;
-    const float insetY = 0.0f;
     const float corner = UI::InputTheme::kCornerRadius;
     const float iconPx = (float)win32_dpi_scale((int)GetExplorerManager().GetState().iconSize, win32_get_dpi_for_window(hwnd));
 
     auto drawRoundedFill = [&](const D2D1_RECT_F &r, ID2D1Brush *brush)
     {
-        if (!brush)
-            return;
+        if (!brush) return;
         D2D1_RECT_F rr = D2D1::RectF(std::round(r.left), std::round(r.top), std::round(r.right), std::round(r.bottom));
         D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
         ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -645,94 +882,267 @@ void GitPanel::DrawChanges(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
         ctx->SetAntialiasMode(oldAA);
     };
 
-    float y = listClip.top - changesScrollbar_.GetScrollOffset();
-    const float rowRightInset = changesScrollbar_.IsVisible() ? 16.0f : 4.0f;
-    for (size_t i = 0; i < changes_.size(); ++i)
+    // Helper: pick status color for a change
+    auto statusColor = [&](const Panels::GitChange &c) -> D2D1_COLOR_F
     {
-        D2D1_RECT_F rowRect = D2D1::RectF(changesRect_.left, y, changesRect_.right - rowRightInset, y + changeRowHeight_);
-        if (rowRect.bottom < listClip.top)
-        {
-            y += changeRowHeight_;
+        if (c.indexStatus == L'U' || c.worktreeStatus == L'U' || (c.statusFlags & GIT_STATUS_CONFLICTED))
+            return light ? D2D1::ColorF(0.85f, 0.25f, 0.15f) : D2D1::ColorF(0.95f, 0.45f, 0.35f);
+        if (c.indexStatus == L'D' || c.worktreeStatus == L'D')
+            return light ? D2D1::ColorF(0.78f, 0.24f, 0.24f) : D2D1::ColorF(0.92f, 0.37f, 0.37f);
+        if (c.indexStatus == L'A')
+            return light ? D2D1::ColorF(0.18f, 0.58f, 0.24f) : D2D1::ColorF(0.42f, 0.78f, 0.38f);
+        if (c.indexStatus == L'?' || c.worktreeStatus == L'?')
+            return light ? D2D1::ColorF(0.58f, 0.52f, 0.12f) : D2D1::ColorF(0.73f, 0.84f, 0.40f);
+        if (c.indexStatus == L'M' || c.worktreeStatus == L'M')
+            return light ? D2D1::ColorF(0.17f, 0.45f, 0.82f) : D2D1::ColorF(0.39f, 0.67f, 0.93f);
+        if (c.indexStatus == L'R' || c.worktreeStatus == L'R')
+            return light ? D2D1::ColorF(0.52f, 0.18f, 0.72f) : D2D1::ColorF(0.72f, 0.45f, 0.92f);
+        return light ? D2D1::ColorF(0.18f, 0.58f, 0.24f) : D2D1::ColorF(0.42f, 0.78f, 0.38f);
+    };
+
+    // Helper: pick display status letter
+    auto statusLetter = [&](const Panels::GitChange &c) -> wchar_t
+    {
+        if (c.statusFlags & GIT_STATUS_CONFLICTED) return L'C';
+        if (c.indexStatus != L' ')                 return c.indexStatus;
+        return c.worktreeStatus;
+    };
+
+    const wchar_t *sectionNames[3] = {L"MERGE CONFLICTS", L"STAGED CHANGES", L"CHANGES"};
+    const std::vector<int> *sectionItems[3] = {&conflictIndices_, &stagedIndices_, &changesIndices_};
+
+    float virtualY = 0.0f; // running position in virtual (scrolled) space
+
+    for (int s = 0; s < 3; ++s)
+    {
+        if (sectionItems[s]->empty())
             continue;
-        }
-        if (rowRect.top > listClip.bottom)
-            break;
 
-        D2D1_RECT_F fillRect = D2D1::RectF(rowRect.left + insetX, std::round(rowRect.top) + insetY,
-                                           rowRect.right - insetX, std::round(rowRect.bottom) - insetY);
-        if ((int)i == selectedChangeIndex_ && selectedBrush)
-            drawRoundedFill(fillRect, selectedBrush);
-        else if ((int)i == hoveredChangeIndex_ && hoverBrush)
-            drawRoundedFill(fillRect, hoverBrush);
+        // --- Section header ---
+        float headerTop    = listClip.top + virtualY - scroll;
+        float headerBottom = headerTop + kSectionHeaderH;
+        virtualY += kSectionHeaderH;
 
-        const Panels::GitChange &c = changes_[i];
-
-        std::filesystem::path relPath(c.path);
-        ExplorerItem iconItem;
-        iconItem.isDirectory = false;
-        iconItem.extension = relPath.extension().string();
-        iconItem.name = relPath.filename().wstring();
-        iconItem.fullPath = c.path;
-        ID2D1Bitmap *icon = GetExplorerManager().GetIconForItemPublic(ctx, iconItem, hwnd);
-        if (icon)
+        if (headerBottom >= listClip.top && headerTop <= listClip.bottom)
         {
-            float iconY = std::round(rowRect.top + (rowRect.bottom - rowRect.top - iconPx) * 0.5f);
-            D2D1_RECT_F iconRect = D2D1::RectF(
-                std::round(rowRect.left + insetX + state_.leftPadding),
-                iconY,
-                std::round(rowRect.left + insetX + state_.leftPadding + iconPx),
-                iconY + iconPx);
-            ctx->DrawBitmap(icon, iconRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+            D2D1_RECT_F hdrRect = D2D1::RectF(listClip.left, headerTop, listClip.right - rowRightInset, headerBottom);
+
+            // Subtle background for section row
+            if (sectionBrush)
+                ctx->FillRectangle(D2D1::RectF(hdrRect.left, std::round(headerTop),
+                                               hdrRect.right, std::round(headerBottom)), sectionBrush);
+
+            // Hover highlight for section
+            if (s == hoveredSectionIndex_ && hoverBrush)
+                ctx->FillRectangle(D2D1::RectF(hdrRect.left, std::round(headerTop),
+                                               hdrRect.right, std::round(headerBottom)), hoverBrush);
+
+            // Chevron: ▶ or ▼
+            if (dimBrush && sectionFmt)
+            {
+                const wchar_t *chevron = sectionCollapsed_[s] ? L"\u25B6" : L"\u25BC";
+                D2D1_RECT_F chevRect = D2D1::RectF(hdrRect.left + insetX, headerTop,
+                                                   hdrRect.left + insetX + 14.0f, headerBottom);
+                ctx->DrawTextW(chevron, 1, sectionFmt, chevRect, dimBrush);
+            }
+
+            // Section name
+            if (sectionFmt && dimBrush)
+            {
+                D2D1_RECT_F nameRect = D2D1::RectF(hdrRect.left + insetX + 16.0f, headerTop,
+                                                   hdrRect.right - 36.0f, headerBottom);
+                ctx->DrawTextW(sectionNames[s], (UINT32)wcslen(sectionNames[s]), sectionFmt, nameRect, dimBrush);
+            }
+
+            // Count badge (pill with number)
+            if (statusBrush)
+            {
+                std::wstring cnt = std::to_wstring(sectionItems[s]->size());
+                float badgeW = (float)cnt.size() * 7.0f + 10.0f;
+                if (badgeW < 18.0f) badgeW = 18.0f;
+                D2D1_RECT_F badgeRect = D2D1::RectF(
+                    hdrRect.right - badgeW - 4.0f,
+                    headerTop + (kSectionHeaderH - 14.0f) * 0.5f,
+                    hdrRect.right - 4.0f,
+                    headerTop + (kSectionHeaderH + 14.0f) * 0.5f);
+
+                // Badge background
+                D2D1_COLOR_F badgeBg = statusColor(changes_[(size_t)(*sectionItems[s])[0]]);
+                badgeBg.a = 0.18f;
+                ID2D1SolidColorBrush *badgeBgBrush = nullptr;
+                ctx->CreateSolidColorBrush(badgeBg, &badgeBgBrush);
+                if (badgeBgBrush)
+                {
+                    D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
+                    ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    ctx->FillRoundedRectangle(D2D1::RoundedRect(badgeRect, 7.0f, 7.0f), badgeBgBrush);
+                    ctx->SetAntialiasMode(oldAA);
+                    badgeBgBrush->Release();
+                }
+
+                // Badge text
+                ID2D1SolidColorBrush *badgeTextBrush = nullptr;
+                D2D1_COLOR_F badgeFgColor = statusColor(changes_[(size_t)(*sectionItems[s])[0]]);
+                ctx->CreateSolidColorBrush(badgeFgColor, &badgeTextBrush);
+                if (badgeTextBrush)
+                {
+                    IDWriteTextFormat *centeredBadgeFmt = nullptr;
+                    dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+                                            DWRITE_FONT_STRETCH_NORMAL, 10.0f, L"en-us", &centeredBadgeFmt);
+                    if (centeredBadgeFmt)
+                    {
+                        centeredBadgeFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                        centeredBadgeFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                        centeredBadgeFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                        ctx->DrawTextW(cnt.c_str(), (UINT32)cnt.size(), centeredBadgeFmt, badgeRect, badgeTextBrush);
+                        centeredBadgeFmt->Release();
+                    }
+                    badgeTextBrush->Release();
+                }
+            }
         }
 
-        std::wstring statusToken;
-        statusToken.push_back(c.indexStatus);
-        statusToken.push_back(c.worktreeStatus);
-        if (statusBrush)
+        if (sectionCollapsed_[s])
+            continue;
+
+        // --- File rows for this section ---
+        for (int idx : *sectionItems[s])
         {
-            D2D1_COLOR_F color = lightMode
-                                     ? D2D1::ColorF(0.18f, 0.58f, 0.24f, 1.0f)
-                                     : D2D1::ColorF(0.42f, 0.78f, 0.38f, 1.0f);
-            if (c.indexStatus == L'D' || c.worktreeStatus == L'D')
-                color = lightMode ? D2D1::ColorF(0.78f, 0.24f, 0.24f, 1.0f) : D2D1::ColorF(0.92f, 0.37f, 0.37f, 1.0f);
-            else if (c.indexStatus == L'?' || c.worktreeStatus == L'?')
-                color = lightMode ? D2D1::ColorF(0.58f, 0.52f, 0.12f, 1.0f) : D2D1::ColorF(0.73f, 0.84f, 0.40f, 1.0f);
-            else if (c.indexStatus == L'M' || c.worktreeStatus == L'M')
-                color = lightMode ? D2D1::ColorF(0.17f, 0.45f, 0.82f, 1.0f) : D2D1::ColorF(0.39f, 0.67f, 0.93f, 1.0f);
-            statusBrush->SetColor(color);
+            float rowTop    = listClip.top + virtualY - scroll;
+            float rowBottom = rowTop + changeRowHeight_;
+            virtualY += changeRowHeight_;
+
+            if (rowBottom < listClip.top)
+                continue;
+            if (rowTop > listClip.bottom)
+                break;
+
+            const Panels::GitChange &c = changes_[(size_t)idx];
+            D2D1_RECT_F rowRect  = D2D1::RectF(listClip.left, rowTop, listClip.right - rowRightInset, rowBottom);
+            D2D1_RECT_F fillRect = D2D1::RectF(rowRect.left + insetX, std::round(rowTop),
+                                               rowRect.right - insetX, std::round(rowBottom));
+
+            if (idx == selectedChangeIndex_ && selectedBrush)
+                drawRoundedFill(fillRect, selectedBrush);
+            else if (idx == hoveredChangeIndex_ && hoverBrush)
+                drawRoundedFill(fillRect, hoverBrush);
+
+            // File icon
+            std::filesystem::path relPath(c.path);
+            ExplorerItem iconItem;
+            iconItem.isDirectory = false;
+            iconItem.extension   = relPath.extension().string();
+            iconItem.name        = relPath.filename().wstring();
+            iconItem.fullPath    = c.path;
+            ID2D1Bitmap *icon = GetExplorerManager().GetIconForItemPublic(ctx, iconItem, hwnd);
+
+            float iconX = rowRect.left + insetX + state_.leftPadding + 12.0f; // extra indent inside section
+            if (icon)
+            {
+                float iconY = std::round(rowTop + (changeRowHeight_ - iconPx) * 0.5f);
+                D2D1_RECT_F iconRect = D2D1::RectF(std::round(iconX), iconY,
+                                                   std::round(iconX + iconPx), iconY + iconPx);
+                ctx->DrawBitmap(icon, iconRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+            }
+
+            float textX = iconX + iconPx + 6.0f;
+
+            // Status badge on the right (single colored letter)
+            wchar_t letter = statusLetter(c);
+            D2D1_COLOR_F sColor = statusColor(c);
+            const float badgeSz = 18.0f;
+            D2D1_RECT_F badgeRect = D2D1::RectF(
+                rowRect.right - badgeSz - 4.0f,
+                rowTop + (changeRowHeight_ - badgeSz) * 0.5f,
+                rowRect.right - 4.0f,
+                rowTop + (changeRowHeight_ + badgeSz) * 0.5f);
+
+            ID2D1SolidColorBrush *sBrush = nullptr;
+            ctx->CreateSolidColorBrush(sColor, &sBrush);
+            if (sBrush)
+            {
+                // Badge background (subtle tint)
+                D2D1_COLOR_F bgCol = sColor;
+                bgCol.a = 0.15f;
+                ID2D1SolidColorBrush *bgBrush = nullptr;
+                ctx->CreateSolidColorBrush(bgCol, &bgBrush);
+                if (bgBrush)
+                {
+                    D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
+                    ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    ctx->FillRoundedRectangle(D2D1::RoundedRect(badgeRect, 3.0f, 3.0f), bgBrush);
+                    ctx->SetAntialiasMode(oldAA);
+                    bgBrush->Release();
+                }
+
+                // Badge letter
+                IDWriteTextFormat *badgeLetterFmt = nullptr;
+                dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+                                        DWRITE_FONT_STRETCH_NORMAL, 10.0f, L"en-us", &badgeLetterFmt);
+                if (badgeLetterFmt)
+                {
+                    badgeLetterFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                    badgeLetterFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                    badgeLetterFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                    ctx->DrawTextW(&letter, 1, badgeLetterFmt, badgeRect, sBrush);
+                    badgeLetterFmt->Release();
+                }
+                sBrush->Release();
+            }
+
+            // Filename (just the filename, bold)
+            float nameRight = badgeRect.left - 6.0f;
+            std::wstring filename = relPath.filename().wstring();
+            if (rowFmt && pathBrush && !filename.empty())
+            {
+                D2D1_RECT_F nameRect = D2D1::RectF(textX, rowTop, nameRight, rowBottom);
+                ctx->DrawTextW(filename.c_str(), (UINT32)filename.size(), rowFmt, nameRect, pathBrush);
+            }
+
+            // Parent directory dimmed (if space allows)
+            std::wstring parentDir = relPath.parent_path().wstring();
+            if (!parentDir.empty() && dimFmt && dimBrush)
+            {
+                // Measure filename width to position parent dir after it
+                IDWriteTextLayout *nameLayout = nullptr;
+                dwrite->CreateTextLayout(filename.c_str(), (UINT32)filename.size(), rowFmt,
+                                        10000.0f, changeRowHeight_, &nameLayout);
+                if (nameLayout)
+                {
+                    DWRITE_TEXT_METRICS m;
+                    nameLayout->GetMetrics(&m);
+                    float afterName = textX + m.width + 5.0f;
+                    nameLayout->Release();
+
+                    if (afterName + 20.0f < nameRight)
+                    {
+                        D2D1_RECT_F dirRect = D2D1::RectF(afterName, rowTop, nameRight, rowBottom);
+                        ctx->DrawTextW(parentDir.c_str(), (UINT32)parentDir.size(), dimFmt, dirRect, dimBrush);
+                    }
+                }
+            }
         }
-
-        D2D1_RECT_F statusRect = D2D1::RectF(rowRect.right - 38.0f, rowRect.top, rowRect.right - 8.0f, rowRect.bottom);
-        if (rowFmt && statusBrush)
-            ctx->DrawTextW(statusToken.c_str(), (UINT32)statusToken.size(), rowFmt, statusRect, statusBrush);
-
-        D2D1_RECT_F pathRect = D2D1::RectF(rowRect.left + insetX + state_.leftPadding + iconPx + 6.0f, rowRect.top,
-                                           statusRect.left - 6.0f, rowRect.bottom);
-        if (rowFmt && pathBrush)
-            ctx->DrawTextW(c.path.c_str(), (UINT32)c.path.size(), rowFmt, pathRect, pathBrush);
-
-        y += changeRowHeight_;
     }
 
     if (changes_.empty() && rowFmt && pathBrush)
     {
-        D2D1_RECT_F emptyRect = D2D1::RectF(changesRect_.left + 8.0f, listClip.top + 8.0f, changesRect_.right - 8.0f, listClip.top + 28.0f);
+        D2D1_RECT_F emptyRect = D2D1::RectF(listClip.left + 12.0f, listClip.top + 12.0f,
+                                             listClip.right - 12.0f, listClip.top + 32.0f);
         const wchar_t *msg = isGitRepo_ ? L"No pending changes." : L"Open a git repository to see changes.";
-        ctx->DrawTextW(msg, (UINT32)wcslen(msg), rowFmt, emptyRect, pathBrush);
+        ctx->DrawTextW(msg, (UINT32)wcslen(msg), rowFmt, emptyRect, dimBrush ? dimBrush : pathBrush);
     }
 
     ctx->PopAxisAlignedClip();
 
-    if (rowFmt)
-        rowFmt->Release();
-    if (pathBrush)
-        pathBrush->Release();
-    if (hoverBrush)
-        hoverBrush->Release();
-    if (selectedBrush)
-        selectedBrush->Release();
-    if (statusBrush)
-        statusBrush->Release();
+    if (rowFmt)     rowFmt->Release();
+    if (dimFmt)     dimFmt->Release();
+    if (sectionFmt) sectionFmt->Release();
+    if (pathBrush)     pathBrush->Release();
+    if (dimBrush)      dimBrush->Release();
+    if (hoverBrush)    hoverBrush->Release();
+    if (selectedBrush) selectedBrush->Release();
+    if (sectionBrush)  sectionBrush->Release();
+    if (statusBrush)   statusBrush->Release();
 }
 
 void GitPanel::OnMouseMove(HWND hwnd, POINT clientPoint)
@@ -744,16 +1154,25 @@ void GitPanel::OnMouseMove(HWND hwnd, POINT clientPoint)
         return;
 
     bool prevPrimaryHover = quickActionPrimaryHovered_;
-    bool prevToggleHover = quickActionToggleHovered_;
-    int prevQuickActionHover = quickActionHoveredIndex_;
+    bool prevToggleHover  = quickActionToggleHovered_;
+    int  prevQuickHover   = quickActionHoveredIndex_;
+    bool prevPull         = pullBtnHovered_;
+    bool prevRefresh      = refreshBtnHovered_;
+    int  prevSection      = hoveredSectionIndex_;
 
     quickActionPrimaryHovered_ = IsPointInRect(quickActionPrimaryRect_, clientPoint);
-    quickActionToggleHovered_ = IsPointInRect(quickActionToggleRect_, clientPoint);
-    quickActionHoveredIndex_ = quickActionMenuOpen_ ? HitTestQuickActionMenuItem(clientPoint) : -1;
+    quickActionToggleHovered_  = IsPointInRect(quickActionToggleRect_,  clientPoint);
+    quickActionHoveredIndex_   = quickActionMenuOpen_ ? HitTestQuickActionMenuItem(clientPoint) : -1;
+    pullBtnHovered_            = IsPointInRect(pullBtnRect_,    clientPoint);
+    refreshBtnHovered_         = IsPointInRect(refreshBtnRect_, clientPoint);
+    hoveredSectionIndex_       = HitTestSection(clientPoint);
 
     if (prevPrimaryHover != quickActionPrimaryHovered_ ||
-        prevToggleHover != quickActionToggleHovered_ ||
-        prevQuickActionHover != quickActionHoveredIndex_)
+        prevToggleHover  != quickActionToggleHovered_  ||
+        prevQuickHover   != quickActionHoveredIndex_   ||
+        prevPull         != pullBtnHovered_            ||
+        prevRefresh      != refreshBtnHovered_         ||
+        prevSection      != hoveredSectionIndex_)
         changed = true;
 
     if (commitMessageInput_.OnMouseMove(hwnd, clientPoint))
@@ -765,11 +1184,12 @@ void GitPanel::OnMouseMove(HWND hwnd, POINT clientPoint)
     int prevHover = hoveredChangeIndex_;
     if (quickActionMenuOpen_ ||
         changesScrollbar_.IsHoveringThumb() ||
-        changesScrollbar_.IsHoveringTrack() ||
+        changesScrollbar_.IsHoveringTrack()  ||
         changesScrollbar_.IsDragging())
         hoveredChangeIndex_ = -1;
     else
         hoveredChangeIndex_ = HitTestChange(clientPoint);
+
     if (prevHover != hoveredChangeIndex_)
         changed = true;
 
@@ -793,8 +1213,33 @@ void GitPanel::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
     if (HandleResizeLeftButtonDown(hwnd, clientPoint))
         return;
 
+    // Branch bar buttons
+    if (IsPointInRect(pullBtnRect_, clientPoint))
+    {
+        PullFromRemote();
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
+    }
+    if (IsPointInRect(refreshBtnRect_, clientPoint))
+    {
+        RefreshStatus();
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
+    }
+
+    // Section header collapse/expand
+    int secHit = HitTestSection(clientPoint);
+    if (secHit >= 0)
+    {
+        sectionCollapsed_[secHit] = !sectionCollapsed_[secHit];
+        // Recompute scroll content size
+        UpdateLayout(hwnd);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
+    }
+
     bool hitPrimaryAction = IsPointInRect(quickActionPrimaryRect_, clientPoint);
-    bool hitToggleAction = IsPointInRect(quickActionToggleRect_, clientPoint);
+    bool hitToggleAction  = IsPointInRect(quickActionToggleRect_,  clientPoint);
     if (hitPrimaryAction)
     {
         quickActionMenuOpen_ = false;
@@ -967,17 +1412,56 @@ int GitPanel::HitTestChange(POINT pt) const
     if (!IsPointInRect(changesRect_, pt))
         return -1;
 
-    float listTop = changesRect_.top;
-    if (pt.y < listTop || pt.y > changesRect_.bottom)
-        return -1;
-
-    float localY = static_cast<float>(pt.y) - listTop + changesScrollbar_.GetScrollOffset();
+    float scroll  = changesScrollbar_.GetScrollOffset();
+    float localY  = (float)pt.y - changesRect_.top + scroll;
     if (localY < 0.0f)
         return -1;
-    int idx = (int)(localY / changeRowHeight_);
-    if (idx < 0 || idx >= (int)changes_.size())
+
+    const std::vector<int> *sectionItems[3] = {&conflictIndices_, &stagedIndices_, &changesIndices_};
+    float y = 0.0f;
+    for (int s = 0; s < 3; ++s)
+    {
+        if (sectionItems[s]->empty())
+            continue;
+        // Skip section header
+        if (localY < y + kSectionHeaderH)
+            return -1; // hit section header, not a file row
+        y += kSectionHeaderH;
+        if (sectionCollapsed_[s])
+            continue;
+        for (int idx : *sectionItems[s])
+        {
+            if (localY < y + changeRowHeight_)
+                return idx;
+            y += changeRowHeight_;
+        }
+    }
+    return -1;
+}
+
+int GitPanel::HitTestSection(POINT pt) const
+{
+    if (!IsPointInRect(changesRect_, pt))
         return -1;
-    return idx;
+
+    float scroll = changesScrollbar_.GetScrollOffset();
+    float localY = (float)pt.y - changesRect_.top + scroll;
+    if (localY < 0.0f)
+        return -1;
+
+    const std::vector<int> *sectionItems[3] = {&conflictIndices_, &stagedIndices_, &changesIndices_};
+    float y = 0.0f;
+    for (int s = 0; s < 3; ++s)
+    {
+        if (sectionItems[s]->empty())
+            continue;
+        if (localY < y + kSectionHeaderH)
+            return s;
+        y += kSectionHeaderH;
+        if (!sectionCollapsed_[s])
+            y += (float)sectionItems[s]->size() * changeRowHeight_;
+    }
+    return -1;
 }
 
 int GitPanel::HitTestQuickActionMenuItem(POINT pt) const
@@ -1164,6 +1648,248 @@ void GitPanel::RefreshStatus()
     }
     if (selectedChangeIndex_ < 0 && !changes_.empty())
         selectedChangeIndex_ = 0;
+
+    // Categorize into sections
+    conflictIndices_.clear();
+    stagedIndices_.clear();
+    changesIndices_.clear();
+    for (int i = 0; i < (int)changes_.size(); ++i)
+    {
+        const auto &c = changes_[(size_t)i];
+        bool conflict = (c.statusFlags & GIT_STATUS_CONFLICTED) != 0;
+        if (conflict)
+        {
+            conflictIndices_.push_back(i);
+        }
+        else if (c.indexStatus != L' ')
+        {
+            stagedIndices_.push_back(i);
+            if (c.worktreeStatus != L' ')
+                changesIndices_.push_back(i); // also in worktree
+        }
+        else if (c.worktreeStatus != L' ')
+        {
+            changesIndices_.push_back(i);
+        }
+    }
+
+    RefreshBranchInfo();
+}
+
+void GitPanel::RefreshBranchInfo()
+{
+    currentBranch_.clear();
+    aheadCount_  = 0;
+    behindCount_ = 0;
+
+    if (!isGitRepo_ || repoRoot_.empty())
+        return;
+
+    git_repository *repo = nullptr;
+    if (git_repository_open_ext(&repo, WideToUtf8(repoRoot_).c_str(), GIT_REPOSITORY_OPEN_CROSS_FS, nullptr) != 0 || !repo)
+        return;
+
+    git_reference *headRef = nullptr;
+    if (git_repository_head(&headRef, repo) == 0 && headRef)
+    {
+        const char *name = nullptr;
+        if (git_branch_name(&name, headRef) == 0 && name)
+            currentBranch_ = Utf8ToWide(name);
+
+        if (!currentBranch_.empty())
+        {
+            git_buf upstreamName = GIT_BUF_INIT;
+            if (git_branch_upstream_name(&upstreamName, repo, git_reference_name(headRef)) == 0 && upstreamName.ptr)
+            {
+                git_reference *upstreamRef = nullptr;
+                if (git_reference_lookup(&upstreamRef, repo, upstreamName.ptr) == 0 && upstreamRef)
+                {
+                    const git_oid *localOid  = git_reference_target(headRef);
+                    const git_oid *remoteOid = git_reference_target(upstreamRef);
+                    if (localOid && remoteOid)
+                    {
+                        size_t ahead = 0, behind = 0;
+                        if (git_graph_ahead_behind(&ahead, &behind, repo, localOid, remoteOid) == 0)
+                        {
+                            aheadCount_  = (int)ahead;
+                            behindCount_ = (int)behind;
+                        }
+                    }
+                    git_reference_free(upstreamRef);
+                }
+            }
+            git_buf_dispose(&upstreamName);
+        }
+
+        git_reference_free(headRef);
+    }
+
+    git_repository_free(repo);
+}
+
+bool GitPanel::FetchFromRemote()
+{
+    if (!libgit2Ready_ || !isGitRepo_ || repoRoot_.empty())
+    {
+        lastError_ = L"No git repository.";
+        return false;
+    }
+
+    git_repository *repo = nullptr;
+    if (git_repository_open_ext(&repo, WideToUtf8(repoRoot_).c_str(), GIT_REPOSITORY_OPEN_CROSS_FS, nullptr) != 0 || !repo)
+    {
+        lastError_ = GetLastGitError(L"Unable to open repository for fetch.");
+        return false;
+    }
+
+    // Find remote (prefer origin)
+    git_remote *remote = nullptr;
+    if (git_remote_lookup(&remote, repo, "origin") != 0 || !remote)
+    {
+        git_strarray remotes = {0};
+        if (git_remote_list(&remotes, repo) == 0 && remotes.count > 0 && remotes.strings[0])
+            git_remote_lookup(&remote, repo, remotes.strings[0]);
+        git_strarray_dispose(&remotes);
+    }
+
+    if (!remote)
+    {
+        lastError_ = L"No remote to fetch from.";
+        git_repository_free(repo);
+        return false;
+    }
+
+    // Load auth token (optional – public repos work without it)
+    std::wstring tokenWide;
+    std::wstring authErr;
+    GitHubAuth::LoadToken(tokenWide, authErr);
+
+    PushCredentialContext credCtx;
+    if (!tokenWide.empty())
+    {
+        credCtx.token = WideToUtf8(tokenWide);
+        SecureZeroMemory(tokenWide.data(), tokenWide.size() * sizeof(wchar_t));
+    }
+
+    git_fetch_options fetchOpts = GIT_FETCH_OPTIONS_INIT;
+    if (!credCtx.token.empty())
+    {
+        fetchOpts.callbacks.credentials = AcquirePushCredentials;
+        fetchOpts.callbacks.payload     = &credCtx;
+    }
+
+    int rc = git_remote_fetch(remote, nullptr, &fetchOpts, "fetch");
+
+    git_remote_free(remote);
+    git_repository_free(repo);
+
+    if (!credCtx.token.empty())
+        SecureZeroMemory(credCtx.token.data(), credCtx.token.size());
+
+    if (rc != 0)
+    {
+        lastError_ = GetLastGitError(L"Fetch failed.");
+        return false;
+    }
+
+    lastError_.clear();
+    RefreshBranchInfo();
+    return true;
+}
+
+bool GitPanel::PullFromRemote()
+{
+    // Step 1: fetch
+    if (!FetchFromRemote())
+        return false;
+
+    if (!isGitRepo_ || repoRoot_.empty())
+        return false;
+
+    git_repository *repo = nullptr;
+    if (git_repository_open_ext(&repo, WideToUtf8(repoRoot_).c_str(), GIT_REPOSITORY_OPEN_CROSS_FS, nullptr) != 0 || !repo)
+    {
+        lastError_ = GetLastGitError(L"Unable to open repository for pull.");
+        return false;
+    }
+
+    git_reference *headRef = nullptr;
+    if (git_repository_head(&headRef, repo) != 0 || !headRef)
+    {
+        lastError_ = GetLastGitError(L"Unable to resolve HEAD for pull.");
+        git_repository_free(repo);
+        return false;
+    }
+
+    bool ok = false;
+
+    git_buf upstreamName = GIT_BUF_INIT;
+    if (git_branch_upstream_name(&upstreamName, repo, git_reference_name(headRef)) == 0 && upstreamName.ptr)
+    {
+        git_reference *upstreamRef = nullptr;
+        if (git_reference_lookup(&upstreamRef, repo, upstreamName.ptr) == 0 && upstreamRef)
+        {
+            const git_oid *localOid  = git_reference_target(headRef);
+            const git_oid *remoteOid = git_reference_target(upstreamRef);
+
+            if (localOid && remoteOid)
+            {
+                size_t ahead = 0, behind = 0;
+                if (git_graph_ahead_behind(&ahead, &behind, repo, localOid, remoteOid) == 0)
+                {
+                    if (behind == 0)
+                    {
+                        // Already up to date
+                        ok = true;
+                        lastError_.clear();
+                    }
+                    else if (ahead > 0)
+                    {
+                        lastError_ = L"Cannot pull: local and remote have diverged. Please merge manually.";
+                    }
+                    else
+                    {
+                        // Pure fast-forward: move branch ref + checkout
+                        git_reference *newRef = nullptr;
+                        if (git_reference_set_target(&newRef, headRef, remoteOid, "pull: Fast-forward") == 0)
+                        {
+                            git_object *remoteObj = nullptr;
+                            if (git_object_lookup(&remoteObj, repo, remoteOid, GIT_OBJECT_COMMIT) == 0)
+                            {
+                                git_checkout_options coOpts = GIT_CHECKOUT_OPTIONS_INIT;
+                                coOpts.checkout_strategy = GIT_CHECKOUT_SAFE;
+                                git_checkout_tree(repo, remoteObj, &coOpts);
+                                git_object_free(remoteObj);
+                            }
+                            if (newRef) git_reference_free(newRef);
+                            ok = true;
+                            lastError_.clear();
+                        }
+                        else
+                        {
+                            lastError_ = GetLastGitError(L"Fast-forward failed.");
+                        }
+                    }
+                }
+            }
+            git_reference_free(upstreamRef);
+        }
+        else
+        {
+            lastError_ = L"No upstream branch configured for pull.";
+        }
+    }
+    else
+    {
+        lastError_ = L"No upstream branch configured for pull.";
+    }
+
+    git_buf_dispose(&upstreamName);
+    git_reference_free(headRef);
+    git_repository_free(repo);
+
+    RefreshStatus();
+    return ok;
 }
 
 bool GitPanel::BuildDiffViewForChange(const Panels::GitChange &change,

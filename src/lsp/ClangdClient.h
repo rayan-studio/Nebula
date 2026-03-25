@@ -7,6 +7,7 @@
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include "LspManager.h"
 
 namespace Lsp {
@@ -36,8 +37,25 @@ public:
     static std::wstring FindMinGW();
     static std::vector<std::string> FindMinGWIncludes();
 
+    // Returns the per-project directory where compile_commands.json is stored
+    // (inside %LOCALAPPDATA%, never in the project tree).
+    static std::wstring GetCompileCommandsDir(const std::wstring& projectRoot);
+
+    // Stop the current clangd and restart it fresh for projectRoot.
+    // Useful after compile_commands.json has been updated.
+    bool RestartForProject(const std::wstring& projectRoot);
+
+    // If projectRoot has a CMakeLists.txt and a build dir, runs cmake in the
+    // background with CMAKE_EXPORT_COMPILE_COMMANDS=ON, then restarts clangd.
+    void EnsureCompileCommandsAsync(const std::wstring& projectRoot);
+
 private:
     ClangdClient() = default;
+
+    struct OpenDocumentState {
+        std::string content;
+        int version = 1;
+    };
 
     HANDLE hStdinWr_  = nullptr;
     HANDLE hStdoutRd_ = nullptr;
@@ -52,9 +70,17 @@ private:
 
     DiagCallback diagCb_;
 
-    struct FileCtx { HWND hwnd; int tabIndex; };
+    struct FileCtx {
+        HWND hwnd = nullptr;
+        int tabIndex = -1;
+        std::wstring originalPath;
+    };
     std::mutex ctxMutex_;
     std::unordered_map<std::wstring, FileCtx> fileContexts_;
+    std::mutex docsMutex_;
+    std::unordered_map<std::wstring, OpenDocumentState> openDocuments_;
+    std::unordered_set<std::wstring> openedInSession_;
+    bool replayOpenDocumentsOnInit_ = false;
 
     // Pending notifications buffered until after initialization
     struct PendingNotification {
@@ -67,6 +93,7 @@ private:
     void Send(const std::string& json);
     void SendOrBuffer(const std::string& json);
     void FlushPending();
+    void ReplayOpenDocuments();
     void HandleMessage(const std::string& json);
     void SendInitialize();
     void SendInitialized();

@@ -15,6 +15,7 @@
 #include <cwctype>
 #include <regex>
 #include "ui/components/popups/CustomPopup.h"
+#include "ui/components/dialogs/Dialog.h"
 #include <shellapi.h>
 #include "ui/components/menu/DropdownMenu.h"
 #include "ui/components/titlebar/TitleBar.h"
@@ -937,6 +938,11 @@ void ExplorerManager::LoadDirectoryContents()
         if (!std::filesystem::exists(root))
             return;
 
+        // Files/folders to hide from the tree (dot-directories like .git, .cache, .vs)
+        auto ShouldHide = [](const std::wstring& name, bool isDir) -> bool {
+            return isDir && !name.empty() && name[0] == L'.';
+        };
+
         std::unordered_set<std::wstring> seen;
         for (const auto &entry : std::filesystem::directory_iterator(root))
         {
@@ -950,6 +956,7 @@ void ExplorerManager::LoadDirectoryContents()
 
             ExplorerItem item;
             item.name = entry.path().filename().wstring();
+            if (ShouldHide(item.name, entry.is_directory())) continue;
             item.fullPath = full;
             item.extension = entry.path().extension().string();
             item.isDirectory = entry.is_directory();
@@ -998,6 +1005,7 @@ void ExplorerManager::LoadDirectoryContents()
 
                     ExplorerItem ci;
                     ci.name = entry.path().filename().wstring();
+                    if (ShouldHide(ci.name, entry.is_directory())) continue;
                     ci.fullPath = full;
                     ci.extension = entry.path().extension().string();
                     ci.isDirectory = entry.is_directory();
@@ -1868,47 +1876,9 @@ void ExplorerManager::HandleContextCommand(int commandId)
     }
     else if (cmdIndex == 6)
     {
-        std::wstring mainInstr = item.isDirectory ? (L"Delete folder: \n" + path) : (L"Delete file: \n" + path);
-        BOOL confirm = FALSE;
-
-        HMODULE hComCtl = LoadLibraryW(L"Comctl32.dll");
-        if (hComCtl)
-        {
-            typedef HRESULT(WINAPI * TaskDialogIndirect_t)(const void *, int *, int *, void *);
-            FreeLibrary(hComCtl);
-        }
-
-        int tdResult = 0;
-        HMODULE h = LoadLibraryW(L"comctl32.dll");
-        if (h)
-        {
-            auto proc = (HRESULT(WINAPI *)(HWND, HINSTANCE, PCWSTR, PCWSTR, PCWSTR, unsigned, PCWSTR, int *))GetProcAddress(h, "TaskDialog");
-            if (proc)
-            {
-                unsigned dwCommon = 0x0004 | 0x0008;
-                HRESULT hr = proc(NULL, NULL, L"Confirm Delete", mainInstr.c_str(), L"Are you sure you want to delete this item?", dwCommon, NULL, &tdResult);
-                if (SUCCEEDED(hr))
-                {
-                    confirm = (tdResult == IDYES);
-                }
-                else
-                {
-                    int mb = MessageBoxW(NULL, mainInstr.c_str(), L"Confirm Delete", MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2);
-                    confirm = (mb == IDYES);
-                }
-            }
-            else
-            {
-                int mb = MessageBoxW(NULL, mainInstr.c_str(), L"Confirm Delete", MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2);
-                confirm = (mb == IDYES);
-            }
-            FreeLibrary(h);
-        }
-        else
-        {
-            int mb = MessageBoxW(NULL, mainInstr.c_str(), L"Confirm Delete", MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2);
-            confirm = (mb == IDYES);
-        }
+        std::wstring mainInstr = item.isDirectory ? (L"Delete folder:\n" + path) : (L"Delete file:\n" + path);
+        HWND parentWnd = FindWindowW(L"NebulaTextWindowClass", NULL);
+        bool confirm = ShowConfirmDialog(parentWnd, L"Confirm Delete", mainInstr);
 
         if (confirm)
         {

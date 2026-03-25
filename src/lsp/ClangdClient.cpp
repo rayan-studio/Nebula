@@ -1,13 +1,339 @@
 #include "ClangdClient.h"
+#include "utils/logger/Logger.h"
 #include <sstream>
 #include <cassert>
 #include <cctype>
 #include <regex>
+#include <filesystem>
+#include <functional>
+#include <cstdlib>
+#include <set>
+#include <fstream>
 
 // Suppress "function not used" warnings for static helpers
 #pragma warning(disable: 4505)
 
 namespace Lsp {
+
+namespace {
+std::wstring GetNebulaClangdDbDir(const std::wstring &projectRoot)
+{
+    if (projectRoot.empty())
+        return {};
+
+    wchar_t localAppData[MAX_PATH] = {};
+    DWORD len = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH)
+        return {};
+
+    size_t key = std::hash<std::wstring>{}(projectRoot);
+    std::filesystem::path dir = std::filesystem::path(localAppData) /
+                                L"Nebula" /
+                                L"clangd-db" /
+                                std::to_wstring(static_cast<unsigned long long>(key));
+    return dir.wstring();
+}
+
+std::wstring NormalizePathKey(std::wstring path)
+{
+    for (wchar_t &c : path) {
+        if (c == L'/')
+            c = L'\\';
+        else
+            c = (wchar_t)towlower(c);
+    }
+    return path;
+}
+
+std::wstring NormalizePathForClangArg(std::wstring path)
+{
+    for (wchar_t &c : path)
+        if (c == L'\\')
+            c = L'/';
+
+    // Collapse duplicated separators (e.g. C://Users//...)
+    std::wstring collapsed;
+    collapsed.reserve(path.size());
+    bool prevSlash = false;
+    for (wchar_t c : path)
+    {
+        bool isSlash = (c == L'/');
+        if (isSlash && prevSlash)
+            continue;
+        collapsed.push_back(c);
+        prevSlash = isSlash;
+    }
+    return collapsed;
+}
+
+std::string UnescapeJsonStringMinimal(const std::string& s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i)
+    {
+        char c = s[i];
+        if (c == '\\' && i + 1 < s.size())
+        {
+            char n = s[i + 1];
+            switch (n)
+            {
+            case '\\': out.push_back('\\'); ++i; continue;
+            case '"': out.push_back('"'); ++i; continue;
+            case '/': out.push_back('/'); ++i; continue;
+            case 'n': out.push_back('\n'); ++i; continue;
+            case 'r': out.push_back('\r'); ++i; continue;
+            case 't': out.push_back('\t'); ++i; continue;
+            default: break;
+            }
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+std::wstring NormalizeWindowsPathForFs(std::wstring path)
+{
+    std::wstring out;
+    out.reserve(path.size());
+    bool prevSlash = false;
+    for (wchar_t c : path)
+    {
+        bool isSlash = (c == L'\\' || c == L'/');
+        if (isSlash)
+        {
+            if (!prevSlash)
+                out.push_back(L'\\');
+            prevSlash = true;
+        }
+        else
+        {
+            out.push_back(c);
+            prevSlash = false;
+        }
+    }
+    return out;
+}
+
+std::wstring Utf8ToWideLocal(const std::string& s)
+{
+    if (s.empty())
+        return {};
+    int size = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    if (size <= 0)
+        return {};
+    std::wstring out(size, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), size);
+    return out;
+}
+
+std::wstring ExtractCompilerFromCommand(const std::wstring& cmd)
+{
+    if (cmd.empty())
+        return {};
+
+    size_t i = 0;
+    while (i < cmd.size() && iswspace(cmd[i]))
+        ++i;
+    if (i >= cmd.size())
+        return {};
+
+    if (cmd[i] == L'"')
+    {
+        size_t q = cmd.find(L'"', i + 1);
+        if (q == std::wstring::npos)
+            return {};
+        return cmd.substr(i + 1, q - (i + 1));
+    }
+
+    size_t j = i;
+    while (j < cmd.size() && !iswspace(cmd[j]))
+        ++j;
+    return cmd.substr(i, j - i);
+}
+
+void CollectQueryDriverGlobsFromCompileCommands(const std::filesystem::path& ccdbFile,
+                                                std::set<std::wstring>& globs)
+{
+    std::error_code ec;
+    if (!std::filesystem::exists(ccdbFile, ec))
+        return;
+
+    std::ifstream ifs(ccdbFile);
+    if (!ifs)
+        return;
+
+    std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    if (content.empty())
+        return;
+
+    std::regex commandRe("\\\"command\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
+    auto begin = std::sregex_iterator(content.begin(), content.end(), commandRe);
+    auto end = std::sregex_iterator();
+    for (auto it = begin; it != end; ++it)
+    {
+        if (it->size() < 2)
+            continue;
+        std::string cmdUtf8 = UnescapeJsonStringMinimal((*it)[1].str());
+        std::wstring cmd = Utf8ToWideLocal(cmdUtf8);
+        std::wstring compiler = ExtractCompilerFromCommand(cmd);
+        if (compiler.empty())
+            continue;
+        compiler = NormalizeWindowsPathForFs(compiler);
+        std::filesystem::path compilerPath(compiler);
+        if (!compilerPath.has_parent_path())
+            continue;
+
+        std::error_code canonEc;
+        std::filesystem::path parent = compilerPath.parent_path();
+        std::filesystem::path normalizedParent = std::filesystem::weakly_canonical(parent, canonEc);
+        if (canonEc)
+            normalizedParent = parent;
+
+        std::wstring dir = NormalizePathForClangArg(normalizedParent.wstring());
+        if (!dir.empty())
+            globs.insert(dir + L"/*");
+    }
+}
+
+std::wstring JoinQueryDriverGlobs(const std::set<std::wstring>& globs)
+{
+    std::wstring joined;
+    bool first = true;
+    for (const auto& g : globs)
+    {
+        if (!first)
+            joined += L",";
+        joined += g;
+        first = false;
+    }
+    return joined;
+}
+
+bool IsLspTraceEnabled()
+{
+    static int cached = -1;
+    if (cached == -1)
+    {
+        char* env = nullptr;
+        size_t envLen = 0;
+        errno_t err = _dupenv_s(&env, &envLen, "NEBULA_LSP_TRACE");
+        cached = (err == 0 && env && env[0] != '\0' && env[0] != '0') ? 1 : 0;
+        if (env)
+            free(env);
+    }
+    return cached == 1;
+}
+
+void TraceLsp(const std::wstring& msg)
+{
+    if (IsLspTraceEnabled())
+        Logger::Instance().Log(L"[LSP-TRACE] " + msg);
+}
+}
+
+// ---------------------------------------------------------------------------
+// Public static — accessible from outside (e.g. Explorer_ExtLibs)
+// ---------------------------------------------------------------------------
+std::wstring ClangdClient::GetCompileCommandsDir(const std::wstring& projectRoot)
+{
+    return GetNebulaClangdDbDir(projectRoot);
+}
+
+bool ClangdClient::RestartForProject(const std::wstring& projectRoot)
+{
+    {
+        std::lock_guard<std::mutex> lk(docsMutex_);
+        replayOpenDocumentsOnInit_ = true;
+    }
+    TraceLsp(L"RestartForProject root=" + projectRoot);
+    Stop();
+    return Start(projectRoot);
+}
+
+void ClangdClient::EnsureCompileCommandsAsync(const std::wstring& projectRoot)
+{
+    if (projectRoot.empty()) return;
+
+    std::error_code ec;
+    std::wstring ccdbDir  = GetNebulaClangdDbDir(projectRoot);
+    std::filesystem::path ccdbFile = std::filesystem::path(ccdbDir) / L"compile_commands.json";
+
+    // If cache exists, check whether CMakeLists.txt is newer — if so, regenerate.
+    if (std::filesystem::exists(ccdbFile, ec)) {
+        std::filesystem::path cmakeLists =
+            std::filesystem::path(projectRoot) / L"CMakeLists.txt";
+        bool stale = false;
+        if (std::filesystem::exists(cmakeLists, ec)) {
+            auto ccdbTime  = std::filesystem::last_write_time(ccdbFile,   ec);
+            auto cmakeTime = std::filesystem::last_write_time(cmakeLists, ec);
+            if (!ec && cmakeTime > ccdbTime)
+                stale = true;
+        }
+        if (!stale) return; // cache is up-to-date, nothing to do
+    }
+
+    // Find existing build dir (must already have CMakeCache.txt)
+    static const wchar_t* kBuildDirs[] = {
+        L"build", L"cmake-build-debug", L"cmake-build-release",
+        L"cmake-build-relwithdebinfo", L"out\\build", L"_build",
+        L"Release", L"Debug"
+    };
+    std::wstring buildDir;
+    for (auto* sub : kBuildDirs) {
+        std::wstring candidate = projectRoot + L"\\" + sub;
+        if (std::filesystem::exists(candidate + L"\\CMakeCache.txt", ec)) {
+            buildDir = candidate;
+            break;
+        }
+    }
+    // No existing build dir: if the project has a CMakeLists.txt, bootstrap a
+    // minimal cmake configure into build/ just to get compile_commands.json.
+    bool bootstrapConfigure = false;
+    if (buildDir.empty()) {
+        std::filesystem::path cmakeLists = std::filesystem::path(projectRoot) / L"CMakeLists.txt";
+        if (!std::filesystem::exists(cmakeLists, ec)) return;
+        buildDir = projectRoot + L"\\build";
+        bootstrapConfigure = true;
+    }
+
+    std::thread([this, projectRoot, buildDir, ccdbDir, ccdbFile, bootstrapConfigure]() {
+        std::wstring cmdLine;
+        if (bootstrapConfigure) {
+            // Fresh configure: cmake -S <root> -B <buildDir> -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+            cmdLine = L"cmake -S \"" + projectRoot + L"\" -B \"" + buildDir +
+                      L"\" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON";
+        } else {
+            // Re-run existing configure to refresh compile_commands.json
+            cmdLine = L"cmake \"" + buildDir + L"\" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON";
+        }
+
+        STARTUPINFOW si{ sizeof(si) };
+        si.dwFlags     = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION pi{};
+
+        if (!CreateProcessW(nullptr, cmdLine.data(), nullptr, nullptr, FALSE,
+                            CREATE_NO_WINDOW, nullptr, projectRoot.c_str(), &si, &pi))
+            return;
+
+        WaitForSingleObject(pi.hProcess, 60000);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+
+        // Copy compile_commands.json to the clangd-db dir
+        std::filesystem::path src = std::filesystem::path(buildDir) / L"compile_commands.json";
+        std::error_code ec2;
+        if (std::filesystem::exists(src, ec2)) {
+            std::filesystem::create_directories(ccdbDir, ec2);
+            std::filesystem::copy_file(src, ccdbFile,
+                std::filesystem::copy_options::overwrite_existing, ec2);
+
+            // Restart clangd so it picks up the new compile_commands.json
+            RestartForProject(projectRoot);
+        }
+    }).detach();
+}
 
 // ---------------------------------------------------------------------------
 // Singleton
@@ -143,9 +469,20 @@ bool ClangdClient::Start(const std::wstring& projectRoot) {
     if (IsRunning())
         return true;
 
+    {
+        std::lock_guard<std::mutex> lk(docsMutex_);
+        openedInSession_.clear();
+        if (!projectRoot_.empty() && projectRoot_ != projectRoot) {
+            openDocuments_.clear();
+            replayOpenDocumentsOnInit_ = false;
+        }
+    }
+
     std::wstring clangdPath = FindClangd();
     if (clangdPath.empty())
         return false;
+
+    TraceLsp(L"Start root=" + projectRoot + L" clangd=" + clangdPath);
 
     projectRoot_ = projectRoot;
     initialized_ = false;
@@ -175,14 +512,142 @@ bool ClangdClient::Start(const std::wstring& projectRoot) {
 
     // Build command line
     std::wstring cmdLine = L"\"" + clangdPath + L"\" --log=error --clang-tidy=false";
+    bool hasCompileCommands = false;
+    std::wstring compileCommandsDir;
 
+    // Ensure compile_commands.json is in the Nebula clangd-db dir.
+    // Priority: clangd-db (already there) > build sub-dirs > project root (legacy).
+    if (!projectRoot.empty()) {
+        std::error_code ec;
+        std::wstring ccdbDir = GetNebulaClangdDbDir(projectRoot);
+        std::filesystem::path ccdbFile = std::filesystem::path(ccdbDir) / L"compile_commands.json";
+
+        if (!std::filesystem::exists(ccdbFile, ec)) {
+            // Search common build directories for compile_commands.json
+            static const wchar_t* kBuildDirs[] = {
+                L"build", L"cmake-build-debug", L"cmake-build-release",
+                L"cmake-build-relwithdebinfo", L"out\\build", L"_build",
+                L"Release", L"Debug"
+            };
+            std::filesystem::path src;
+            for (auto* sub : kBuildDirs) {
+                std::filesystem::path candidate =
+                    std::filesystem::path(projectRoot) / sub / L"compile_commands.json";
+                if (std::filesystem::exists(candidate, ec)) { src = candidate; break; }
+            }
+            // Fallback: legacy location at project root
+            if (src.empty()) {
+                std::filesystem::path legacy =
+                    std::filesystem::path(projectRoot) / L"compile_commands.json";
+                if (std::filesystem::exists(legacy, ec)) src = legacy;
+            }
+            // Copy to clangd-db dir
+            if (!src.empty() && !ccdbDir.empty()) {
+                try {
+                    std::filesystem::create_directories(ccdbDir, ec);
+                    std::filesystem::copy_file(src, ccdbFile,
+                        std::filesystem::copy_options::overwrite_existing, ec);
+                } catch (...) {}
+            }
+        }
+
+        if (std::filesystem::exists(ccdbFile, ec)) {
+            hasCompileCommands = true;
+            compileCommandsDir = ccdbDir;
+            cmdLine += L" \"--compile-commands-dir=" + ccdbDir + L"\"";
+        }
+    }
+
+    std::set<std::wstring> queryDriverGlobs;
     std::wstring mingwBin = FindMinGW();
     if (!mingwBin.empty()) {
-        // Normalize to forward slashes for the glob pattern
-        for (wchar_t& c : mingwBin)
-            if (c == L'\\') c = L'/';
-        cmdLine += L" \"--query-driver=" + mingwBin + L"/*\"";
+        queryDriverGlobs.insert(NormalizePathForClangArg(mingwBin) + L"/*");
     }
+
+    if (!projectRoot.empty()) {
+        std::error_code ec;
+        std::wstring ccdbDir = GetNebulaClangdDbDir(projectRoot);
+        std::filesystem::path ccdbFile = std::filesystem::path(ccdbDir) / L"compile_commands.json";
+        CollectQueryDriverGlobsFromCompileCommands(ccdbFile, queryDriverGlobs);
+    }
+
+    std::wstring queryDriverArg = JoinQueryDriverGlobs(queryDriverGlobs);
+    if (!queryDriverArg.empty()) {
+        cmdLine += L" \"--query-driver=" + queryDriverArg + L"\"";
+    }
+
+    // Always inject project include paths via --extra-arg as a safety net.
+    // This covers the window between startup and compile_commands.json being
+    // ready, and also makes clangd resilient against stale compile_commands.
+    if (!projectRoot.empty()) {
+        namespace fs = std::filesystem;
+        std::error_code ec2;
+        fs::path root(projectRoot);
+
+        std::set<std::wstring> addedPaths;
+        auto addExtraArg = [&](const fs::path& p) {
+            if (!fs::is_directory(p, ec2)) return;
+            std::wstring key = p.lexically_normal().wstring();
+            if (!addedPaths.insert(key).second) return;
+            std::wstring pathStr = key;
+            std::replace(pathStr.begin(), pathStr.end(), L'\\', L'/');
+            cmdLine += L" \"--extra-arg=-I" + pathStr + L"\"";
+        };
+
+        // Common project dirs
+        addExtraArg(root / L"include");
+        addExtraArg(root / L"src");
+
+        // external/<name>/include  and  external/<name>  (for libs like imgui)
+        fs::path externalDir = root / L"external";
+        if (fs::is_directory(externalDir, ec2)) {
+            for (const auto& entry : fs::directory_iterator(externalDir, ec2)) {
+                if (!entry.is_directory(ec2)) continue;
+                addExtraArg(entry.path() / L"include");
+                addExtraArg(entry.path());
+            }
+        }
+
+        // Parse add_subdirectory() paths from CMakeLists.txt and inject their
+        // include/ dirs — covers libs placed outside of external/ (e.g. libs/, vendor/).
+        fs::path cmakeLists = root / L"CMakeLists.txt";
+        std::ifstream cmakeFile(cmakeLists);
+        if (cmakeFile.is_open()) {
+            std::string line;
+            while (std::getline(cmakeFile, line)) {
+                // Strip comments
+                auto hash = line.find('#');
+                if (hash != std::string::npos) line = line.substr(0, hash);
+
+                // Match add_subdirectory(<path> ...) — case-insensitive
+                std::string low = line;
+                std::transform(low.begin(), low.end(), low.begin(),
+                               [](unsigned char c){ return (char)std::tolower(c); });
+                auto pos = low.find("add_subdirectory");
+                if (pos == std::string::npos) continue;
+                auto open  = line.find('(', pos);
+                auto close = line.find(')', open != std::string::npos ? open : 0);
+                if (open == std::string::npos || close == std::string::npos) continue;
+                std::string args = line.substr(open + 1, close - open - 1);
+                // First token is the path
+                std::istringstream ss(args);
+                std::string subdir;
+                if (!(ss >> subdir) || subdir.empty()) continue;
+                // Convert to wide and resolve
+                int wn = MultiByteToWideChar(CP_UTF8, 0, subdir.c_str(), -1, nullptr, 0);
+                if (wn <= 1) continue;
+                std::wstring wsubdir(wn - 1, L'\0');
+                MultiByteToWideChar(CP_UTF8, 0, subdir.c_str(), -1, wsubdir.data(), wn);
+                fs::path libPath = root / wsubdir;
+                addExtraArg(libPath / L"include");
+                addExtraArg(libPath);
+            }
+        }
+    }
+
+    TraceLsp(L"Start options compile_commands=" + std::wstring(hasCompileCommands ? L"yes" : L"no") +
+             (compileCommandsDir.empty() ? L"" : (L" dir=" + compileCommandsDir)) +
+             (queryDriverArg.empty() ? L" query_driver=no" : (L" query_driver=" + queryDriverArg)));
 
     STARTUPINFOW si{};
     si.cb         = sizeof(si);
@@ -231,6 +696,7 @@ bool ClangdClient::IsRunning() const {
 }
 
 void ClangdClient::Stop() {
+    TraceLsp(L"Stop");
     running_ = false;
 
     if (hStdinWr_)  { CloseHandle(hStdinWr_);  hStdinWr_  = nullptr; }
@@ -244,6 +710,11 @@ void ClangdClient::Stop() {
     if (readerThread_.joinable())
         readerThread_.join();
 
+    {
+        std::lock_guard<std::mutex> lk(docsMutex_);
+        openedInSession_.clear();
+    }
+
     initialized_ = false;
 }
 
@@ -253,7 +724,8 @@ void ClangdClient::Stop() {
 
 void ClangdClient::SetContext(const std::wstring& filePath, HWND hwnd, int tabIndex) {
     std::lock_guard<std::mutex> lk(ctxMutex_);
-    fileContexts_[filePath] = { hwnd, tabIndex };
+    fileContexts_[NormalizePathKey(filePath)] = { hwnd, tabIndex, filePath };
+    TraceLsp(L"SetContext tab=" + std::to_wstring(tabIndex) + L" file=" + filePath);
 }
 
 void ClangdClient::SetDiagnosticsCallback(DiagCallback cb) {
@@ -265,6 +737,13 @@ void ClangdClient::SetDiagnosticsCallback(DiagCallback cb) {
 // ---------------------------------------------------------------------------
 
 void ClangdClient::DidOpen(const std::wstring& filePath, const std::string& utf8Content, int version) {
+    {
+        std::lock_guard<std::mutex> lk(docsMutex_);
+        openDocuments_[filePath] = OpenDocumentState{utf8Content, version};
+        openedInSession_.insert(NormalizePathKey(filePath));
+    }
+    TraceLsp(L"DidOpen v=" + std::to_wstring(version) + L" file=" + filePath);
+
     std::string uri = FilePathToUri(filePath);
     std::string escaped = EscapeJsonString(utf8Content);
 
@@ -281,6 +760,23 @@ void ClangdClient::DidOpen(const std::wstring& filePath, const std::string& utf8
 }
 
 void ClangdClient::DidChange(const std::wstring& filePath, const std::string& utf8Content, int version) {
+    bool mustSendDidOpen = false;
+    {
+        std::lock_guard<std::mutex> lk(docsMutex_);
+        openDocuments_[filePath] = OpenDocumentState{utf8Content, version};
+        const std::wstring key = NormalizePathKey(filePath);
+        if (openedInSession_.find(key) == openedInSession_.end())
+            mustSendDidOpen = true;
+    }
+
+    if (mustSendDidOpen) {
+        TraceLsp(L"DidChange->DidOpen upgrade v=" + std::to_wstring(version) + L" file=" + filePath);
+        DidOpen(filePath, utf8Content, version);
+        return;
+    }
+
+    TraceLsp(L"DidChange v=" + std::to_wstring(version) + L" file=" + filePath);
+
     std::string uri = FilePathToUri(filePath);
     std::string escaped = EscapeJsonString(utf8Content);
 
@@ -328,6 +824,22 @@ void ClangdClient::FlushPending() {
     }
     for (auto& n : pending)
         Send(n.json);
+}
+
+void ClangdClient::ReplayOpenDocuments()
+{
+    std::vector<std::pair<std::wstring, OpenDocumentState>> docs;
+    {
+        std::lock_guard<std::mutex> lk(docsMutex_);
+        docs.reserve(openDocuments_.size());
+        for (const auto& kv : openDocuments_)
+            docs.push_back(kv);
+    }
+
+    for (const auto& kv : docs)
+        DidOpen(kv.first, kv.second.content, kv.second.version);
+
+    TraceLsp(L"ReplayOpenDocuments count=" + std::to_wstring((unsigned long long)docs.size()));
 }
 
 // ---------------------------------------------------------------------------
@@ -525,6 +1037,16 @@ void ClangdClient::HandleMessage(const std::string& json) {
             SendInitialized();
             initialized_ = true;
             FlushPending();
+
+            bool replayOpenDocuments = false;
+            {
+                std::lock_guard<std::mutex> lk(docsMutex_);
+                replayOpenDocuments = replayOpenDocumentsOnInit_;
+                replayOpenDocumentsOnInit_ = false;
+            }
+            if (replayOpenDocuments)
+                ReplayOpenDocuments();
+
             return;
         }
     }
@@ -584,16 +1106,26 @@ void ClangdClient::HandleMessage(const std::string& json) {
         if (diagCb_) {
             HWND hwnd     = nullptr;
             int  tabIndex = -1;
+            std::wstring payloadPath = filePath;
             {
                 std::lock_guard<std::mutex> lk(ctxMutex_);
-                auto it = fileContexts_.find(filePath);
+                auto it = fileContexts_.find(NormalizePathKey(filePath));
                 if (it != fileContexts_.end()) {
                     hwnd     = it->second.hwnd;
                     tabIndex = it->second.tabIndex;
+                    payloadPath = it->second.originalPath;
                 }
             }
             if (hwnd)
-                diagCb_(filePath, tabIndex, hwnd, diags);
+                diagCb_(payloadPath, tabIndex, hwnd, diags);
+
+            std::wstring firstDiag = diags.empty() ? L"" : diags.front().message;
+            TraceLsp(L"publishDiagnostics file=" + filePath +
+                     L" mapped=" + payloadPath +
+                     L" tab=" + std::to_wstring(tabIndex) +
+                     L" count=" + std::to_wstring((unsigned long long)diags.size()) +
+                     (hwnd ? L" ctx=ok" : L" ctx=missing") +
+                     (firstDiag.empty() ? L"" : (L" first=\"" + firstDiag + L"\"")));
         }
     }
 }

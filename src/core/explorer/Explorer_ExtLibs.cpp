@@ -7,6 +7,7 @@
 #include "core/cmake/CloneDialog.h"
 #include "utils/logger/Logger.h"
 #include "ui/theme/Theme.h"
+#include "lsp/ClangdClient.h"
 
 #include <windows.h>
 #include <shellapi.h>
@@ -14,8 +15,12 @@
 #include <filesystem>
 #include <algorithm>
 #include <thread>
+#include <fstream>
 
 namespace fs = std::filesystem;
+
+static std::string ToUtf8(const std::wstring &value);
+static std::wstring Utf8ToWide(const char *value);
 
 // ---------------------------------------------------------------------------
 // Helper: detect the best include directory for a library.
@@ -71,6 +76,115 @@ static std::wstring NormalizeSlashes(std::wstring value)
     return value;
 }
 
+static std::string ToLowerAscii(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
+static std::string MakeCmakeTargetName(const std::wstring &repoName)
+{
+    std::string in = ToUtf8(repoName);
+    std::string out;
+    out.reserve(in.size());
+    for (char ch : in)
+    {
+        unsigned char u = static_cast<unsigned char>(ch);
+        if (std::isalnum(u) || ch == '_')
+            out.push_back(static_cast<char>(std::tolower(u)));
+        else
+            out.push_back('_');
+    }
+    if (out.empty())
+        out = "external_lib";
+    if (!std::isalpha(static_cast<unsigned char>(out[0])) && out[0] != '_')
+        out.insert(out.begin(), '_');
+    return out;
+}
+
+// If a cloned library does not provide CMakeLists.txt (e.g. glad generator output,
+// imgui, stb…), generate a minimal one so add_subdirectory() works.
+static bool EnsureLibraryCmakeFallback(const std::wstring &libAbsPath,
+                                       const std::wstring &repoName,
+                                       std::wstring &outTarget)
+{
+    std::wstring cmakePath = libAbsPath + L"\\CMakeLists.txt";
+    if (fs::exists(cmakePath))
+        return true;
+
+    // Collect .c and .cpp sources from src/ then from the root.
+    std::vector<std::wstring> srcFiles;
+    bool hasCpp = false;
+    std::error_code ec;
+
+    auto collectSources = [&](const std::wstring &dir)
+    {
+        if (!fs::is_directory(dir, ec)) return;
+        for (const auto &entry : fs::directory_iterator(dir, ec))
+        {
+            if (!entry.is_regular_file()) continue;
+            std::string ext = ToLowerAscii(entry.path().extension().string());
+            if (ext == ".c" || ext == ".cpp" || ext == ".cxx" || ext == ".cc")
+            {
+                if (ext != ".c") hasCpp = true;
+                srcFiles.push_back(entry.path().wstring());
+            }
+        }
+    };
+
+    collectSources(libAbsPath + L"\\src");
+    if (srcFiles.empty())
+        collectSources(libAbsPath);
+
+    std::string target = MakeCmakeTargetName(repoName);
+    outTarget = Utf8ToWide(target.c_str());
+
+    std::ofstream wf(cmakePath, std::ios::binary | std::ios::trunc);
+    if (!wf.is_open())
+        return false;
+
+    wf << "cmake_minimum_required(VERSION 3.8)\n";
+
+    if (srcFiles.empty())
+    {
+        // Header-only library — use an INTERFACE target.
+        wf << "project(" << target << ")\n\n";
+        wf << "add_library(" << target << " INTERFACE)\n\n";
+        wf << "target_include_directories(" << target << " INTERFACE\n";
+        wf << "  ${CMAKE_CURRENT_SOURCE_DIR}\n";
+        if (fs::is_directory(libAbsPath + L"\\include", ec))
+            wf << "  ${CMAKE_CURRENT_SOURCE_DIR}/include\n";
+        wf << ")\n";
+    }
+    else
+    {
+        std::string langs = hasCpp ? "C CXX" : "C";
+        wf << "project(" << target << " LANGUAGES " << langs << ")\n\n";
+        wf << "add_library(" << target << " STATIC\n";
+        for (const auto &file : srcFiles)
+        {
+            std::wstring rel;
+            try { rel = fs::relative(file, libAbsPath).wstring(); }
+            catch (...) { rel = fs::path(file).filename().wstring(); }
+            std::replace(rel.begin(), rel.end(), L'\\', L'/');
+            wf << "  ${CMAKE_CURRENT_SOURCE_DIR}/" << ToUtf8(rel) << "\n";
+        }
+        wf << ")\n\n";
+        wf << "target_include_directories(" << target << " PUBLIC\n";
+        wf << "  ${CMAKE_CURRENT_SOURCE_DIR}\n";
+        if (fs::is_directory(libAbsPath + L"\\include", ec))
+            wf << "  ${CMAKE_CURRENT_SOURCE_DIR}/include\n";
+        wf << ")\n\n";
+        wf << "if(MSVC)\n";
+        wf << "  target_compile_definitions(" << target << " PRIVATE _CRT_SECURE_NO_WARNINGS)\n";
+        wf << "endif()\n";
+    }
+
+    return true;
+}
+
 static std::string ToUtf8(const std::wstring &value)
 {
     if (value.empty())
@@ -123,13 +237,18 @@ static void TriggerCmakeReconfigure(const std::wstring &rootPath)
             CloseHandle(pi.hProcess);
             CloseHandle(pi.hThread);
 
-            // Copy compile_commands.json to project root so clangd finds it
-            std::wstring src  = buildDir + L"\\compile_commands.json";
-            std::wstring dest = rootPath  + L"\\compile_commands.json";
-            try {
-                if (fs::exists(src))
-                    fs::copy_file(src, dest, fs::copy_options::overwrite_existing);
-            } catch (...) {}
+            // Copy compile_commands.json to the Nebula clangd-db dir
+            // (never into the project tree — keeps the project root clean)
+            std::wstring src    = buildDir + L"\\compile_commands.json";
+            std::wstring dbDir  = Lsp::ClangdClient::GetCompileCommandsDir(rootPath);
+            if (!src.empty() && !dbDir.empty()) {
+                try {
+                    fs::create_directories(dbDir);
+                    if (fs::exists(src))
+                        fs::copy_file(src, fs::path(dbDir) / L"compile_commands.json",
+                                      fs::copy_options::overwrite_existing);
+                } catch (...) {}
+            }
         }
     }).detach();
 }
@@ -151,6 +270,20 @@ void ExplorerManager::ParseExternalLibs()
         std::wstring(L"ExternalLibs: ") +
         std::to_wstring(extLibs_.cmake.libraries.size()) +
         L" libs parsed from " + cmakePath);
+
+    // Repair pass: generate fallback CMakeLists.txt for any lib that is missing one.
+    for (const auto &lib : extLibs_.cmake.libraries)
+    {
+        if (lib.subdirAbs.empty()) continue;
+        std::wstring libCmake = lib.subdirAbs + L"\\CMakeLists.txt";
+        if (fs::exists(libCmake)) continue;
+        std::wstring repoName = fs::path(lib.subdirAbs).filename().wstring();
+        std::wstring unused;
+        if (EnsureLibraryCmakeFallback(lib.subdirAbs, repoName, unused))
+            Logger::Instance().Log(L"ExternalLibs: generated fallback CMakeLists.txt for " + repoName);
+        else
+            Logger::Instance().Log(L"ExternalLibs: could not generate fallback for " + repoName + L" (no sources found)");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -581,13 +714,23 @@ bool ExplorerManager::InstallLibraryFromGitUrl(HWND hwnd,
     if (!fs::exists(libCmake))
         libCmake = destPath + L"/CMakeLists.txt";
 
+    std::wstring fallbackTarget;
+    if (!fs::exists(libCmake))
+    {
+        if (EnsureLibraryCmakeFallback(destPath, repoName, fallbackTarget))
+        {
+            libCmake = destPath + L"\\CMakeLists.txt";
+            Logger::Instance().Log(L"InstallLibraryFromGitUrl: generated fallback CMakeLists for " + repoName);
+        }
+    }
+
     CmakeProjectInfo libInfo;
     if (fs::exists(libCmake))
         libInfo = ParseCmakeLists(libCmake);
 
     std::wstring libTarget = libInfo.targetName;
     if (libTarget.empty())
-        libTarget = repoName;
+        libTarget = fallbackTarget.empty() ? repoName : fallbackTarget;
 
     std::wstring subdirRel;
     try

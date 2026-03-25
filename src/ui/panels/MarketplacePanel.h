@@ -1,6 +1,7 @@
 #pragma once
 #include "Panel.h"
 #include "LibraryDatabase.h"
+#include "ui/components/input/TextInput.h"
 #include <memory>
 #include <vector>
 
@@ -10,12 +11,12 @@
 
 struct LibraryCard {
     LibraryInfo* library;
-    D2D1_RECT_F bounds;             // Full card bounds
-    D2D1_RECT_F iconRect;           // Icon area (48x48)
-    D2D1_RECT_F headerRect;         // Title + author
-    D2D1_RECT_F ratingRect;         // Rating stars + downloads
-    D2D1_RECT_F descRect;           // Description text
-    D2D1_RECT_F tagsRect;           // Tags area
+    D2D1_RECT_F bounds;
+    D2D1_RECT_F iconRect;
+    D2D1_RECT_F headerRect;
+    D2D1_RECT_F ratingRect;
+    D2D1_RECT_F descRect;
+    D2D1_RECT_F tagsRect;
     D2D1_RECT_F installButtonBounds;
     D2D1_RECT_F uninstallButtonBounds;
     bool isHoveringCard = false;
@@ -26,21 +27,28 @@ struct LibraryCard {
 class MarketplacePanel : public Panel {
 public:
     MarketplacePanel();
-    
+
     // Panel interface
     void Initialize() override;
     void Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND hwnd) override;
     void UpdateLayout(HWND hwnd) override;
-    
+
     void OnMouseMove(HWND hwnd, POINT clientPoint) override;
     void OnLeftButtonDown(HWND hwnd, POINT clientPoint) override;
     void OnLeftButtonUp(HWND hwnd) override;
     void OnMouseWheel(HWND hwnd, int delta) override;
-    
+    void OnChar(wchar_t ch) override;
+    void OnKeyDown(WPARAM key) override;
+
+    bool HandleSearchChar(wchar_t ch);
+    bool HandleSearchKeyDown(WPARAM key);
+    bool IsSearchInputFocused() const;
+    void UnfocusSearchInput();
+
 private:
     // Drawing helpers
     void DrawSearchBar(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite);
-    void DrawLibraryCard(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, 
+    void DrawLibraryCard(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
                         LibraryCard& card);
     void DrawCardIcon(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
                      const D2D1_RECT_F& rect, const std::wstring& icon);
@@ -62,20 +70,26 @@ private:
     void DrawButton(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
                    const D2D1_RECT_F& bounds, const std::wstring& text,
                    bool isHovering, bool isActive);
-    
+
     void UpdateCardLayout();
     void HandleInstallLibrary(HWND hwnd, LibraryCard* card);
     void HandleUninstallLibrary(HWND hwnd, LibraryCard* card);
-    
+
     std::vector<LibraryCard> cards_;
     float scrollOffset_ = 0.0f;
     std::wstring searchQuery_;
     D2D1_RECT_F searchBarBounds_;
     std::wstring lastKnownRootPath_;  // detect project change
-    
+
+    // Search input component
+    TextInput searchInput_;
+
+    // Stored hwnd for callbacks
+    HWND hwnd_ = nullptr;
+
     // Modern design constants
     const float SEARCH_BAR_HEIGHT = 36.0f;
-    const float CARD_HEIGHT = 220.0f;     // Increased for more content
+    const float CARD_HEIGHT = 220.0f;
     const float CARD_PADDING = 12.0f;
     const float ICON_SIZE = 48.0f;
     const float CARD_CORNER_RADIUS = 8.0f;

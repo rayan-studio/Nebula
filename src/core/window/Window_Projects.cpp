@@ -11,6 +11,8 @@
 #include <ctime>
 #include <cctype>
 #include <optional>
+#include <thread>
+#include <functional>
 
 namespace
 {
@@ -97,6 +99,65 @@ namespace
         }
         return out;
     }
+
+    static std::wstring GetNebulaClangdDbDir(const std::wstring &rootPath)
+    {
+        if (rootPath.empty())
+            return {};
+
+        wchar_t localAppData[MAX_PATH] = {};
+        DWORD len = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
+        if (len == 0 || len >= MAX_PATH)
+            return {};
+
+        size_t key = std::hash<std::wstring>{}(rootPath);
+        std::filesystem::path dir = std::filesystem::path(localAppData) /
+                                    L"Nebula" /
+                                    L"clangd-db" /
+                                    std::to_wstring(static_cast<unsigned long long>(key));
+        return dir.wstring();
+    }
+
+    static void BootstrapCompilationDatabaseAsync(const std::wstring &rootPath)
+    {
+        if (rootPath.empty())
+            return;
+
+        std::filesystem::path root(rootPath);
+        std::error_code ec;
+        if (!std::filesystem::exists(root / L"CMakeLists.txt", ec))
+            return;
+
+        std::wstring dbDir = GetNebulaClangdDbDir(rootPath);
+        if (dbDir.empty())
+            return;
+
+        if (std::filesystem::exists(std::filesystem::path(dbDir) / L"compile_commands.json", ec))
+            return;
+
+        std::thread([rootPath, dbDir]() {
+            std::error_code mkec;
+            std::filesystem::create_directories(dbDir, mkec);
+
+            std::wstring cmdLine =
+                L"cmake -S \"" + rootPath +
+                L"\" -B \"" + dbDir +
+                L"\" -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON";
+
+            STARTUPINFOW si = {sizeof(si)};
+            si.dwFlags = STARTF_USESHOWWINDOW;
+            si.wShowWindow = SW_HIDE;
+            PROCESS_INFORMATION pi{};
+
+            if (CreateProcessW(nullptr, cmdLine.data(), nullptr, nullptr, FALSE,
+                               CREATE_NO_WINDOW, nullptr, rootPath.c_str(), &si, &pi))
+            {
+                WaitForSingleObject(pi.hProcess, 45000);
+                CloseHandle(pi.hProcess);
+                CloseHandle(pi.hThread);
+            }
+        }).detach();
+    }
 }
 
 bool Window::CreateProjectFromOverlay()
@@ -119,6 +180,7 @@ bool Window::CreateProjectFromOverlay()
         HideNewProjectOverlay();
         GetExplorerManager().Initialize(root);
         GetExplorerManager().SetVisible(true);
+        BootstrapCompilationDatabaseAsync(root);
         AddRecentProject(root);
         auto readme = FindReadmeMarkdown(root);
         if (readme.has_value())
@@ -137,6 +199,7 @@ void Window::OpenProjectAtPath(const std::wstring &path)
         return;
     GetExplorerManager().Initialize(path);
     GetExplorerManager().SetVisible(true);
+    BootstrapCompilationDatabaseAsync(path);
     AddRecentProject(path);
     auto readme = FindReadmeMarkdown(path);
     if (readme.has_value())
@@ -459,6 +522,7 @@ bool Window::CreateCppConsoleProject(const std::wstring &rootPath, const std::ws
             std::ofstream ofs(cmakePath, std::ios::binary);
             ofs << "cmake_minimum_required(VERSION 3.20)\n";
             ofs << "project(" << targetName << " LANGUAGES CXX)\n\n";
+            ofs << "set(CMAKE_EXPORT_COMPILE_COMMANDS ON)\n";
             ofs << "set(CMAKE_CXX_STANDARD 17)\n";
             ofs << "set(CMAKE_CXX_STANDARD_REQUIRED ON)\n\n";
             if (projType == "cpp-console")
