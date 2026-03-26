@@ -180,7 +180,7 @@ namespace Orion
     {
         EnsureFoldLineMaps();
         const wchar_t *editorFont = L"JetBrains Mono";
-        const float editorFontSize = 14.0f;
+        const float editorFontSize = 13.0f;
 
         IDWriteTextFormat *format = cachedTextFormat_;
         IDWriteTextFormat *tmpFmt = nullptr;

@@ -556,20 +556,55 @@ bool AddLibraryToCmake(const std::wstring &projectCmakePath,
             return true;
     }
 
+    // Detect glad generator repo (Dav1dde/glad v2) — it exposes glad_add_library()
+    // instead of a standard static target, so it needs a different cmake block.
+    bool isGladGenerator = false;
+    {
+        fs::path projRoot;
+        try { projRoot = fs::path(projectCmakePath).parent_path(); } catch (...) {}
+        if (!projRoot.empty())
+        {
+            fs::path libRoot = projRoot / fs::path(subdirStr);
+            std::error_code ec;
+            isGladGenerator =
+                fs::exists(libRoot / "cmake" / "GladConfig.cmake.in", ec) ||
+                fs::exists(libRoot / "cmake" / "glad.cmake", ec)           ||
+                (fs::exists(libRoot / "setup.py", ec) &&
+                 fs::exists(libRoot / "glad",     ec));
+        }
+    }
+
     // Build the block to append
     std::ostringstream block;
     block << "\n";
     block << "# ── External library: " << libStr << " (added by Nebula) ──\n";
-    block << "add_subdirectory(\"" << subdirStr << "\")\n";
-    if (!includeStr.empty())
-        block << "target_include_directories(" << targetStr << " PRIVATE \"" << includeStr << "\")\n";
-    block << "target_link_libraries(" << targetStr << " PRIVATE " << libStr << ")\n";
 
-    if (autoDeps.needsOpenGL && !hasOpenGL32)
+    if (isGladGenerator)
     {
-        block << "if (WIN32)\n";
-        block << "  target_link_libraries(" << targetStr << " PRIVATE opengl32)\n";
-        block << "endif()\n";
+        // glad v2 cmake integration: generates glad source at configure time.
+        block << "add_subdirectory(\"" << subdirStr << "\")\n";
+        block << "glad_add_library(glad STATIC REPRODUCIBLE API gl:core=4.6)\n";
+        block << "target_link_libraries(" << targetStr << " PRIVATE glad)\n";
+        if (!hasOpenGL32)
+        {
+            block << "if (WIN32)\n";
+            block << "  target_link_libraries(" << targetStr << " PRIVATE opengl32)\n";
+            block << "endif()\n";
+        }
+    }
+    else
+    {
+        block << "add_subdirectory(\"" << subdirStr << "\")\n";
+        if (!includeStr.empty())
+            block << "target_include_directories(" << targetStr << " PRIVATE \"" << includeStr << "\")\n";
+        block << "target_link_libraries(" << targetStr << " PRIVATE " << libStr << ")\n";
+
+        if (autoDeps.needsOpenGL && !hasOpenGL32)
+        {
+            block << "if (WIN32)\n";
+            block << "  target_link_libraries(" << targetStr << " PRIVATE opengl32)\n";
+            block << "endif()\n";
+        }
     }
 
     if (autoDeps.needsWinsock && !hasWs2_32)

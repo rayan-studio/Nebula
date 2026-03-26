@@ -63,7 +63,7 @@ namespace Orion
 
         ID2D1SolidColorBrush *borderBrush = nullptr;
         D2D1_COLOR_F border = theme.lineNumberText;
-        border.a = 0.24f;
+        border.a = 0.18f;
         if (SUCCEEDED(ctx->CreateSolidColorBrush(border, &borderBrush)) && borderBrush)
         {
             const float x = std::round(state.leftEdge + metrics.gutterWidth) - 0.5f;
@@ -83,7 +83,7 @@ namespace Orion
                                  const EditorMetrics &metrics, IDWriteFontCollection *customFontCollection)
     {
         const wchar_t *editorFont = L"JetBrains Mono";
-        const float editorFontSize = 14.0f;
+        const float editorFontSize = 13.0f;
         IDWriteTextFormat *format = nullptr;
         dwrite->CreateTextFormat(editorFont, customFontCollection,
                                  DWRITE_FONT_WEIGHT_NORMAL,
@@ -111,7 +111,7 @@ namespace Orion
         firstVisibleLine = (std::max)(0, firstVisibleLine);
         lastVisibleLine = (std::min)(visibleCount, lastVisibleLine);
 
-        const float leftPadding = 14.0f;
+        const float leftPadding = 8.0f;
 
         for (int i = firstVisibleLine; i < lastVisibleLine; ++i)
         {

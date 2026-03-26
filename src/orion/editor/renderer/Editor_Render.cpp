@@ -442,7 +442,7 @@ namespace Orion
                 DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL,
-                14.0f,
+                13.0f,
                 L"en-us",
                 &cachedTextFormat_);
 
@@ -1168,7 +1168,7 @@ namespace Orion
                         DWRITE_FONT_WEIGHT_NORMAL,
                         DWRITE_FONT_STYLE_NORMAL,
                         DWRITE_FONT_STRETCH_NORMAL,
-                        14.0f, L"en-us",
+                        13.0f, L"en-us",
                         &tmpFmt);
                     if (tmpFmt)
                         format = tmpFmt;

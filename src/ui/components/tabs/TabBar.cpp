@@ -256,12 +256,10 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
 
     const UI::Theme::Palette &themePalette = UI::Theme::GetPalette();
     const D2D1_COLOR_F baseBg = UI::Theme::ChromeBackground();
-    const D2D1_COLOR_F editorBg = D2D1::ColorF(24.0f / 255.0f, 26.0f / 255.0f, 29.0f / 255.0f, 1.0f);
-    const D2D1_COLOR_F editorShellBg = D2D1::ColorF(22.0f / 255.0f, 24.0f / 255.0f, 27.0f / 255.0f, 1.0f);
-    const D2D1_COLOR_F trackBg = editorShellBg;
-    const D2D1_COLOR_F idleTabBg = BlendTabColor(baseBg, themePalette.inputBackground, 0.12f);
-    const D2D1_COLOR_F hoverTabBg = BlendTabColor(baseBg, themePalette.explorerToolbarHover, 0.28f);
-    const D2D1_COLOR_F activeTabBg = editorBg;
+    const D2D1_COLOR_F trackBg = BlendTabColor(baseBg, themePalette.inputBackground, 0.35f);
+    const D2D1_COLOR_F idleTabBg = BlendTabColor(baseBg, themePalette.inputBackground, 0.20f);
+    const D2D1_COLOR_F hoverTabBg = BlendTabColor(baseBg, themePalette.explorerToolbarHover, 0.42f);
+    const D2D1_COLOR_F activeTabBg = BlendTabColor(baseBg, themePalette.inputBackground, 0.52f);
 
     ID2D1SolidColorBrush *bgBrush = nullptr;
     ID2D1SolidColorBrush *borderBrush = nullptr;
@@ -310,11 +308,57 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
         format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     }
 
+    // Helper: build a path with rounded top corners and straight bottom corners.
+    // openBottom = true  → open path (for border outline, no bottom edge drawn)
+    // openBottom = false → closed path (for fill)
+    ID2D1Factory *d2dFactory = nullptr;
+    ctx->GetFactory(&d2dFactory);
+
+    const UINT dpiTab = win32_get_dpi_for_window(hwnd);
+    const float cornerR = (float)win32_dpi_scale(3, dpiTab);
+
+    auto DrawTabShape = [&](const D2D1_RECT_F &r, ID2D1Brush *fill, ID2D1Brush *stroke, bool openBottom)
+    {
+        if (!d2dFactory) return;
+        ID2D1PathGeometry *geom = nullptr;
+        d2dFactory->CreatePathGeometry(&geom);
+        if (!geom) return;
+        ID2D1GeometrySink *sink = nullptr;
+        geom->Open(&sink);
+        if (sink)
+        {
+            D2D1_FIGURE_BEGIN fb = fill ? D2D1_FIGURE_BEGIN_FILLED : D2D1_FIGURE_BEGIN_HOLLOW;
+            sink->BeginFigure(D2D1::Point2F(r.left, r.bottom), fb);
+            sink->AddLine(D2D1::Point2F(r.left, r.top + cornerR));
+            sink->AddArc(D2D1::ArcSegment(D2D1::Point2F(r.left + cornerR, r.top),
+                D2D1::SizeF(cornerR, cornerR), 0.0f,
+                D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+            sink->AddLine(D2D1::Point2F(r.right - cornerR, r.top));
+            sink->AddArc(D2D1::ArcSegment(D2D1::Point2F(r.right, r.top + cornerR),
+                D2D1::SizeF(cornerR, cornerR), 0.0f,
+                D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+            sink->AddLine(D2D1::Point2F(r.right, r.bottom));
+            sink->EndFigure(openBottom ? D2D1_FIGURE_END_OPEN : D2D1_FIGURE_END_CLOSED);
+            sink->Close();
+            sink->Release();
+        }
+        const D2D1_ANTIALIAS_MODE prevAA = ctx->GetAntialiasMode();
+        ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        if (fill)   ctx->FillGeometry(geom, fill);
+        if (stroke) ctx->DrawGeometry(geom, stroke, 1.0f);
+        ctx->SetAntialiasMode(prevAA);
+        geom->Release();
+    };
+
     float x = leftEdge_;
     for (int i = 0; i < (int)tabs_.size(); ++i)
     {
         const Tab &tab = tabs_[i];
-        const D2D1_RECT_F tabRect = MakeTabRect(x, topEdge_, tabWidth_, tabHeight_, tab.isActive);
+        D2D1_RECT_F tabRect = MakeTabRect(x, topEdge_, tabWidth_, tabHeight_, tab.isActive);
+        if (i == 0)
+        {
+            tabRect.left = std::round(x);
+        }
 
         D2D1_COLOR_F fillColor = idleTabBg;
         if (tab.isActive)
@@ -326,18 +370,28 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
         ctx->CreateSolidColorBrush(fillColor, &tabBrush);
 
         if (tabBrush)
-            ctx->FillRectangle(tabRect, tabBrush);
+            DrawTabShape(tabRect, tabBrush, nullptr, false);
 
         if (tab.isActive && borderBrush)
         {
-            const float leftX = tabRect.left + 0.5f;
-            const float rightX = tabRect.right - 0.5f;
-            const float topY = tabRect.top + 0.5f;
-            const float bottomY = std::round(topEdge_ + tabHeight_) + 0.5f;
-
-            ctx->DrawLine(D2D1::Point2F(leftX, bottomY), D2D1::Point2F(leftX, topY), borderBrush, 1.0f);
-            ctx->DrawLine(D2D1::Point2F(leftX, topY), D2D1::Point2F(rightX, topY), borderBrush, 1.0f);
-            ctx->DrawLine(D2D1::Point2F(rightX, topY), D2D1::Point2F(rightX, bottomY), borderBrush, 1.0f);
+            if (i == 0)
+            {
+                const float rightX = std::round(tabRect.right) - 0.5f;
+                const float topY = std::round(tabRect.top) + 0.5f;
+                const float bottomY = std::round(topEdge_ + tabHeight_) - 0.5f;
+                ctx->DrawLine(
+                    D2D1::Point2F(rightX, topY),
+                    D2D1::Point2F(rightX, bottomY),
+                    borderBrush,
+                    1.0f);
+            }
+            else
+            {
+                const D2D1_RECT_F borderRect = D2D1::RectF(
+                    tabRect.left + 0.5f, tabRect.top + 0.5f,
+                    tabRect.right - 0.5f, std::round(topEdge_ + tabHeight_) + 0.5f);
+                DrawTabShape(borderRect, nullptr, borderBrush, true);
+            }
         }
 
         if (!tab.isActive && separatorBrush && i < (int)tabs_.size() - 1)
@@ -353,8 +407,9 @@ void TabBar::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
         if (tab.isActive && tabBrush)
         {
             const float lineY = std::round(topEdge_ + tabHeight_);
+            const float coverLeft = (i == 0) ? tabRect.left : (tabRect.left + 1.0f);
             const D2D1_RECT_F coverRect = D2D1::RectF(
-                tabRect.left + 1.0f,
+                coverLeft,
                 lineY - 1.0f,
                 tabRect.right - 1.0f,
                 lineY + 1.0f);

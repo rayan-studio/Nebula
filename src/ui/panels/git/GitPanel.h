@@ -50,8 +50,6 @@ private:
     bool PushCurrentBranch(std::wstring &outError);
     bool RunPushOnly();
     bool ExecuteQuickAction(int actionIndex);
-    const wchar_t *GetQuickActionLabel(int actionIndex) const;
-    int HitTestQuickActionMenuItem(POINT pt) const;
     int HitTestChange(POINT pt) const;
     int HitTestSection(POINT pt) const;
     bool BuildDiffViewForChange(const Panels::GitChange &change,
@@ -121,9 +119,8 @@ private:
     bool capturedScrollbar_        = false;
     bool quickActionPrimaryHovered_ = false;
     bool quickActionToggleHovered_  = false;
-    bool quickActionMenuOpen_       = false;
-    int  quickActionHoveredIndex_   = -1;
-    int  quickActionPrimaryIndex_   = 0;
+    bool quickActionMenuOpen_       = false; // kept for layout compat, always false
+    int  quickActionHoveredIndex_   = -1;    // 2 = push button hovered
     bool wasVisibleLastLayout_  = false;
     bool hasAutoRefreshed_      = false;
     ULONGLONG lastAutoRefreshTick_ = 0;

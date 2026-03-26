@@ -122,6 +122,11 @@ public:
     bool IsPointInUpdateDismiss(POINT pt) const;
     bool SetUpdateDismissHovered(bool hovered);
     bool IsUpdateDismissHovered() const { return updateDismissHovered_; }
+    void SetGitHubBadgeRect(const D2D1_RECT_F &rect);
+    void ClearGitHubBadgeRect();
+    bool IsPointInGitHubBadge(POINT pt) const;
+    bool SetGitHubBadgeHovered(bool hovered);
+    bool IsGitHubBadgeHovered() const { return githubBadgeHovered_; }
     void DismissUpdateToast() { updateToastDismissed_ = true; }
     bool IsUpdateToastDismissed() const { return updateToastDismissed_; }
     void ResetUpdateToastDismissed() { updateToastDismissed_ = false; }
@@ -182,6 +187,8 @@ public:
     D2D1_RECT_F updateToastRect_ = D2D1::RectF(0, 0, 0, 0);
     bool updateToastHovered_ = false;
     D2D1_RECT_F updateDismissRect_ = D2D1::RectF(0, 0, 0, 0);
+    D2D1_RECT_F githubBadgeRect_ = D2D1::RectF(0, 0, 0, 0);
+    bool githubBadgeHovered_ = false;
     bool updateDismissHovered_ = false;
     bool updateToastDismissed_ = false;
 

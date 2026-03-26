@@ -648,17 +648,23 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
             titleBrush->Release();
     }
 
+    if (githubConnected)
+        window ? window->SetGitHubBadgeRect(githubBadgeRect) : void();
+    else if (window)
+        window->ClearGitHubBadgeRect();
+
     if (githubConnected && menuFormat)
     {
+        const bool badgeHovered = window && window->IsGitHubBadgeHovered();
         float badgeAlpha = hasFocus ? 1.0f : 0.82f;
         ID2D1SolidColorBrush *badgeBg = nullptr;
         ID2D1SolidColorBrush *badgeBorder = nullptr;
         ID2D1SolidColorBrush *badgeText = nullptr;
         ID2D1SolidColorBrush *badgeDot = nullptr;
-        D2D1_COLOR_F badgeBgColor = themePalette.inputBackground;
+        D2D1_COLOR_F badgeBgColor = badgeHovered ? themePalette.explorerToolbarHover : themePalette.inputBackground;
         badgeBgColor.a = 0.95f * badgeAlpha;
-        D2D1_COLOR_F badgeBorderColor = UI::Theme::ChromeBorder();
-        badgeBorderColor.a = 0.90f * badgeAlpha;
+        D2D1_COLOR_F badgeBorderColor = badgeHovered ? UI::Theme::Accent() : UI::Theme::ChromeBorder();
+        badgeBorderColor.a = (badgeHovered ? 1.0f : 0.90f) * badgeAlpha;
         D2D1_COLOR_F badgeTextColor = UI::Theme::PrimaryText();
         badgeTextColor.a = badgeAlpha;
         D2D1_COLOR_F badgeDotColor = UI::Theme::AccentStrong();

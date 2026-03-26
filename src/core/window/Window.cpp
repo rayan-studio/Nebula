@@ -694,6 +694,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             return HTCLIENT;
         }
 
+        if (IsPointInGitHubBadge(cursor_point))
+        {
+            return HTCLIENT;
+        }
+
         if (cursor_point.y < win32_titlebar_rect(hwnd_).bottom)
         {
             return HTCAPTION;
@@ -1259,6 +1264,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             {
                 return 0;
             }
+        }
+
+        if (IsPointInGitHubBadge(pt))
+        {
+            OpenSettingsTab();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
         }
 
         if (IsPointInUpdateDismiss(pt) && UpdateService::HasUpdateAvailable())
@@ -1885,6 +1897,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         if (SetUpdateToastHovered(IsPointInUpdateToast(pt)))
             ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
         if (SetUpdateDismissHovered(IsPointInUpdateDismiss(pt)))
+            ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
+        if (SetGitHubBadgeHovered(IsPointInGitHubBadge(pt)))
             ThrottledInvalidateRect(hwnd_, nullptr, FALSE);
 
         // If we're inside the tabbar -> consume the event here
@@ -2967,6 +2981,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 return TRUE;
             }
 
+            if (IsPointInGitHubBadge(pt))
+            {
+                SetCursor(LoadCursor(NULL, IDC_HAND));
+                return TRUE;
+            }
+
             // Check active panel for cursor
             Panel *panelCursor = GetPanelManager().GetActivePanel();
             if (panelCursor && panelCursor->IsVisible())
@@ -3241,6 +3261,33 @@ bool Window::SetUpdateToastHovered(bool hovered)
     if (updateToastHovered_ == hovered)
         return false;
     updateToastHovered_ = hovered;
+    return true;
+}
+
+void Window::SetGitHubBadgeRect(const D2D1_RECT_F &rect)
+{
+    githubBadgeRect_ = rect;
+}
+
+void Window::ClearGitHubBadgeRect()
+{
+    githubBadgeRect_ = D2D1::RectF(0, 0, 0, 0);
+    githubBadgeHovered_ = false;
+}
+
+bool Window::IsPointInGitHubBadge(POINT pt) const
+{
+    if (githubBadgeRect_.right <= githubBadgeRect_.left || githubBadgeRect_.bottom <= githubBadgeRect_.top)
+        return false;
+    return pt.x >= githubBadgeRect_.left && pt.x <= githubBadgeRect_.right &&
+           pt.y >= githubBadgeRect_.top  && pt.y <= githubBadgeRect_.bottom;
+}
+
+bool Window::SetGitHubBadgeHovered(bool hovered)
+{
+    if (githubBadgeHovered_ == hovered)
+        return false;
+    githubBadgeHovered_ = hovered;
     return true;
 }
 

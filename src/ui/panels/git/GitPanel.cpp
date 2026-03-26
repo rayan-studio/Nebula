@@ -241,7 +241,7 @@ GitPanel::GitPanel()
 
     commitMessageInput_.onSubmit = [this]()
     {
-        ExecuteQuickAction(quickActionPrimaryIndex_);
+        ExecuteQuickAction(0); // Commit & Push on Enter
     };
 
     commitMessageInput_.onEscape = [this]()
@@ -349,30 +349,26 @@ void GitPanel::UpdateLayout(HWND hwnd)
     float y = state_.topEdge + state_.titleHeight + 8.0f;
     const float inputH  = 30.0f;
     const float actionH = 30.0f;
+    const float secH    = 26.0f;
     const float gap     = 6.0f;
-    const float toggleW = 30.0f;
 
     // Commit message input always full-width
     commitMessageInput_.SetRect(D2D1::RectF(x0, y, x1, y + inputH));
     y += inputH + gap;
 
-    // Action button row below the input
-    quickActionToggleRect_  = D2D1::RectF(x1 - toggleW, y, x1, y + actionH);
-    quickActionPrimaryRect_ = D2D1::RectF(x0, y, quickActionToggleRect_.left - 1.0f, y + actionH);
-
-    // Dropdown menu: anchored below the button row, right-aligned
-    const float menuItemH = 32.0f;
-    const float menuW     = quickActionToggleRect_.right - quickActionPrimaryRect_.left;
-    const float menuTop   = y + actionH + 2.0f;
-    quickActionMenuRect_ = D2D1::RectF(
-        quickActionPrimaryRect_.left,
-        menuTop,
-        quickActionPrimaryRect_.left + menuW,
-        menuTop + menuItemH * 4.0f);
-
+    // Primary "Commit & Push" full-width accent button
+    quickActionPrimaryRect_ = D2D1::RectF(x0, y, x1, y + actionH);
     y += actionH + gap;
-    if (quickActionMenuOpen_)
-        y += (quickActionMenuRect_.bottom - quickActionMenuRect_.top) + 4.0f;
+
+    // Secondary "Commit" (left) | "Push" (right) buttons
+    const float secGap = 5.0f;
+    float half = (x1 - x0 - secGap) * 0.5f;
+    quickActionToggleRect_ = D2D1::RectF(x0,               y, x0 + half,        y + secH);
+    quickActionMenuRect_   = D2D1::RectF(x0 + half + secGap, y, x1,             y + secH);
+    y += secH + gap;
+
+    quickActionMenuOpen_     = false;
+    quickActionHoveredIndex_ = -1;
 
     authStatusRect_ = D2D1::RectF(0, 0, 0, 0);
     if (!lastError_.empty())
@@ -616,212 +612,122 @@ void GitPanel::DrawBranchBar(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWN
 
 void GitPanel::DrawQuickActions(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
 {
-    if (quickActionPrimaryRect_.right <= quickActionPrimaryRect_.left ||
-        quickActionToggleRect_.right  <= quickActionToggleRect_.left)
+    if (quickActionPrimaryRect_.right <= quickActionPrimaryRect_.left)
         return;
 
-    const UI::Theme::Palette &palette = UI::Theme::GetPalette();
     const bool light = (UI::Theme::GetMode() == UI::Theme::Mode::Light);
-
-    D2D1_COLOR_F accent    = UI::Theme::Accent();
-    D2D1_COLOR_F accentBg  = D2D1::ColorF(accent.r, accent.g, accent.b, light ? 0.90f : 0.80f);
+    D2D1_COLOR_F accent = UI::Theme::Accent();
     auto clamp1 = [](float v) { return v > 1.0f ? 1.0f : v; };
     D2D1_COLOR_F accentHov = D2D1::ColorF(
-        clamp1(accent.r + 0.08f),
-        clamp1(accent.g + 0.08f),
-        clamp1(accent.b + 0.08f),
+        clamp1(accent.r + 0.10f),
+        clamp1(accent.g + 0.10f),
+        clamp1(accent.b + 0.10f),
         1.0f);
-    D2D1_COLOR_F dividerCol = D2D1::ColorF(1.0f, 1.0f, 1.0f, light ? 0.25f : 0.20f);
 
-    // Brushes
-    ID2D1SolidColorBrush *btnBgBrush  = nullptr;
-    ID2D1SolidColorBrush *btnHovBrush = nullptr;
-    ID2D1SolidColorBrush *btnTxtBrush = nullptr;
-    ID2D1SolidColorBrush *divBrush    = nullptr;
-    ID2D1SolidColorBrush *menuBgBrush = nullptr;
-    ID2D1SolidColorBrush *menuBdBrush = nullptr;
-    ID2D1SolidColorBrush *menuTxtBrush = nullptr;
-    ID2D1SolidColorBrush *menuHovBrush = nullptr;
-    ID2D1SolidColorBrush *menuSelTxtBrush = nullptr;
+    // Secondary buttons: glass-style — subtle transparent fill + crisp border
+    D2D1_COLOR_F secBg  = light ? D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.06f)
+                                : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.05f);
+    D2D1_COLOR_F secHov = light ? D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.12f)
+                                : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.10f);
+    D2D1_COLOR_F secBd  = light ? D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.22f)
+                                : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.18f);
+    D2D1_COLOR_F secTxt = light ? D2D1::ColorF(0.15f, 0.15f, 0.15f, 1.0f)
+                                : D2D1::ColorF(0.82f, 0.82f, 0.82f, 1.0f);
 
-    ctx->CreateSolidColorBrush(accentBg,  &btnBgBrush);
-    ctx->CreateSolidColorBrush(accentHov, &btnHovBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.95f), &btnTxtBrush);
-    ctx->CreateSolidColorBrush(dividerCol, &divBrush);
+    ID2D1SolidColorBrush *primBgBrush  = nullptr;
+    ID2D1SolidColorBrush *primHovBrush = nullptr;
+    ID2D1SolidColorBrush *primTxtBrush = nullptr;
+    ID2D1SolidColorBrush *secBgBrush   = nullptr;
+    ID2D1SolidColorBrush *secHovBrush  = nullptr;
+    ID2D1SolidColorBrush *secBdBrush   = nullptr;
+    ID2D1SolidColorBrush *secTxtBrush  = nullptr;
 
-    // Menu card colours
-    D2D1_COLOR_F menuBg = light
-        ? D2D1::ColorF(0.18f, 0.18f, 0.18f, 1.0f)
-        : D2D1::ColorF(0.14f, 0.14f, 0.14f, 1.0f);
-    D2D1_COLOR_F menuBd = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.10f);
-    D2D1_COLOR_F menuHov = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.08f);
+    ctx->CreateSolidColorBrush(accent,    &primBgBrush);
+    ctx->CreateSolidColorBrush(accentHov, &primHovBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.97f), &primTxtBrush);
+    ctx->CreateSolidColorBrush(secBg,  &secBgBrush);
+    ctx->CreateSolidColorBrush(secHov, &secHovBrush);
+    ctx->CreateSolidColorBrush(secBd,  &secBdBrush);
+    ctx->CreateSolidColorBrush(secTxt, &secTxtBrush);
 
-    ctx->CreateSolidColorBrush(menuBg,  &menuBgBrush);
-    ctx->CreateSolidColorBrush(menuBd,  &menuBdBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.92f, 0.92f), &menuTxtBrush);
-    ctx->CreateSolidColorBrush(menuHov, &menuHovBrush);
-    ctx->CreateSolidColorBrush(accent,  &menuSelTxtBrush);
-
-    IDWriteTextFormat *btnFmt  = nullptr;
-    IDWriteTextFormat *menuFmt = nullptr;
-    IDWriteTextFormat *iconFmt = nullptr;
-
+    IDWriteTextFormat *btnFmt = nullptr;
+    IDWriteTextFormat *secFmt = nullptr;
     dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
-                             DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"en-us", &btnFmt);
+                             DWRITE_FONT_STRETCH_NORMAL, 12.5f, L"en-us", &btnFmt);
     dwrite->CreateTextFormat(L"Segoe UI", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                             DWRITE_FONT_STRETCH_NORMAL, 12.5f, L"en-us", &menuFmt);
-    dwrite->CreateTextFormat(L"Segoe Fluent Icons", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                             DWRITE_FONT_STRETCH_NORMAL, 11.0f, L"en-us", &iconFmt);
-    if (!iconFmt)
-        dwrite->CreateTextFormat(L"Segoe MDL2 Assets", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                                 DWRITE_FONT_STRETCH_NORMAL, 11.0f, L"en-us", &iconFmt);
-
+                             DWRITE_FONT_STRETCH_NORMAL, 11.5f, L"en-us", &secFmt);
     if (btnFmt)
     {
         btnFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
         btnFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         btnFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
-    if (menuFmt)
+    if (secFmt)
     {
-        menuFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        menuFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        menuFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-    }
-    if (iconFmt)
-    {
-        iconFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        iconFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        secFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        secFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        secFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
 
-    const D2D1_RECT_F &primR   = quickActionPrimaryRect_;
-    const D2D1_RECT_F &togR    = quickActionToggleRect_;
-    const float kR             = 5.0f; // corner radius
-
+    const float kR = 6.0f;
     D2D1_ANTIALIAS_MODE savedAA = ctx->GetAntialiasMode();
     ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-    // -- Primary button background --
+    // Primary "Commit & Push" full-width accent button
     {
-        // Full button background (primary + toggle together = one pill)
-        D2D1_RECT_F fullBtn = D2D1::RectF(std::round(primR.left), std::round(primR.top),
-                                           std::round(togR.right),  std::round(togR.bottom));
-        ID2D1SolidColorBrush *bg = (quickActionPrimaryHovered_ || quickActionToggleHovered_) ? btnHovBrush : btnBgBrush;
-        if (bg)
-            ctx->FillRoundedRectangle(D2D1::RoundedRect(fullBtn, kR, kR), bg);
+        const D2D1_RECT_F &r = quickActionPrimaryRect_;
+        D2D1_RECT_F rr = D2D1::RectF(std::round(r.left), std::round(r.top),
+                                      std::round(r.right), std::round(r.bottom));
+        auto *bg = quickActionPrimaryHovered_ ? primHovBrush : primBgBrush;
+        if (bg) ctx->FillRoundedRectangle(D2D1::RoundedRect(rr, kR, kR), bg);
+    }
 
-        // Per-side hover brightening (if only one side hovered)
-        if (quickActionPrimaryHovered_ && !quickActionToggleHovered_ && btnHovBrush)
-        {
-            // Already handled above — whole button brightens; individual side handled implicitly
-        }
+    // Secondary "Commit" button (left half)
+    if (quickActionToggleRect_.right > quickActionToggleRect_.left)
+    {
+        const D2D1_RECT_F &r = quickActionToggleRect_;
+        D2D1_RECT_F rr = D2D1::RectF(std::round(r.left), std::round(r.top),
+                                      std::round(r.right), std::round(r.bottom));
+        auto *bg = quickActionToggleHovered_ ? secHovBrush : secBgBrush;
+        if (bg)       ctx->FillRoundedRectangle(D2D1::RoundedRect(rr, kR, kR), bg);
+        if (secBdBrush) ctx->DrawRoundedRectangle(D2D1::RoundedRect(rr, kR, kR), secBdBrush, 1.0f);
+    }
 
-        // Divider between primary and toggle
-        if (divBrush)
-        {
-            float dx = std::round(togR.left);
-            ctx->FillRectangle(D2D1::RectF(dx, primR.top + 5.0f, dx + 1.0f, primR.bottom - 5.0f), divBrush);
-        }
+    // Secondary "Push" button (right half)
+    if (quickActionMenuRect_.right > quickActionMenuRect_.left)
+    {
+        const D2D1_RECT_F &r = quickActionMenuRect_;
+        D2D1_RECT_F rr = D2D1::RectF(std::round(r.left), std::round(r.top),
+                                      std::round(r.right), std::round(r.bottom));
+        bool pushHov = (quickActionHoveredIndex_ == 2);
+        auto *bg = pushHov ? secHovBrush : secBgBrush;
+        if (bg)       ctx->FillRoundedRectangle(D2D1::RoundedRect(rr, kR, kR), bg);
+        if (secBdBrush) ctx->DrawRoundedRectangle(D2D1::RoundedRect(rr, kR, kR), secBdBrush, 1.0f);
     }
 
     ctx->SetAntialiasMode(savedAA);
 
-    // Primary button label
-    if (btnFmt && btnTxtBrush)
+    // Labels
+    if (btnFmt && primTxtBrush)
+        ctx->DrawTextW(L"Commit & Push", 13, btnFmt, quickActionPrimaryRect_, primTxtBrush);
+
+    if (secFmt && secTxtBrush)
     {
-        const wchar_t *label = GetQuickActionLabel(quickActionPrimaryIndex_);
-        ctx->DrawTextW(label, (UINT32)wcslen(label), btnFmt, primR, btnTxtBrush);
+        if (quickActionToggleRect_.right > quickActionToggleRect_.left)
+            ctx->DrawTextW(L"Commit", 6, secFmt, quickActionToggleRect_, secTxtBrush);
+        if (quickActionMenuRect_.right > quickActionMenuRect_.left)
+            ctx->DrawTextW(L"Push", 4, secFmt, quickActionMenuRect_, secTxtBrush);
     }
 
-    // Toggle chevron glyph (▾ or ▴)
-    if (iconFmt && btnTxtBrush)
-    {
-        const std::wstring chevron = quickActionMenuOpen_ ? L"\u25B4" : L"\u25BE"; // ▴ / ▾
-        ctx->DrawTextW(chevron.c_str(), 1, iconFmt, togR, btnTxtBrush);
-    }
-
-    // -- Dropdown card --
-    if (quickActionMenuOpen_ &&
-        quickActionMenuRect_.right > quickActionMenuRect_.left &&
-        quickActionMenuRect_.bottom > quickActionMenuRect_.top)
-    {
-        const D2D1_RECT_F &menu = quickActionMenuRect_;
-        const float rowH = (menu.bottom - menu.top) / 4.0f;
-
-        D2D1_ANTIALIAS_MODE aa = ctx->GetAntialiasMode();
-        ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-
-        // Card background
-        D2D1_RECT_F cardR = D2D1::RectF(std::round(menu.left), std::round(menu.top),
-                                         std::round(menu.right), std::round(menu.bottom));
-        if (menuBgBrush)
-            ctx->FillRoundedRectangle(D2D1::RoundedRect(cardR, kR, kR), menuBgBrush);
-
-        // Card border
-        if (menuBdBrush)
-            ctx->DrawRoundedRectangle(D2D1::RoundedRect(cardR, kR, kR), menuBdBrush, 1.0f);
-
-        ctx->SetAntialiasMode(aa);
-
-        // Row hover + text
-        for (int i = 0; i < 4; ++i)
-        {
-            D2D1_RECT_F rowRect = D2D1::RectF(
-                std::round(menu.left),
-                std::round(menu.top + rowH * (float)i),
-                std::round(menu.right),
-                std::round(menu.top + rowH * (float)(i + 1)));
-
-            if (i == quickActionHoveredIndex_ && menuHovBrush)
-            {
-                // Clip hover to card corners on first/last row
-                D2D1_ANTIALIAS_MODE haa = ctx->GetAntialiasMode();
-                ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-                float topR = (i == 0) ? kR : 0.0f;
-                float botR = (i == 3) ? kR : 0.0f;
-                // Approximate with simple fill (rounded clipping not trivial in D2D without layers)
-                ctx->FillRectangle(D2D1::RectF(rowRect.left + 1.0f, rowRect.top + (i == 0 ? 1.0f : 0.0f),
-                                               rowRect.right - 1.0f, rowRect.bottom - (i == 3 ? 1.0f : 0.0f)), menuHovBrush);
-                ctx->SetAntialiasMode(haa);
-            }
-
-            // Separator line between items (except last)
-            if (i < 3 && menuBdBrush)
-            {
-                float sepY = std::round(menu.top + rowH * (float)(i + 1));
-                ctx->FillRectangle(D2D1::RectF(menu.left + 8.0f, sepY, menu.right - 8.0f, sepY + 1.0f), menuBdBrush);
-            }
-
-            if (menuFmt)
-            {
-                // Selected action gets accent color text
-                bool isSelected = (i == quickActionPrimaryIndex_);
-                ID2D1SolidColorBrush *txtBrush = isSelected ? menuSelTxtBrush : menuTxtBrush;
-
-                D2D1_RECT_F textRect = D2D1::RectF(
-                    std::round(rowRect.left + 14.0f),
-                    rowRect.top,
-                    std::round(rowRect.right - 8.0f),
-                    rowRect.bottom);
-                if (txtBrush)
-                    ctx->DrawTextW(GetQuickActionLabel(i), (UINT32)wcslen(GetQuickActionLabel(i)),
-                                   menuFmt, textRect, txtBrush);
-            }
-        }
-    }
-
-    if (btnBgBrush)   btnBgBrush->Release();
-    if (btnHovBrush)  btnHovBrush->Release();
-    if (btnTxtBrush)  btnTxtBrush->Release();
-    if (divBrush)     divBrush->Release();
-    if (menuBgBrush)  menuBgBrush->Release();
-    if (menuBdBrush)  menuBdBrush->Release();
-    if (menuTxtBrush) menuTxtBrush->Release();
-    if (menuHovBrush) menuHovBrush->Release();
-    if (menuSelTxtBrush) menuSelTxtBrush->Release();
-    if (btnFmt)  btnFmt->Release();
-    if (menuFmt) menuFmt->Release();
-    if (iconFmt) iconFmt->Release();
+    if (primBgBrush)  primBgBrush->Release();
+    if (primHovBrush) primHovBrush->Release();
+    if (primTxtBrush) primTxtBrush->Release();
+    if (secBgBrush)   secBgBrush->Release();
+    if (secHovBrush)  secHovBrush->Release();
+    if (secBdBrush)   secBdBrush->Release();
+    if (secTxtBrush)  secTxtBrush->Release();
+    if (btnFmt) btnFmt->Release();
+    if (secFmt) secFmt->Release();
 }
 
 void GitPanel::DrawChanges(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
@@ -1162,7 +1068,7 @@ void GitPanel::OnMouseMove(HWND hwnd, POINT clientPoint)
 
     quickActionPrimaryHovered_ = IsPointInRect(quickActionPrimaryRect_, clientPoint);
     quickActionToggleHovered_  = IsPointInRect(quickActionToggleRect_,  clientPoint);
-    quickActionHoveredIndex_   = quickActionMenuOpen_ ? HitTestQuickActionMenuItem(clientPoint) : -1;
+    quickActionHoveredIndex_   = IsPointInRect(quickActionMenuRect_, clientPoint) ? 2 : -1;
     pullBtnHovered_            = IsPointInRect(pullBtnRect_,    clientPoint);
     refreshBtnHovered_         = IsPointInRect(refreshBtnRect_, clientPoint);
     hoveredSectionIndex_       = HitTestSection(clientPoint);
@@ -1182,8 +1088,7 @@ void GitPanel::OnMouseMove(HWND hwnd, POINT clientPoint)
         changed = true;
 
     int prevHover = hoveredChangeIndex_;
-    if (quickActionMenuOpen_ ||
-        changesScrollbar_.IsHoveringThumb() ||
+    if (changesScrollbar_.IsHoveringThumb() ||
         changesScrollbar_.IsHoveringTrack()  ||
         changesScrollbar_.IsDragging())
         hoveredChangeIndex_ = -1;
@@ -1238,38 +1143,23 @@ void GitPanel::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
         return;
     }
 
-    bool hitPrimaryAction = IsPointInRect(quickActionPrimaryRect_, clientPoint);
-    bool hitToggleAction  = IsPointInRect(quickActionToggleRect_,  clientPoint);
-    if (hitPrimaryAction)
+    if (IsPointInRect(quickActionPrimaryRect_, clientPoint))
     {
-        quickActionMenuOpen_ = false;
-        quickActionHoveredIndex_ = -1;
-        ExecuteQuickAction(quickActionPrimaryIndex_);
+        ExecuteQuickAction(0); // Commit & Push
         InvalidateRect(hwnd, nullptr, FALSE);
         return;
     }
-    if (hitToggleAction)
+    if (IsPointInRect(quickActionToggleRect_, clientPoint))
     {
-        quickActionMenuOpen_ = !quickActionMenuOpen_;
-        quickActionHoveredIndex_ = quickActionMenuOpen_ ? HitTestQuickActionMenuItem(clientPoint) : -1;
+        ExecuteQuickAction(1); // Commit only
         InvalidateRect(hwnd, nullptr, FALSE);
         return;
     }
-    if (quickActionMenuOpen_)
+    if (IsPointInRect(quickActionMenuRect_, clientPoint))
     {
-        int item = HitTestQuickActionMenuItem(clientPoint);
-        if (item >= 0)
-        {
-            quickActionPrimaryIndex_ = item;
-            quickActionMenuOpen_ = false;
-            quickActionHoveredIndex_ = -1;
-            ExecuteQuickAction(item);
-            InvalidateRect(hwnd, nullptr, FALSE);
-            return;
-        }
-
-        quickActionMenuOpen_ = false;
-        quickActionHoveredIndex_ = -1;
+        ExecuteQuickAction(2); // Push only
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
     }
 
     if (changesScrollbar_.OnLeftButtonDown(clientPoint))
@@ -1464,40 +1354,6 @@ int GitPanel::HitTestSection(POINT pt) const
     return -1;
 }
 
-int GitPanel::HitTestQuickActionMenuItem(POINT pt) const
-{
-    if (!quickActionMenuOpen_ || !IsPointInRect(quickActionMenuRect_, pt))
-        return -1;
-
-    const float menuHeight = quickActionMenuRect_.bottom - quickActionMenuRect_.top;
-    if (menuHeight <= 0.0f)
-        return -1;
-    const float rowH = menuHeight / 4.0f;
-    const float localY = (float)pt.y - quickActionMenuRect_.top;
-    if (localY < 0.0f)
-        return -1;
-    int idx = (int)(localY / rowH);
-    if (idx < 0 || idx >= 4)
-        return -1;
-    return idx;
-}
-
-const wchar_t *GitPanel::GetQuickActionLabel(int actionIndex) const
-{
-    switch (actionIndex)
-    {
-    case 0:
-        return L"Commit & Push";
-    case 1:
-        return L"Commit";
-    case 2:
-        return L"Push";
-    case 3:
-        return L"Refresh";
-    default:
-        return L"Commit & Push";
-    }
-}
 
 bool GitPanel::ExecuteQuickAction(int actionIndex)
 {
