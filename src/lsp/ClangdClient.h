@@ -26,6 +26,7 @@ public:
     // Call these when a file is opened or modified
     void DidOpen(const std::wstring& filePath, const std::string& utf8Content, int version = 1);
     void DidChange(const std::wstring& filePath, const std::string& utf8Content, int version);
+    void DidSave(const std::wstring& filePath);
 
     // hwnd + tabIndex are passed back in the callback so we can post WM_LSP_DIAGNOSTICS
     void SetContext(const std::wstring& filePath, HWND hwnd, int tabIndex);
@@ -63,6 +64,7 @@ private:
 
     std::thread readerThread_;
     std::atomic<bool> running_{false};
+    mutable std::mutex lifecycleMutex_;
     std::mutex sendMutex_;
 
     bool initialized_ = false;
@@ -88,6 +90,10 @@ private:
     };
     std::mutex pendingMutex_;
     std::vector<PendingNotification> pendingNotifications_;
+
+    bool StartLocked(const std::wstring& projectRoot);
+    bool IsRunningLocked() const;
+    void StopLocked();
 
     void ReaderLoop();
     void Send(const std::string& json);

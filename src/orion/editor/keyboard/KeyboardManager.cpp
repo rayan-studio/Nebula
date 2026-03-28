@@ -671,12 +671,13 @@ bool KeyboardManager::HandleGlobalShortcuts(WPARAM wParam, const Mods &m)
         }
     }
 
-    // Ctrl+Shift+F => Format (editor)
-    if (m.ctrl && m.shift && !m.alt && IsLetter(wParam, 'F'))
+    // Ctrl+Shift+F / Ctrl+Shift+L => Format (editor)
+    if (m.ctrl && m.shift && !m.alt && (IsLetter(wParam, 'F') || IsLetter(wParam, 'L')))
     {
         Orion::Editor *editor = window_->GetEditor();
         if (editor)
         {
+            Logger::Instance().Log(L"Shortcut: Ctrl+Shift+Format");
             editor->FormatDocument();
             InvalidateRect(window_->GetHwnd(), nullptr, FALSE);
             GetPanelManager().UpdateLayout(window_->GetHwnd());

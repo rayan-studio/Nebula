@@ -288,11 +288,16 @@ void Window::OpenProjectAtPath(const std::wstring &path)
     if (path.empty())
         return;
 
-    if (!IsProjectTrusted(path))
+    // Important: callers may pass a reference into recentProjects_ (e.g.
+    // recentProjects_[idx].path). AddRecentProject mutates that vector, so we
+    // must copy the path up front to avoid use-after-invalidation.
+    const std::wstring projectPath = path;
+
+    if (!IsProjectTrusted(projectPath))
     {
         std::wstring prompt =
             L"Do you trust the authors of this project?\n\n"
-            L"Path: " + path + L"\n\n"
+            L"Path: " + projectPath + L"\n\n"
             L"Nebula may run project tools, build scripts, and language services."
             L"\nChoose Yes to trust and open, or No to cancel.";
 
@@ -305,14 +310,14 @@ void Window::OpenProjectAtPath(const std::wstring &path)
         if (!trust)
             return;
 
-        MarkProjectTrusted(path);
+        MarkProjectTrusted(projectPath);
     }
 
-    GetExplorerManager().Initialize(path);
+    GetExplorerManager().Initialize(projectPath);
     GetExplorerManager().SetVisible(true);
-    BootstrapCompilationDatabaseAsync(path);
-    AddRecentProject(path);
-    auto readme = FindReadmeMarkdown(path);
+    BootstrapCompilationDatabaseAsync(projectPath);
+    AddRecentProject(projectPath);
+    auto readme = FindReadmeMarkdown(projectPath);
     if (readme.has_value())
         OpenFileInNewTabWithMarkdownPreview(*readme);
     HideNewProjectOverlay();

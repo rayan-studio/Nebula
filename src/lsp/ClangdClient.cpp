@@ -242,13 +242,14 @@ std::wstring ClangdClient::GetCompileCommandsDir(const std::wstring& projectRoot
 
 bool ClangdClient::RestartForProject(const std::wstring& projectRoot)
 {
+    std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex_);
     {
         std::lock_guard<std::mutex> lk(docsMutex_);
         replayOpenDocumentsOnInit_ = true;
     }
     TraceLsp(L"RestartForProject root=" + projectRoot);
-    Stop();
-    return Start(projectRoot);
+    StopLocked();
+    return StartLocked(projectRoot);
 }
 
 void ClangdClient::EnsureCompileCommandsAsync(const std::wstring& projectRoot)
@@ -329,8 +330,17 @@ void ClangdClient::EnsureCompileCommandsAsync(const std::wstring& projectRoot)
             std::filesystem::copy_file(src, ccdbFile,
                 std::filesystem::copy_options::overwrite_existing, ec2);
 
-            // Restart clangd so it picks up the new compile_commands.json
-            RestartForProject(projectRoot);
+            // Avoid restarting for a stale project after a quick project switch.
+            bool stillCurrentProject = false;
+            {
+                std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex_);
+                stillCurrentProject = !projectRoot_.empty() &&
+                                     NormalizePathKey(projectRoot_) == NormalizePathKey(projectRoot);
+            }
+
+            // Restart clangd so it picks up the new compile_commands.json.
+            if (stillCurrentProject)
+                RestartForProject(projectRoot);
         }
     }).detach();
 }
@@ -466,8 +476,19 @@ std::wstring ClangdClient::FindMinGW() {
 // ---------------------------------------------------------------------------
 
 bool ClangdClient::Start(const std::wstring& projectRoot) {
-    if (IsRunning())
+    std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex_);
+    return StartLocked(projectRoot);
+}
+
+bool ClangdClient::StartLocked(const std::wstring& projectRoot) {
+    if (IsRunningLocked())
         return true;
+
+    // If clangd exited unexpectedly, the previous reader thread may still be
+    // joinable. Reassigning std::thread without joining would call
+    // std::terminate (observed as abort() in MSVC runtime).
+    if (readerThread_.joinable())
+        readerThread_.join();
 
     {
         std::lock_guard<std::mutex> lk(docsMutex_);
@@ -479,8 +500,12 @@ bool ClangdClient::Start(const std::wstring& projectRoot) {
     }
 
     std::wstring clangdPath = FindClangd();
-    if (clangdPath.empty())
+    if (clangdPath.empty()) {
+        Logger::Instance().Log(L"[LSP-CORE] Start failed: clangd not found");
         return false;
+    }
+
+    Logger::Instance().Log(L"[LSP-CORE] Start requested root=" + projectRoot + L" clangd=" + clangdPath);
 
     TraceLsp(L"Start root=" + projectRoot + L" clangd=" + clangdPath);
 
@@ -497,11 +522,15 @@ bool ClangdClient::Start(const std::wstring& projectRoot) {
     HANDLE hStdoutWr = nullptr;
 
     if (!CreatePipe(&hStdinRd, &hStdinWr_, &sa, 0))
+    {
+        Logger::Instance().Log(L"[LSP-CORE] Start failed: CreatePipe(stdin) err=" + std::to_wstring(GetLastError()));
         return false;
+    }
     // Write end must NOT be inherited by the child
     SetHandleInformation(hStdinWr_, HANDLE_FLAG_INHERIT, 0);
 
     if (!CreatePipe(&hStdoutRd_, &hStdoutWr, &sa, 0)) {
+        Logger::Instance().Log(L"[LSP-CORE] Start failed: CreatePipe(stdout) err=" + std::to_wstring(GetLastError()));
         CloseHandle(hStdinRd);
         CloseHandle(hStdinWr_);
         hStdinWr_ = nullptr;
@@ -676,12 +705,16 @@ bool ClangdClient::Start(const std::wstring& projectRoot) {
     CloseHandle(hStdoutWr);
 
     if (!ok) {
+        Logger::Instance().Log(L"[LSP-CORE] Start failed: CreateProcess err=" + std::to_wstring(GetLastError()) +
+                               L" root=" + projectRoot + L" cmd=" + cmdLine);
         CloseHandle(hStdinWr_); hStdinWr_ = nullptr;
         CloseHandle(hStdoutRd_); hStdoutRd_ = nullptr;
         return false;
     }
 
     hProcess_ = pi.hProcess;
+    Logger::Instance().Log(L"[LSP-CORE] Start ok: pid=" + std::to_wstring((unsigned long long)pi.dwProcessId) +
+                           L" root=" + projectRoot);
     CloseHandle(pi.hThread);
 
     running_ = true;
@@ -692,10 +725,41 @@ bool ClangdClient::Start(const std::wstring& projectRoot) {
 }
 
 bool ClangdClient::IsRunning() const {
-    return running_.load();
+    std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex_);
+    return IsRunningLocked();
+}
+
+bool ClangdClient::IsRunningLocked() const {
+    if (!running_.load())
+        return false;
+
+    HANDLE process = hProcess_;
+    if (!process)
+    {
+        Logger::Instance().Log(L"[LSP-CORE] IsRunning=false: process handle null");
+        const_cast<ClangdClient*>(this)->running_ = false;
+        const_cast<ClangdClient*>(this)->initialized_ = false;
+        return false;
+    }
+
+    DWORD code = 0;
+    if (!GetExitCodeProcess(process, &code) || code != STILL_ACTIVE)
+    {
+        Logger::Instance().Log(L"[LSP-CORE] IsRunning=false: process exited code=" + std::to_wstring((unsigned long long)code));
+        const_cast<ClangdClient*>(this)->running_ = false;
+        const_cast<ClangdClient*>(this)->initialized_ = false;
+        return false;
+    }
+
+    return true;
 }
 
 void ClangdClient::Stop() {
+    std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex_);
+    StopLocked();
+}
+
+void ClangdClient::StopLocked() {
     TraceLsp(L"Stop");
     running_ = false;
 
@@ -792,19 +856,39 @@ void ClangdClient::DidChange(const std::wstring& filePath, const std::string& ut
     SendOrBuffer(json);
 }
 
+void ClangdClient::DidSave(const std::wstring& filePath) {
+    TraceLsp(L"DidSave file=" + filePath);
+
+    std::string uri = FilePathToUri(filePath);
+    std::string json =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didSave\",\"params\":{"
+        "\"textDocument\":{"
+        "\"uri\":\"" + uri + "\""
+        "}}}";
+
+    SendOrBuffer(json);
+}
+
 // ---------------------------------------------------------------------------
 // Send / SendOrBuffer / FlushPending
 // ---------------------------------------------------------------------------
 
 void ClangdClient::Send(const std::string& json) {
-    if (!running_ || !hStdinWr_)
+    // IMPORTANT: avoid calling IsRunning() here.
+    // Send() can be reached while StartLocked() holds lifecycleMutex_
+    // (through SendInitialize), and IsRunning() would try to lock it again.
+    if (!running_.load() || !hStdinWr_)
         return;
 
     std::string msg = "Content-Length: " + std::to_string(json.size()) + "\r\n\r\n" + json;
 
     std::lock_guard<std::mutex> lk(sendMutex_);
     DWORD written = 0;
-    WriteFile(hStdinWr_, msg.data(), static_cast<DWORD>(msg.size()), &written, nullptr);
+    if (!WriteFile(hStdinWr_, msg.data(), static_cast<DWORD>(msg.size()), &written, nullptr))
+    {
+        running_ = false;
+        initialized_ = false;
+    }
 }
 
 void ClangdClient::SendOrBuffer(const std::string& json) {
@@ -813,6 +897,12 @@ void ClangdClient::SendOrBuffer(const std::string& json) {
     } else {
         std::lock_guard<std::mutex> lk(pendingMutex_);
         pendingNotifications_.push_back({ json });
+
+        // Robust mode: also send immediately while buffering.
+        // If clangd is already ready, this avoids diagnostics silence when
+        // initialize response parsing is delayed or brittle.
+        if (running_ && hStdinWr_)
+            Send(json);
     }
 }
 
@@ -895,6 +985,11 @@ void ClangdClient::ReaderLoop() {
             HandleMessage(body);
         }
     }
+
+    // If the reader loop exits unexpectedly, ensure the client state reflects
+    // that clangd is no longer available.
+    running_ = false;
+    initialized_ = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1032,7 +1127,9 @@ void ClangdClient::HandleMessage(const std::string& json) {
     if (!initialized_) {
         std::string result = JsonGetObject(json, "result");
         int id = JsonGetInt(json, "id", -1);
-        if (id == 1 && !result.empty()) {
+        bool looksLikeInitResponse = (json.find("\"id\":1") != std::string::npos &&
+                                      json.find("\"result\"") != std::string::npos);
+        if ((id == 1 && !result.empty()) || looksLikeInitResponse) {
             // Initialize response received
             SendInitialized();
             initialized_ = true;

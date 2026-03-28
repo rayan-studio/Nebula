@@ -550,10 +550,19 @@ ExplorerManager::~ExplorerManager()
 
 void ExplorerManager::Initialize(const std::wstring &rootPath)
 {
-    state_.rootPath = rootPath;
+    // Stop previous watcher before swapping project roots.
+    StopWatching();
+
+    {
+        std::lock_guard<std::mutex> lk(itemsMutex_);
+        state_.rootPath = rootPath;
+    }
+    {
+        std::lock_guard<std::mutex> lk(watcherMutex_);
+        watchPath_ = rootPath;
+    }
+
     LoadDirectoryContents();
-    // store and start watcher
-    watchPath_ = rootPath;
     StartWatching();
 
     Lsp::LspManager::Instance().SetProjectRoot(rootPath);
@@ -580,22 +589,40 @@ static void InvalidateMainWindow()
     }
 }
 
+struct ExplorerWatcherThreadArgs
+{
+    ExplorerManager *mgr = nullptr;
+    HANDLE stopEvent = nullptr;
+    std::wstring watchDir;
+};
+
 DWORD WINAPI ExplorerManager::WatcherThreadStatic(LPVOID param)
 {
-    ExplorerManager *mgr = reinterpret_cast<ExplorerManager *>(param);
-    if (!mgr)
+    ExplorerWatcherThreadArgs *args = reinterpret_cast<ExplorerWatcherThreadArgs *>(param);
+    if (!args)
         return 0;
 
-    std::wstring dir = mgr->watchPath_;
-    if (dir.empty())
+    ExplorerManager *mgr = args->mgr;
+    HANDLE stopEvent = args->stopEvent;
+    std::wstring dir = std::move(args->watchDir);
+    delete args;
+
+    if (!mgr || !stopEvent || dir.empty())
+    {
+        if (stopEvent)
+            CloseHandle(stopEvent);
         return 0;
+    }
 
     HANDLE hDir = CreateFileW(dir.c_str(), FILE_LIST_DIRECTORY,
                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                               NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, NULL);
 
     if (hDir == INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(stopEvent);
         return 0;
+    }
 
     const DWORD bufSize = 16 * 1024;
     std::vector<BYTE> buffer(bufSize);
@@ -606,6 +633,7 @@ DWORD WINAPI ExplorerManager::WatcherThreadStatic(LPVOID param)
     if (!ioEvent)
     {
         CloseHandle(hDir);
+        CloseHandle(stopEvent);
         return 0;
     }
 
@@ -645,12 +673,12 @@ DWORD WINAPI ExplorerManager::WatcherThreadStatic(LPVOID param)
         return true;
     };
 
-    while (WaitForSingleObject(mgr->watcherStopEvent_, 0) == WAIT_TIMEOUT)
+    while (WaitForSingleObject(stopEvent, 0) == WAIT_TIMEOUT)
     {
         if (!issueRead())
             break;
 
-        HANDLE waits[2] = {mgr->watcherStopEvent_, ioEvent};
+        HANDLE waits[2] = {stopEvent, ioEvent};
         DWORD w = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
         if (w == WAIT_OBJECT_0)
         {
@@ -687,7 +715,7 @@ DWORD WINAPI ExplorerManager::WatcherThreadStatic(LPVOID param)
             if (!issueRead())
                 break;
 
-            HANDLE waits2[2] = {mgr->watcherStopEvent_, ioEvent};
+            HANDLE waits2[2] = {stopEvent, ioEvent};
             DWORD waitMs = quietPeriod - elapsed;
             DWORD w2 = WaitForMultipleObjects(2, waits2, FALSE, waitMs);
             if (w2 == WAIT_OBJECT_0)
@@ -696,6 +724,7 @@ DWORD WINAPI ExplorerManager::WatcherThreadStatic(LPVOID param)
                 WaitForSingleObject(ioEvent, INFINITE);
                 CloseHandle(ioEvent);
                 CloseHandle(hDir);
+                CloseHandle(stopEvent);
                 return 0;
             }
             if (w2 == WAIT_OBJECT_0 + 1)
@@ -723,6 +752,7 @@ DWORD WINAPI ExplorerManager::WatcherThreadStatic(LPVOID param)
 
     CloseHandle(ioEvent);
     CloseHandle(hDir);
+    CloseHandle(stopEvent);
     return 0;
 }
 
@@ -876,40 +906,97 @@ void ExplorerManager::StartWatching()
 {
     StopWatching();
 
-    if (watchPath_.empty())
-        return;
-
-    watcherStopEvent_ = CreateEventW(NULL, TRUE, FALSE, NULL);
-    if (!watcherStopEvent_)
-        return;
-
-    watcherThreadHandle_ = CreateThread(NULL, 0, ExplorerManager::WatcherThreadStatic, this, 0, NULL);
-    if (!watcherThreadHandle_)
+    std::wstring watchDir;
+    HANDLE stopEvent = nullptr;
     {
-        CloseHandle(watcherStopEvent_);
-        watcherStopEvent_ = nullptr;
+        std::lock_guard<std::mutex> lk(watcherMutex_);
+        if (watchPath_.empty())
+            return;
+
+        watcherStopEvent_ = CreateEventW(NULL, TRUE, FALSE, NULL);
+        if (!watcherStopEvent_)
+            return;
+
+        stopEvent = watcherStopEvent_;
+        watchDir = watchPath_;
+    }
+
+    HANDLE threadStopEvent = nullptr;
+    if (!DuplicateHandle(GetCurrentProcess(),
+                         stopEvent,
+                         GetCurrentProcess(),
+                         &threadStopEvent,
+                         SYNCHRONIZE,
+                         FALSE,
+                         0))
+    {
+        std::lock_guard<std::mutex> lk(watcherMutex_);
+        if (watcherStopEvent_)
+        {
+            CloseHandle(watcherStopEvent_);
+            watcherStopEvent_ = nullptr;
+        }
+        return;
+    }
+
+    ExplorerWatcherThreadArgs *args = new ExplorerWatcherThreadArgs();
+    args->mgr = this;
+    args->stopEvent = threadStopEvent;
+    args->watchDir = watchDir;
+
+    HANDLE threadHandle = CreateThread(NULL, 0, ExplorerManager::WatcherThreadStatic, args, 0, NULL);
+    if (!threadHandle)
+    {
+        CloseHandle(threadStopEvent);
+        delete args;
+        std::lock_guard<std::mutex> lk(watcherMutex_);
+        if (watcherStopEvent_)
+        {
+            CloseHandle(watcherStopEvent_);
+            watcherStopEvent_ = nullptr;
+        }
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(watcherMutex_);
+        watcherThreadHandle_ = threadHandle;
     }
 }
 
 void ExplorerManager::StopWatching()
 {
-    if (watcherStopEvent_)
+    HANDLE stopEvent = nullptr;
+    HANDLE threadHandle = nullptr;
     {
-        SetEvent(watcherStopEvent_);
+        std::lock_guard<std::mutex> lk(watcherMutex_);
+        stopEvent = watcherStopEvent_;
+        threadHandle = watcherThreadHandle_;
     }
 
-    if (watcherThreadHandle_)
+    if (stopEvent)
+    {
+        SetEvent(stopEvent);
+    }
+
+    if (threadHandle)
     {
         // Don't block UI too long when switching projects.
-        WaitForSingleObject(watcherThreadHandle_, 100);
-        CloseHandle(watcherThreadHandle_);
-        watcherThreadHandle_ = nullptr;
+        WaitForSingleObject(threadHandle, 100);
     }
 
-    if (watcherStopEvent_)
     {
-        CloseHandle(watcherStopEvent_);
-        watcherStopEvent_ = nullptr;
+        std::lock_guard<std::mutex> lk(watcherMutex_);
+        if (watcherThreadHandle_)
+        {
+            CloseHandle(watcherThreadHandle_);
+            watcherThreadHandle_ = nullptr;
+        }
+        if (watcherStopEvent_)
+        {
+            CloseHandle(watcherStopEvent_);
+            watcherStopEvent_ = nullptr;
+        }
     }
 }
 void ExplorerManager::LoadDirectoryContents()
@@ -927,14 +1014,15 @@ void ExplorerManager::LoadDirectoryContents()
 
     // Lock while modifying the items vector to avoid races with watcher thread
     std::lock_guard<std::mutex> lk(itemsMutex_);
+    const std::wstring rootPath = state_.rootPath;
     state_.items.clear();
 
-    if (state_.rootPath.empty())
+    if (rootPath.empty())
         return;
 
     try
     {
-        std::filesystem::path root(state_.rootPath);
+        std::filesystem::path root(rootPath);
         if (!std::filesystem::exists(root))
             return;
 

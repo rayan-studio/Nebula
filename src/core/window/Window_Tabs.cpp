@@ -82,6 +82,14 @@ void Window::CloseEditorForTabIndex(int index)
             {
                 tabBar_.SetTabDirty(i, true);
                 InvalidateRect(hwnd_, nullptr, FALSE);
+
+                Orion::Editor *ed = GetEditorForTab(i);
+                if (!ed)
+                    return;
+                std::wstring fp = ed->GetFilePath();
+                if (fp.empty() || fp.rfind(L"__untitled__", 0) == 0)
+                    return;
+                ScheduleDiagnosticsForTab(i);
             };
         }
     }

@@ -948,20 +948,51 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 return enabled;
             };
 
+            auto normalizePathKey = [](std::wstring p) {
+                for (wchar_t &c : p)
+                {
+                    if (c == L'/')
+                        c = L'\\';
+                    else
+                        c = (wchar_t)towlower(c);
+                }
+                return p;
+            };
+
             Orion::Editor *ed = GetEditorForTab(payload->tabIndex);
             int targetTab = payload->tabIndex;
+            const std::wstring payloadKey = normalizePathKey(payload->filePath);
 
-            if (!(ed && ed->GetFilePath() == payload->filePath))
+            bool samePath = (ed && normalizePathKey(ed->GetFilePath()) == payloadKey);
+            if (!samePath)
             {
                 int byPath = tabBar_.FindTabIndexByFilePath(payload->filePath);
                 if (byPath >= 0)
                 {
                     targetTab = byPath;
                     ed = GetEditorForTab(byPath);
+                    samePath = (ed && normalizePathKey(ed->GetFilePath()) == payloadKey);
+                }
+                else
+                {
+                    int tabCount = tabBar_.GetTabCount();
+                    for (int i = 0; i < tabCount; ++i)
+                    {
+                        const Tab *tab = tabBar_.GetTab(i);
+                        if (!tab)
+                            continue;
+                        if (normalizePathKey(tab->filePath) == payloadKey)
+                        {
+                            targetTab = i;
+                            ed = GetEditorForTab(i);
+                            samePath = (ed && normalizePathKey(ed->GetFilePath()) == payloadKey);
+                            break;
+                        }
+                    }
                 }
             }
 
-            if (ed && ed->GetFilePath() == payload->filePath)
+            if (ed && samePath)
             {
                 ed->SetDiagnostics(payload->diagnostics);
                 InvalidateRect(hwnd_, nullptr, FALSE);
@@ -1655,6 +1686,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 {
                     tabBar_.SetTabDirty(tabIndex, true);
                     InvalidateRect(hwnd_, nullptr, FALSE);
+
+                    Orion::Editor *ed = GetEditorForTab(tabIndex);
+                    if (!ed)
+                        return;
+                    std::wstring fp = ed->GetFilePath();
+                    if (fp.empty() || fp.rfind(L"__untitled__", 0) == 0)
+                        return;
+                    ScheduleDiagnosticsForTab(tabIndex);
                 };
 
                 if (HasTamponText())
@@ -2572,6 +2611,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                         {
                             tabBar_.SetTabDirty(tabIndex, true);
                             InvalidateRect(hwnd_, nullptr, FALSE);
+
+                            Orion::Editor *ed = GetEditorForTab(tabIndex);
+                            if (!ed)
+                                return;
+                            std::wstring fp = ed->GetFilePath();
+                            if (fp.empty() || fp.rfind(L"__untitled__", 0) == 0)
+                                return;
+                            ScheduleDiagnosticsForTab(tabIndex);
                         };
 
                         if (HasTamponText())

@@ -1,6 +1,7 @@
 #include "Footer.h"
 #include "helpers/window_helpers.h"
 #include "core/explorer/Explorer.h"
+#include "lsp/LspManager.h"
 #include "ui/theme/Theme.h"
 #include <git2.h>
 #include <dwrite.h>
@@ -171,6 +172,15 @@ static std::wstring DetectLanguageFromPath(const std::wstring &path)
     return ext;
 }
 
+static std::wstring TruncateFooterStatusText(const std::wstring &text, size_t maxChars)
+{
+    if (text.size() <= maxChars)
+        return text;
+    if (maxChars <= 3)
+        return text.substr(0, maxChars);
+    return text.substr(0, maxChars - 3) + L"...";
+}
+
 void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, const std::wstring &filePath, int line, int column, const std::wstring &encoding)
 {
     if (!ctx) return;
@@ -227,6 +237,24 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
     std::wstring lang = filePath.empty() ? L"" : DetectLanguageFromPath(filePath);
     std::wstring branchText = GetFooterBranchText(filePath);
     std::wstring encodingText = encoding;
+    Lsp::ClangdUiStatus clangdStatus = Lsp::LspManager::Instance().GetClangdUiStatus();
+    std::wstring clangdLabel;
+    switch (clangdStatus.state)
+    {
+    case Lsp::ClangdRuntimeState::Running:
+        clangdLabel = L"Running";
+        break;
+    case Lsp::ClangdRuntimeState::Restarting:
+        clangdLabel = L"Restarting";
+        break;
+    default:
+        clangdLabel = L"Failed";
+        break;
+    }
+    std::wstring clangdText = L"clangd " + clangdLabel;
+    if (!clangdStatus.reason.empty() && clangdStatus.state != Lsp::ClangdRuntimeState::Running)
+        clangdText += L": " + TruncateFooterStatusText(clangdStatus.reason, 46);
+
     wchar_t positionBuf[128];
     swprintf_s(positionBuf, 128, L"Ln %d, Col %d", (line + 1), (column + 1));
     std::wstring positionText = positionBuf;
@@ -271,6 +299,11 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
     float langWidth = 48.0f;
     float encodingWidth = 54.0f;
     float branchWidth = 0.0f;
+    float clangdTextWidth = 0.0f;
+    float clangdWidth = 0.0f;
+    const float clangdDotRadius = 3.5f;
+    const float clangdDotGap = 6.0f;
+    const float clangdDotBlock = (clangdDotRadius * 2.0f) + clangdDotGap;
     if (statusFmt && dwrite)
     {
         positionWidth = (std::max)(72.0f, MeasureTextWidth(dwrite, statusFmt, positionText));
@@ -284,6 +317,12 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
             encodingWidth = 0.0f;
         if (!branchText.empty())
             branchWidth = (std::min)(180.0f, (std::max)(36.0f, MeasureTextWidth(dwrite, statusFmt, branchText)));
+        if (!clangdText.empty())
+        {
+            clangdTextWidth = (std::max)(56.0f, MeasureTextWidth(dwrite, statusFmt, clangdText));
+            clangdTextWidth = (std::min)(320.0f, clangdTextWidth);
+            clangdWidth = clangdDotBlock + clangdTextWidth;
+        }
     }
 
     if (!filePath.empty() && pathFmt && textBrush)
@@ -296,6 +335,8 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
             rightReserved += statusGap + encodingWidth;
         if (branchWidth > 0.0f)
             rightReserved += branchGap + branchWidth;
+        if (clangdWidth > 0.0f)
+            rightReserved += statusGap + clangdWidth;
         float pathRight = right - rightReserved;
         D2D1_RECT_F pathRectF = D2D1::RectF(pathLeft, top, pathRight, bottom);
 
@@ -522,6 +563,34 @@ void DrawFooterD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, co
                            mutedBrush ? mutedBrush : textBrush,
                            D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
             cursorRight = encodingRect.left - statusGap;
+        }
+
+        if (clangdWidth > 0.0f)
+        {
+            D2D1_RECT_F clangdRect = D2D1::RectF(cursorRight - clangdWidth, top, cursorRight, bottom);
+
+            D2D1_COLOR_F stateColor = D2D1::ColorF(0.65f, 0.29f, 0.29f, 1.0f);
+            if (clangdStatus.state == Lsp::ClangdRuntimeState::Running)
+                stateColor = D2D1::ColorF(0.20f, 0.72f, 0.40f, 1.0f);
+            else if (clangdStatus.state == Lsp::ClangdRuntimeState::Restarting)
+                stateColor = D2D1::ColorF(0.93f, 0.68f, 0.23f, 1.0f);
+
+            ID2D1SolidColorBrush *clangdDotBrush = nullptr;
+            ctx->CreateSolidColorBrush(stateColor, &clangdDotBrush);
+            if (clangdDotBrush)
+            {
+                float dotCx = clangdRect.left + clangdDotRadius;
+                float dotCy = top + ((bottom - top) * 0.5f);
+                D2D1_ELLIPSE dot = D2D1::Ellipse(D2D1::Point2F(dotCx, dotCy), clangdDotRadius, clangdDotRadius);
+                ctx->FillEllipse(dot, clangdDotBrush);
+                clangdDotBrush->Release();
+            }
+
+            D2D1_RECT_F clangdTextRect = D2D1::RectF(clangdRect.left + clangdDotBlock, top, clangdRect.right, bottom);
+            ctx->DrawTextW(clangdText.c_str(), (UINT32)clangdText.size(), statusFmt, clangdTextRect,
+                           mutedBrush ? mutedBrush : textBrush,
+                           D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            cursorRight = clangdRect.left - statusGap;
         }
 
         if (langWidth > 0.0f)

@@ -565,6 +565,35 @@ namespace Lsp
         return inst;
     }
 
+    ClangdUiStatus LspManager::GetClangdUiStatus() const
+    {
+        ClangdUiStatus status;
+        {
+            std::lock_guard<std::mutex> lk(mutex_);
+            status.state = clangdState_;
+            status.reason = clangdReason_;
+            if (status.state == ClangdRuntimeState::Restarting)
+            {
+                DWORD now = GetTickCount();
+                if (now >= clangdRestartingUntilTick_)
+                {
+                    if (ClangdClient::Instance().IsRunning())
+                    {
+                        status.state = ClangdRuntimeState::Running;
+                        status.reason.clear();
+                    }
+                    else
+                    {
+                        status.state = ClangdRuntimeState::Failed;
+                        if (status.reason.empty())
+                            status.reason = L"restart timeout";
+                    }
+                }
+            }
+        }
+        return status;
+    }
+
     void LspManager::SetProjectRoot(const std::wstring &rootPath)
     {
         {
@@ -575,17 +604,40 @@ namespace Lsp
 
         // Start the real clangd LSP client for this project.
         // If clangd is already running (project switch), restart it for the new root.
+        bool started = false;
         if (ClangdClient::Instance().IsRunning())
-            ClangdClient::Instance().RestartForProject(rootPath);
+            started = ClangdClient::Instance().RestartForProject(rootPath);
         else
-            ClangdClient::Instance().Start(rootPath);
+            started = ClangdClient::Instance().Start(rootPath);
+
+        {
+            std::lock_guard<std::mutex> lk(mutex_);
+            if (started && ClangdClient::Instance().IsRunning())
+            {
+                clangdState_ = ClangdRuntimeState::Running;
+                clangdReason_.clear();
+                clangdRestartingUntilTick_ = 0;
+            }
+            else
+            {
+                clangdState_ = ClangdRuntimeState::Failed;
+                clangdReason_ = L"clangd introuvable ou lancement echoue";
+                clangdRestartingUntilTick_ = 0;
+            }
+        }
 
         // If there's no compile_commands.json yet, regenerate it in the background
         // and restart clangd once it's ready — fixes "iostream not found" on first launch.
         ClangdClient::Instance().EnsureCompileCommandsAsync(rootPath);
 
         ClangdClient::Instance().SetDiagnosticsCallback(
-            [](const std::wstring& filePath, int tabIndex, HWND hwnd, const std::vector<Diagnostic>& diags) {
+            [this](const std::wstring& filePath, int tabIndex, HWND hwnd, const std::vector<Diagnostic>& diags) {
+                {
+                    std::lock_guard<std::mutex> lk(mutex_);
+                    diagnostics_[filePath] = diags;
+                    clangdLastDiagTickByFile_[filePath] = GetTickCount();
+                }
+
                 auto* payload = new LspDiagnosticsResult();
                 payload->tabIndex   = tabIndex;
                 payload->filePath   = filePath;
@@ -596,11 +648,15 @@ namespace Lsp
 
     void LspManager::StartProjectIndexAsync()
     {
-        if (indexing_)
-        return;
-        indexing_ = true;
+        bool expected = false;
+        if (!indexing_.compare_exchange_strong(expected, true))
+            return;
 
-        std::wstring root = projectRoot_;
+        std::wstring root;
+        {
+            std::lock_guard<std::mutex> lk(mutex_);
+            root = projectRoot_;
+        }
         if (root.empty())
         {
             indexing_ = false;
@@ -1337,6 +1393,20 @@ namespace Lsp
                         startsWithWord(L"else") ||
                         startsWithWord(L"do");
 
+                        auto isIdentifierOnly = [](const std::wstring &s)
+                        {
+                            if (s.empty())
+                                return false;
+                            if (!(iswalpha(s[0]) || s[0] == L'_'))
+                                return false;
+                            for (wchar_t c : s)
+                            {
+                                if (!((iswalnum(c) != 0) || c == L'_'))
+                                    return false;
+                            }
+                            return true;
+                        };
+
                         if (!endsOk && !isControl)
                         {
                             bool looksLikeStmt = (t.find(L"=") != std::wstring::npos) ||
@@ -1358,6 +1428,20 @@ namespace Lsp
                                     d.suggestion = L"Add ';' at end of line";
                                     out.push_back(d);
                                 }
+                            }
+
+                            // Bare token inside code (e.g. random identifier line)
+                            // should still produce a visible local error when clangd is down.
+                            if (isIdentifierOnly(t))
+                            {
+                                Diagnostic d;
+                                d.line = line;
+                                d.startCol = (int)startCol;
+                                d.endCol = (int)(startCol + t.size());
+                                d.severity = DiagnosticSeverity::Error;
+                                d.message = L"Unknown identifier: " + t;
+                                d.suggestion = L"Did you mean to declare/call something, or remove this token?";
+                                out.push_back(d);
                             }
                         }
                     }
@@ -1700,6 +1784,88 @@ namespace Lsp
         // Register context so clangd callback can post WM_LSP_DIAGNOSTICS
         ClangdClient::Instance().SetContext(pathCopy, hwnd, tabIndex);
 
+        // Pro mode: diagnostics are clangd-only.
+        // If clangd is down, try to restart it once (throttled) and report explicit status.
+        if (!ClangdClient::Instance().IsRunning())
+        {
+            static std::mutex s_restartMutex;
+            static DWORD s_lastRestartAttempt = 0;
+
+            std::wstring rootCopy;
+            {
+                std::lock_guard<std::mutex> lk(mutex_);
+                rootCopy = projectRoot_;
+            }
+
+            DWORD nowRestart = GetTickCount();
+            bool canAttemptRestart = false;
+            {
+                std::lock_guard<std::mutex> lk(s_restartMutex);
+                if (nowRestart - s_lastRestartAttempt > 1500)
+                {
+                    s_lastRestartAttempt = nowRestart;
+                    canAttemptRestart = true;
+                }
+            }
+
+            {
+                std::lock_guard<std::mutex> lk(mutex_);
+                clangdState_ = ClangdRuntimeState::Restarting;
+                clangdReason_ = canAttemptRestart ? L"redemarrage en cours" : L"attente avant nouvelle tentative";
+                clangdRestartingUntilTick_ = nowRestart + 2200;
+            }
+
+            if (canAttemptRestart && !rootCopy.empty())
+            {
+                bool restarted = ClangdClient::Instance().Start(rootCopy);
+                ClangdClient::Instance().EnsureCompileCommandsAsync(rootCopy);
+                if (restarted && ClangdClient::Instance().IsRunning())
+                {
+                    std::lock_guard<std::mutex> lk(mutex_);
+                    clangdState_ = ClangdRuntimeState::Running;
+                    clangdReason_.clear();
+                    clangdRestartingUntilTick_ = 0;
+                }
+            }
+
+            if (!ClangdClient::Instance().IsRunning())
+            {
+                TraceLsp(L"ClangdUnavailable file=" + pathCopy + L" -> fallback local diagnostics");
+
+                {
+                    std::lock_guard<std::mutex> lk(mutex_);
+                    clangdState_ = ClangdRuntimeState::Failed;
+                    clangdReason_ = L"clangd indisponible (verifier binaire et compile_commands.json)";
+                    clangdRestartingUntilTick_ = 0;
+                }
+
+                // Keep Orion diagnostics usable even when clangd is temporarily unavailable.
+                std::vector<Diagnostic> diags = AnalyzeDiagnostics(pathCopy, linesCopy);
+                Logger::Instance().Log(
+                    L"[LSP-DIAG] clangd unavailable fallback file=" + pathCopy +
+                    L" count=" + std::to_wstring((unsigned long long)diags.size()));
+
+                {
+                    std::lock_guard<std::mutex> lk(mutex_);
+                    diagnostics_[pathCopy] = diags;
+                }
+
+                auto *payload = new LspDiagnosticsResult();
+                payload->tabIndex = tabIndex;
+                payload->filePath = pathCopy;
+                payload->diagnostics = std::move(diags);
+                PostMessageW(hwnd, WM_LSP_DIAGNOSTICS, 0, (LPARAM)payload);
+                return;
+            }
+        }
+        else
+        {
+            std::lock_guard<std::mutex> lk(mutex_);
+            clangdState_ = ClangdRuntimeState::Running;
+            clangdReason_.clear();
+            clangdRestartingUntilTick_ = 0;
+        }
+
         // Always send (or buffer) file content to clangd.
         // This avoids first-open stale diagnostics when clangd starts slightly later.
         std::string content;
@@ -1715,6 +1881,8 @@ namespace Lsp
             std::lock_guard<std::mutex> lk(s_versionsMutex);
             ver = ++s_versions[pathCopy];
         }
+        const DWORD requestTick = GetTickCount();
+
         if (ver == 1) {
             ClangdClient::Instance().DidOpen(pathCopy, content, 1);
         } else {
@@ -1734,25 +1902,44 @@ namespace Lsp
             }).detach();
         }
 
-        // Quand clangd tourne, il fournit des diagnostics complets et précis.
-        // L'analyse locale ne doit pas écraser les résultats de clangd.
-        if (!ClangdClient::Instance().IsRunning()) {
-            std::thread([this,  hwnd,  tabIndex,  pathCopy,  linesCopy]()
-            {
-                auto diags = AnalyzeDiagnostics(pathCopy,  linesCopy);
-                {
-                    std::lock_guard<std::mutex> lk(mutex_);
-                    diagnostics_[pathCopy] = diags;
-                }
+        // Fallback local: if clangd stays silent for this edit, surface at
+        // least local syntax diagnostics so Orion still reports obvious errors.
+        std::thread([this, hwnd, tabIndex, pathCopy, linesCopy, requestTick, ver]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-                auto *payload = new LspDiagnosticsResult();
-                payload->tabIndex = tabIndex;
-                payload->filePath = pathCopy;
-                payload->diagnostics = std::move(diags);
-                PostMessageW(hwnd,  WM_LSP_DIAGNOSTICS,  0,  (LPARAM)payload);
-            })
-            .detach();
-        }
+            {
+                std::lock_guard<std::mutex> lk(mutex_);
+                auto tickIt = clangdLastDiagTickByFile_.find(pathCopy);
+                if (tickIt != clangdLastDiagTickByFile_.end() && tickIt->second >= requestTick)
+                    return;
+
+                auto verIt = clangdPendingVer_.find(pathCopy);
+                if (verIt != clangdPendingVer_.end() && verIt->second > ver)
+                    return;
+            }
+
+            auto localDiags = AnalyzeDiagnostics(pathCopy, linesCopy);
+            if (localDiags.empty())
+                return;
+
+            Logger::Instance().Log(
+                L"[LSP-DIAG] clangd silent fallback file=" + pathCopy +
+                L" count=" + std::to_wstring((unsigned long long)localDiags.size()));
+
+            {
+                std::lock_guard<std::mutex> lk(mutex_);
+                auto tickIt = clangdLastDiagTickByFile_.find(pathCopy);
+                if (tickIt != clangdLastDiagTickByFile_.end() && tickIt->second >= requestTick)
+                    return;
+                diagnostics_[pathCopy] = localDiags;
+            }
+
+            auto *payload = new LspDiagnosticsResult();
+            payload->tabIndex = tabIndex;
+            payload->filePath = pathCopy;
+            payload->diagnostics = std::move(localDiags);
+            PostMessageW(hwnd, WM_LSP_DIAGNOSTICS, 0, (LPARAM)payload);
+        }).detach();
     }
 
     std::optional<Location> LspManager::ResolveIncludeAtCursor(const std::wstring &filePath,

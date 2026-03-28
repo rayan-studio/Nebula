@@ -15,5 +15,6 @@ namespace Orion::Completion
     private:
         std::vector<CompletionItem> GetIncludeSuggestions(const std::wstring& prefix) const;
         std::vector<CompletionItem> GetUsingSuggestions(const std::wstring& prefix) const;
+        std::vector<CompletionItem> GetGlfwSuggestions(const std::wstring& prefix) const;
     };
 }

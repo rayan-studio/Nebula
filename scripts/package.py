@@ -117,7 +117,8 @@ class PackageBuilder:
         if clangd_dir.exists():
             deps.append(clangd_dir)
             self.log(f"  Ajouté: clangd/ (LSP embedded)")
-                search_dirs = [
+
+        search_dirs = [
             exe_path.parent,
             self.build_dir / self.args.config,
             self.build_dir / "bin" / self.args.config,

@@ -181,6 +181,7 @@ private:
     HANDLE watcherThreadHandle_ = nullptr;
     HANDLE watcherStopEvent_ = nullptr;
     std::wstring watchPath_;
+    std::mutex watcherMutex_;
     // Protect access to state_.items and watcher operations
     std::mutex itemsMutex_;
 

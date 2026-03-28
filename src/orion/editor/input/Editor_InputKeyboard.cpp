@@ -822,37 +822,84 @@ namespace Orion
             }
         }
 
-        // Keep include completion open while typing inside #include <...> or #include "..."
-        // Only refresh if the popup is already visible (manual trigger via Ctrl+Space).
+        // C++ completion refresh:
+        // - Keep include completion responsive in #include contexts.
+        // - Keep regular C++ popup alive while typing (do not force-hide outside include).
+        // - Auto-trigger after common member/scope operators.
         if (completionService_ && completionPopup_ && IsCppLikeExt(ext))
         {
             bool includeCtx = IsIncludeContext(state_.lines, state_.caret.line, state_.caret.column);
-            if (includeCtx)
-            {
-                if (completionPopup_->IsVisible())
-                {
-                    Completion::CompletionContext ctx{state_.filePath, state_.lines, state_.caret.line, state_.caret.column, ext};
-                    auto items = completionService_->GetCompletions(ctx);
-                    if (!items.empty())
-                    {
-                        std::vector<CompletionPopup::PopupItem> labels;
-                        labels.reserve(items.size());
-                        for (const auto &it : items)
-                            labels.push_back({ it.label, it.description });
 
-                        completionPopup_->SetItems(labels);
-                        D2D1_POINT_2F p = TextToScreenPosition(state_.caret);
-                        completionPopup_->UpdateLayout(p.x, p.y + metrics_.lineHeight, 520.0f, metrics_.lineHeight);
+            bool shouldAutoTrigger = false;
+            if (ch == L'.')
+                shouldAutoTrigger = true;
+            else if (ch == L':' && state_.caret.line >= 0 && state_.caret.line < (int)state_.lines.size())
+            {
+                const std::wstring &line = state_.lines[state_.caret.line];
+                int c = state_.caret.column;
+                if (c >= 2 && c - 1 < (int)line.size() && line[c - 1] == L':' && line[c - 2] == L':')
+                    shouldAutoTrigger = true;
+            }
+            else if (ch == L'>' && state_.caret.line >= 0 && state_.caret.line < (int)state_.lines.size())
+            {
+                const std::wstring &line = state_.lines[state_.caret.line];
+                int c = state_.caret.column;
+                if (c >= 2 && c - 1 < (int)line.size() && line[c - 1] == L'>' && line[c - 2] == L'-')
+                    shouldAutoTrigger = true;
+            }
+
+            if (!shouldAutoTrigger && (iswalnum(ch) || ch == L'_') &&
+                state_.caret.line >= 0 && state_.caret.line < (int)state_.lines.size())
+            {
+                const std::wstring &line = state_.lines[state_.caret.line];
+                int c = state_.caret.column - 1;
+                std::wstring token;
+                while (c >= 0 && (iswalnum(line[c]) || line[c] == L'_'))
+                {
+                    token = line[c] + token;
+                    --c;
+                }
+                if (token == L"for")
+                    shouldAutoTrigger = true;
+            }
+
+            bool shouldRefreshVisible = completionPopup_->IsVisible();
+            if (includeCtx || shouldAutoTrigger || shouldRefreshVisible)
+            {
+                Completion::CompletionContext ctx{state_.filePath, state_.lines, state_.caret.line, state_.caret.column, ext};
+                auto items = completionService_->GetCompletions(ctx);
+
+                if (!items.empty())
+                {
+                    std::vector<CompletionPopup::PopupItem> labels;
+                    labels.reserve(items.size());
+                    for (const auto &it : items)
+                        labels.push_back({ it.label, it.description });
+
+                    if (items[0].isSnippet)
+                    {
+                        pendingCompletionLabel_ = items[0].label;
+                        pendingCompletionTemplate_ = items[0].insertText;
                     }
                     else
                     {
-                        completionPopup_->Hide();
+                        pendingCompletionLabel_.clear();
+                        pendingCompletionTemplate_.clear();
                     }
+
+                    completionPopup_->SetItems(labels);
+                    D2D1_POINT_2F p = TextToScreenPosition(state_.caret);
+                    completionPopup_->UpdateLayout(p.x, p.y + metrics_.lineHeight, 520.0f, metrics_.lineHeight);
+
+                    if (shouldAutoTrigger && !completionPopup_->IsVisible())
+                        completionPopup_->Show();
                 }
-            }
-            else if (completionPopup_->IsVisible())
-            {
-                completionPopup_->Hide();
+                else if (completionPopup_->IsVisible())
+                {
+                    // Keep include behavior strict (hide when nothing matches),
+                    // and also close an existing popup when typing invalidates results.
+                    completionPopup_->Hide();
+                }
             }
         }
 
@@ -1031,6 +1078,29 @@ namespace Orion
                             {
                                 line.erase(state_.caret.column - 1, 1);
                                 state_.caret.column--;
+                            }
+
+                            // For keyword snippets (ex: for), replace the typed trigger token.
+                            auto isWord = [](wchar_t ch) {
+                                return iswalnum(ch) || ch == L'_';
+                            };
+
+                            if (!pendingCompletionLabel_.empty())
+                            {
+                                int end = state_.caret.column;
+                                int startWord = end;
+                                while (startWord > 0 && isWord(line[startWord - 1]))
+                                    --startWord;
+
+                                if (end > startWord)
+                                {
+                                    std::wstring typed = line.substr((size_t)startWord, (size_t)(end - startWord));
+                                    if (typed == pendingCompletionLabel_)
+                                    {
+                                        line.erase((size_t)startWord, (size_t)(end - startWord));
+                                        state_.caret.column = startWord;
+                                    }
+                                }
                             }
                         }
                     }
@@ -1379,47 +1449,23 @@ namespace Orion
             break;
 
         case 'X':
-            if (ctrl && state_.hasSelection)
+            if (ctrl)
             {
-                auto getSelectionText = [this]() -> std::wstring
+                auto writeClipboard = [](const std::wstring &text)
                 {
-                    CaretPosition start = state_.selectionStart;
-                    CaretPosition end = state_.caret;
-                    if (start.line > end.line || (start.line == end.line && start.column > end.column))
-                        std::swap(start, end);
-
-                    std::wstring out;
-                    if (start.line == end.line)
-                    {
-                        out = state_.lines[start.line].substr(start.column, end.column - start.column);
-                        return out;
-                    }
-
-                    out += state_.lines[start.line].substr(start.column);
-                    out += L"\r\n";
-                    for (int L = start.line + 1; L < end.line; ++L)
-                    {
-                        out += state_.lines[L];
-                        out += L"\r\n";
-                    }
-                    out += state_.lines[end.line].substr(0, end.column);
-                    return out;
-                };
-
-                std::wstring sel = getSelectionText();
-                if (!sel.empty())
-                {
+                    if (text.empty())
+                        return;
                     if (OpenClipboard(NULL))
                     {
                         EmptyClipboard();
-                        SIZE_T bytes = (sel.size() + 1) * sizeof(wchar_t);
+                        SIZE_T bytes = (text.size() + 1) * sizeof(wchar_t);
                         HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
                         if (hMem)
                         {
                             void *ptr = GlobalLock(hMem);
                             if (ptr)
                             {
-                                memcpy(ptr, sel.c_str(), bytes);
+                                memcpy(ptr, text.c_str(), bytes);
                                 GlobalUnlock(hMem);
                                 SetClipboardData(CF_UNICODETEXT, hMem);
                             }
@@ -1430,10 +1476,74 @@ namespace Orion
                         }
                         CloseClipboard();
                     }
-                }
+                };
 
-                DeleteSelection();
-                contentChanged = true;
+                if (state_.hasSelection)
+                {
+                    auto getSelectionText = [this]() -> std::wstring
+                    {
+                        CaretPosition start = state_.selectionStart;
+                        CaretPosition end = state_.caret;
+                        if (start.line > end.line || (start.line == end.line && start.column > end.column))
+                            std::swap(start, end);
+
+                        std::wstring out;
+                        if (start.line == end.line)
+                        {
+                            out = state_.lines[start.line].substr(start.column, end.column - start.column);
+                            return out;
+                        }
+
+                        out += state_.lines[start.line].substr(start.column);
+                        out += L"\r\n";
+                        for (int L = start.line + 1; L < end.line; ++L)
+                        {
+                            out += state_.lines[L];
+                            out += L"\r\n";
+                        }
+                        out += state_.lines[end.line].substr(0, end.column);
+                        return out;
+                    };
+
+                    writeClipboard(getSelectionText());
+                    DeleteSelection();
+                    contentChanged = true;
+                }
+                else if (!state_.lines.empty() && state_.caret.line >= 0 && state_.caret.line < (int)state_.lines.size())
+                {
+                    if (undoStack_.empty() || undoStack_.back().lines != state_.lines ||
+                        undoStack_.back().caret.line != state_.caret.line ||
+                        undoStack_.back().caret.column != state_.caret.column)
+                    {
+                        undoStack_.push_back(state_);
+                        if (undoStack_.size() > maxUndoEntries_)
+                            undoStack_.erase(undoStack_.begin());
+                    }
+
+                    int lineIdx = state_.caret.line;
+                    std::wstring cutText = state_.lines[lineIdx];
+                    if (state_.lines.size() > 1)
+                        cutText += L"\r\n";
+                    writeClipboard(cutText);
+
+                    state_.lines.erase(state_.lines.begin() + lineIdx);
+                    if (state_.lines.empty())
+                    {
+                        state_.lines.push_back(L"");
+                        state_.caret.line = 0;
+                        state_.caret.column = 0;
+                    }
+                    else
+                    {
+                        if (lineIdx >= (int)state_.lines.size())
+                            lineIdx = (int)state_.lines.size() - 1;
+                        state_.caret.line = lineIdx;
+                        state_.caret.column = (std::min)(state_.caret.column, (int)state_.lines[(size_t)lineIdx].size());
+                    }
+
+                    state_.hasSelection = false;
+                    contentChanged = true;
+                }
             }
             break;
 
@@ -1541,8 +1651,8 @@ namespace Orion
             }
         }
 
-        // Keep include completion open while typing inside #include <...> or #include "..."
-        // Only refresh if the popup is already visible (manual trigger via Ctrl+Space).
+        // Keep include completion fresh while popup is visible.
+        // Do not force-hide non-include C++ completion popups here.
         if (completionService_ && completionPopup_ && IsCppLikeExt(ext))
         {
             bool includeCtx = IsIncludeContext(state_.lines, state_.caret.line, state_.caret.column);
@@ -1568,10 +1678,6 @@ namespace Orion
                         completionPopup_->Hide();
                     }
                 }
-            }
-            else if (completionPopup_->IsVisible())
-            {
-                completionPopup_->Hide();
             }
         }
 

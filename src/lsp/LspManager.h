@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <optional>
 #include <mutex>
+#include <atomic>
 #include <windows.h>
 
 namespace Lsp
@@ -39,6 +40,19 @@ namespace Lsp
         int column = 0;
     };
 
+    enum class ClangdRuntimeState
+    {
+        Running,
+        Restarting,
+        Failed
+    };
+
+    struct ClangdUiStatus
+    {
+        ClangdRuntimeState state = ClangdRuntimeState::Failed;
+        std::wstring reason;
+    };
+
     class LspManager
     {
     public:
@@ -62,6 +76,7 @@ namespace Lsp
                                                     const std::wstring &lineText,
                                                     int column) const;
         std::wstring GetProjectRoot() const;
+        ClangdUiStatus GetClangdUiStatus() const;
 
     private:
         LspManager() = default;
@@ -84,7 +99,11 @@ namespace Lsp
         std::unordered_map<std::wstring, Location> symbolIndexDef_;
         std::unordered_map<std::wstring, Location> symbolIndexDecl_;
         std::unordered_map<std::wstring, DWORD> lastDiagTick_;
+        std::unordered_map<std::wstring, DWORD> clangdLastDiagTickByFile_;
         std::unordered_map<std::wstring, int>   clangdPendingVer_;
-        bool indexing_ = false;
+        ClangdRuntimeState clangdState_ = ClangdRuntimeState::Failed;
+        std::wstring clangdReason_ = L"clangd non initialise";
+        DWORD clangdRestartingUntilTick_ = 0;
+        std::atomic<bool> indexing_{false};
     };
 }

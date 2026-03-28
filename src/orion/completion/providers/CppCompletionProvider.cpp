@@ -395,6 +395,47 @@ namespace Orion::Completion
                 }
             }
         }
+
+        // Basic keyword snippets
+        {
+            std::wstring token;
+            int pos = ctx.column - 1;
+            while (pos >= 0 && (iswalnum(line[pos]) || line[pos] == L'_'))
+            {
+                token = line[pos] + token;
+                --pos;
+            }
+
+            if (token == L"for")
+            {
+                return {
+                    {
+                        L"for",
+                        L"for (int i = 0; i < n; ++i)\n{\n    \n}",
+                        L"snippet",
+                        true
+                    }
+                };
+            }
+        }
+
+        // Namespace fallback for glfw:: (useful even when full LSP completion is unavailable).
+        {
+            std::wstring token;
+            int pos = ctx.column - 1;
+            while (pos >= 0 && (iswalnum(line[pos]) || line[pos] == L'_' || line[pos] == L':'))
+            {
+                token = line[pos] + token;
+                --pos;
+            }
+            if (token.rfind(L"glfw::", 0) == 0)
+            {
+                std::wstring glfwPrefix = token.substr(6);
+                auto glfwItems = GetGlfwSuggestions(glfwPrefix);
+                if (!glfwItems.empty())
+                    return glfwItems;
+            }
+        }
         
         // Otherwise, get std:: completions from LSP
         auto& lspMgr = Lsp::LspManager::Instance();
@@ -529,6 +570,42 @@ namespace Orion::Completion
         // TODO: Parse file for custom namespaces
         // For now, just return common ones
         
+        return out;
+    }
+
+    std::vector<CompletionItem> CppCompletionProvider::GetGlfwSuggestions(const std::wstring& prefix) const
+    {
+        std::vector<CompletionItem> out;
+
+        auto toLower = [](std::wstring s) {
+            for (auto& c : s) c = towlower(c);
+            return s;
+        };
+
+        std::wstring lowerPrefix = toLower(prefix);
+
+        static const std::vector<std::pair<std::wstring, std::wstring>> glfwSymbols = {
+            { L"init", L"glfw" },
+            { L"terminate", L"glfw" },
+            { L"pollEvents", L"glfw" },
+            { L"waitEvents", L"glfw" },
+            { L"postEmptyEvent", L"glfw" },
+            { L"Window", L"glfwpp" },
+            { L"Monitor", L"glfwpp" },
+            { L"Cursor", L"glfwpp" },
+            { L"Image", L"glfwpp" },
+            { L"VideoMode", L"glfwpp" },
+            { L"GammaRamp", L"glfwpp" },
+            { L"Error", L"glfwpp" }
+        };
+
+        for (const auto& [name, origin] : glfwSymbols)
+        {
+            std::wstring low = toLower(name);
+            if (lowerPrefix.empty() || low.find(lowerPrefix) == 0)
+                out.push_back({ name, name, origin, false });
+        }
+
         return out;
     }
 }

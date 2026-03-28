@@ -196,7 +196,32 @@ static bool TryParseOutputLocation(const std::wstring &line, std::wstring &resol
         return true;
     }
 
-    // Format: path:line:col
+    // Format: path(line)
+    for (size_t i = 0; i < line.size(); ++i)
+    {
+        if (line[i] != L'(')
+            continue;
+        size_t a = i + 1;
+        if (a >= line.size() || !std::iswdigit(line[a]))
+            continue;
+        size_t b = a;
+        while (b < line.size() && std::iswdigit(line[b]))
+            ++b;
+        if (b >= line.size() || line[b] != L')')
+            continue;
+
+        int ln = 0;
+        if (!ParseIntSpan(line, a, b, ln))
+            continue;
+        if (!ResolvePathFromPrefix(line.substr(0, i), resolvedPath))
+            continue;
+
+        lineOut = (std::max)(0, ln - 1);
+        colOut = 0;
+        return true;
+    }
+
+    // Format: path:line:col or path:line
     for (size_t i = 0; i < line.size(); ++i)
     {
         if (line[i] != L':')
@@ -208,23 +233,32 @@ static bool TryParseOutputLocation(const std::wstring &line, std::wstring &resol
         size_t b = a;
         while (b < line.size() && std::iswdigit(line[b]))
             ++b;
-        if (b >= line.size() || line[b] != L':')
-            continue;
-        size_t c = b + 1;
-        if (c >= line.size() || !std::iswdigit(line[c]))
-            continue;
-        size_t d = c;
-        while (d < line.size() && std::iswdigit(line[d]))
-            ++d;
 
-        int ln = 0, col = 0;
-        if (!ParseIntSpan(line, a, b, ln) || !ParseIntSpan(line, c, d, col))
+        int ln = 0;
+        if (!ParseIntSpan(line, a, b, ln))
             continue;
+
+        int col = 0;
+        bool hasCol = false;
+        if (b < line.size() && line[b] == L':')
+        {
+            size_t c = b + 1;
+            if (c < line.size() && std::iswdigit(line[c]))
+            {
+                size_t d = c;
+                while (d < line.size() && std::iswdigit(line[d]))
+                    ++d;
+                if (!ParseIntSpan(line, c, d, col))
+                    continue;
+                hasCol = true;
+            }
+        }
+
         if (!ResolvePathFromPrefix(line.substr(0, i), resolvedPath))
             continue;
 
         lineOut = (std::max)(0, ln - 1);
-        colOut = (std::max)(0, col - 1);
+        colOut = hasCol ? (std::max)(0, col - 1) : 0;
         return true;
     }
 
