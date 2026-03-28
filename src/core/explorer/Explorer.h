@@ -110,6 +110,10 @@ public:
                                   const std::wstring &gitUrl,
                                   const std::wstring &displayName,
                                   std::wstring *outError = nullptr);
+    bool UninstallLibraryFromGitUrl(HWND hwnd,
+                                    const std::wstring &gitUrl,
+                                    const std::wstring &displayName,
+                                    std::wstring *outError = nullptr);
 
     void HandleContextCommand(int commandId);
     void HandleContextSubmenuCommand(int commandId);

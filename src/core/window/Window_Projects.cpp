@@ -1,6 +1,7 @@
 #pragma warning(disable: 4505)
 #include "core/window/Window.h"
 #include "core/explorer/Explorer.h"
+#include "ui/components/dialogs/Dialog.h"
 #include <windows.h>
 #include <shlobj.h>
 #include <shobjidl.h>
@@ -8,8 +9,10 @@
 #include <fstream>
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 #include <ctime>
 #include <cctype>
+#include <cwctype>
 #include <optional>
 #include <thread>
 #include <functional>
@@ -98,6 +101,93 @@ namespace
             out /= L"recent_projects.txt";
         }
         return out;
+    }
+
+    static std::filesystem::path GetTrustedProjectsStorePath()
+    {
+        PWSTR appDataPath = nullptr;
+        std::filesystem::path out;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appDataPath)) && appDataPath)
+        {
+            std::filesystem::path base(appDataPath);
+            CoTaskMemFree(appDataPath);
+            out = base / L"Nebula";
+            std::error_code ec;
+            std::filesystem::create_directories(out, ec);
+            out /= L"trusted_projects.txt";
+        }
+        return out;
+    }
+
+    static std::wstring NormalizeProjectPathKey(const std::wstring &path)
+    {
+        if (path.empty())
+            return {};
+
+        std::filesystem::path p(path);
+        std::error_code ec;
+        p = std::filesystem::weakly_canonical(p, ec);
+        std::wstring key = (ec ? std::filesystem::path(path) : p).wstring();
+        std::replace(key.begin(), key.end(), L'/', L'\\');
+        std::transform(key.begin(), key.end(), key.begin(),
+                       [](wchar_t c) { return (wchar_t)towlower(c); });
+        return key;
+    }
+
+    static std::unordered_set<std::wstring> LoadTrustedProjects()
+    {
+        std::unordered_set<std::wstring> trusted;
+        std::filesystem::path store = GetTrustedProjectsStorePath();
+        if (store.empty())
+            return trusted;
+
+        std::wifstream ifs(store);
+        if (!ifs)
+            return trusted;
+
+        std::wstring line;
+        while (std::getline(ifs, line))
+        {
+            if (line.empty())
+                continue;
+            std::wstring key = NormalizeProjectPathKey(line);
+            if (!key.empty())
+                trusted.insert(std::move(key));
+        }
+        return trusted;
+    }
+
+    static void SaveTrustedProjects(const std::unordered_set<std::wstring> &trusted)
+    {
+        std::filesystem::path store = GetTrustedProjectsStorePath();
+        if (store.empty())
+            return;
+
+        std::wofstream ofs(store, std::ios::trunc);
+        if (!ofs)
+            return;
+
+        for (const auto &p : trusted)
+            ofs << p << L"\n";
+    }
+
+    static bool IsProjectTrusted(const std::wstring &path)
+    {
+        std::wstring key = NormalizeProjectPathKey(path);
+        if (key.empty())
+            return false;
+        std::unordered_set<std::wstring> trusted = LoadTrustedProjects();
+        return trusted.find(key) != trusted.end();
+    }
+
+    static void MarkProjectTrusted(const std::wstring &path)
+    {
+        std::wstring key = NormalizeProjectPathKey(path);
+        if (key.empty())
+            return;
+        std::unordered_set<std::wstring> trusted = LoadTrustedProjects();
+        if (trusted.insert(key).second)
+            SaveTrustedProjects(trusted);
     }
 
     static std::wstring GetNebulaClangdDbDir(const std::wstring &rootPath)
@@ -197,6 +287,27 @@ void Window::OpenProjectAtPath(const std::wstring &path)
 {
     if (path.empty())
         return;
+
+    if (!IsProjectTrusted(path))
+    {
+        std::wstring prompt =
+            L"Do you trust the authors of this project?\n\n"
+            L"Path: " + path + L"\n\n"
+            L"Nebula may run project tools, build scripts, and language services."
+            L"\nChoose Yes to trust and open, or No to cancel.";
+
+        bool trust = ShowConfirmDialog(
+            hwnd_,
+            L"Trust Project",
+            prompt,
+            DialogKind::Warning);
+
+        if (!trust)
+            return;
+
+        MarkProjectTrusted(path);
+    }
+
     GetExplorerManager().Initialize(path);
     GetExplorerManager().SetVisible(true);
     BootstrapCompilationDatabaseAsync(path);

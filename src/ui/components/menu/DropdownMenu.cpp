@@ -16,85 +16,6 @@ MenuDropdown g_activeDropdown = {-1, std::vector<std::wstring>(), std::vector<st
 MenuDropdown g_subDropdown = {-1, std::vector<std::wstring>(), std::vector<std::wstring>(), std::vector<wchar_t>(),
     std::vector<bool>(), std::vector<bool>(), D2D1::RectF(), -1, false, 0, std::vector<bool>()};
 
-// ---------------------------------------------------------------------------
-// Segoe MDL2 Assets glyphs — rendered as text with DirectWrite, no SVG loading.
-// Full list: https://learn.microsoft.com/en-us/windows/apps/design/style/segoe-ui-symbol-font
-// ---------------------------------------------------------------------------
-static std::wstring ContextMenuIconGlyph(const std::wstring &label)
-{
-    // Explorer context menu
-    if (label.find(L"Ouvrir le dossier")      != std::wstring::npos) return L"\uE8DA"; // FolderOpen
-    if (label.find(L"Ouvrir le fichier")       != std::wstring::npos) return L"\uE7C3"; // Page
-    if (label.find(L"Ouvrir dans")             != std::wstring::npos) return L"\uEC50"; // FolderOpen2
-    if (label.find(L"Copier le chemin")        != std::wstring::npos) return L"\uE71B"; // Link
-    if (label.find(L"Ajouter")                 != std::wstring::npos) return L"\uE710"; // Add
-    if (label.find(L"Nouveau fichier")         != std::wstring::npos) return L"\uE7C3"; // Page
-    if (label.find(L"Nouveau dossier")         != std::wstring::npos) return L"\uE8F4"; // NewFolder
-    if (label.find(L"Class Header")            != std::wstring::npos) return L"\uE943"; // Code (h)
-    if (label.find(L"Class Source")            != std::wstring::npos) return L"\uE943"; // Code (cpp)
-    if (label.find(L"Duplicate")               != std::wstring::npos) return L"\uE8C8"; // Copy
-    if (label.find(L"Rename")                  != std::wstring::npos) return L"\uE8D6"; // Rename
-    if (label.find(L"Delete")                  != std::wstring::npos) return L"\uE74D"; // Delete
-    // Editor context menu
-    if (label.find(L"Couper")                  != std::wstring::npos) return L"\uE8C6"; // Cut
-    if (label.find(L"Copier")                  != std::wstring::npos) return L"\uE8C8"; // Copy
-    if (label.find(L"Coller")                  != std::wstring::npos) return L"\uE77F"; // Paste
-    if (label.find(L"Aller")                   != std::wstring::npos) return L"\uE8A7"; // GoToStart
-    if (label.find(L"ggwave")                  != std::wstring::npos) return L"\uE720"; // Microphone
-    if (label.find(L"Deplacer")                != std::wstring::npos) return L"\uE8DE"; // MoveToFolder
-    return L"";
-}
-
-static std::wstring MenuDropdownIconGlyph(const std::wstring &label)
-{
-    // File
-    if (label == L"New")                   return L"\uE7C3"; // Page
-    if (label == L"New Window")            return L"\uE8A7"; // OpenWith
-    if (label == L"Open..." ||
-        label == L"Open Project")          return L"\uE8DA"; // FolderOpen
-    if (label == L"Open Recent")           return L"\uE8B1"; // History
-    if (label == L"Close")                 return L"\uE8BB"; // ClosePane
-    // Edit
-    if (label == L"Undo")                  return L"\uE7A7"; // Undo
-    if (label == L"Redo")                  return L"\uE7A6"; // Redo
-    if (label == L"Cut")                   return L"\uE8C6"; // Cut
-    if (label == L"Copy")                  return L"\uE8C8"; // Copy
-    if (label == L"Paste")                 return L"\uE77F"; // Paste
-    if (label == L"Delete")                return L"\uE74D"; // Delete
-    if (label == L"Select All")            return L"\uE8B3"; // SelectAll
-    // Selection
-    if (label == L"Expand Selection")      return L"\uE8C4"; // ResizeMouseLarge
-    if (label == L"Shrink Selection")      return L"\uE8C5"; // ResizeMouseSmall
-    if (label == L"Select Line")           return L"\uE8FD"; // Line
-    // View
-    if (label == L"New Terminal")          return L"\uE756"; // CommandPrompt
-    if (label == L"Command Palette")       return L"\uE952"; // CommandBar
-    if (label == L"Open View")             return L"\uE8A9"; // OpenPane
-    if (label == L"Toggle Sidebar")        return L"\uE8A0"; // SidePanel
-    if (label == L"Show Extensions")       return L"\uE74C"; // Plugin
-    if (label == L"Keyboard Shortcuts")    return L"\uE92E"; // Keyboard
-    // Go
-    if (label == L"Go to File")            return L"\uE8E5"; // OpenFile
-    if (label == L"Go to Line")            return L"\uE8FD"; // Line
-    if (label == L"Go to Symbol")          return L"\uE8A1"; // Symbol
-    if (label == L"Go to Definition")      return L"\uE71C"; // Forward
-    // Debug
-    if (label == L"Start Debugging" ||
-        label == L"Run")                   return L"\uE768"; // Play
-    if (label == L"Stop")                  return L"\uE71A"; // Stop
-    if (label == L"Restart Debugging")     return L"\uE72C"; // Refresh
-    if (label == L"Step Over")             return L"\uE8EF"; // Next
-    if (label == L"Step Into")             return L"\uEBE8"; // Bug (debug step)
-    // Help
-    if (label == L"Welcome")               return L"\uE82D"; // Home
-    if (label == L"Documentation")         return L"\uE736"; // Library
-    if (label == L"About")                 return L"\uE946"; // Info
-    if (label == L"Release Notes")         return L"\uE8BD"; // Document
-    if (label == L"Report Issue")          return L"\uEBE8"; // Bug
-    return L"";
-}
-
-
 void RedrawMenuOwner(HWND hwnd, bool wholeWindow)
 {
     if (!hwnd)
@@ -156,11 +77,18 @@ namespace DropdownCache
         ctx_ = ctx; themeMode_ = mode;
 
         const UI::Theme::Palette &p = UI::Theme::GetPalette();
-        ctx->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.30f), &shadow_);
-        ctx->CreateSolidColorBrush(p.inputBackground, &bg_);
-        ctx->CreateSolidColorBrush(p.inputBorder, &border_);
+        ctx->CreateSolidColorBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.34f), &shadow_);
+
+        D2D1_COLOR_F bg = p.inputBackground;
+        bg.a = (mode == UI::Theme::Mode::Light) ? 0.99f : 0.97f;
+        ctx->CreateSolidColorBrush(bg, &bg_);
+
+        D2D1_COLOR_F border = p.inputBorder;
+        border.a = 0.0f;
+        ctx->CreateSolidColorBrush(border, &border_);
+
         D2D1_COLOR_F hov = p.explorerToolbarHover;
-        hov.a = (mode == UI::Theme::Mode::Light) ? 0.90f : 1.0f;
+        hov.a = (mode == UI::Theme::Mode::Light) ? 0.55f : 0.70f;
         ctx->CreateSolidColorBrush(hov, &hover_);
         ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &text_);
         ctx->CreateSolidColorBrush(UI::Theme::MutedText(), &disabled_);
@@ -177,11 +105,11 @@ namespace DropdownCache
         {
             dwrite->CreateTextFormat(L"Segoe UI Variable Text", nullptr,
                 DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL, 13.5f, L"en-us", &format_);
+                DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"en-us", &format_);
             if (!format_)
                 dwrite->CreateTextFormat(L"Segoe UI", nullptr,
                     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                    DWRITE_FONT_STRETCH_NORMAL, 13.5f, L"en-us", &format_);
+                    DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"en-us", &format_);
             if (format_)
             {
                 format_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -191,7 +119,7 @@ namespace DropdownCache
             // Icon font: Segoe MDL2 Assets (Windows 10/11 system font)
             dwrite->CreateTextFormat(L"Segoe MDL2 Assets", nullptr,
                 DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL, 14.0f, L"en-us", &iconFmt_);
+                DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"en-us", &iconFmt_);
             if (iconFmt_)
             {
                 iconFmt_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -228,33 +156,15 @@ void DrawDropdownPanel(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, MenuDropd
     r = D2D1::RectF(std::round(r.left), std::round(r.top), std::round(r.right), std::round(r.bottom));
     dd.rect = r;
 
-    // ---- Shadow (two layers for depth) ----
-    if (DropdownCache::shadow_)
-    {
-        DropdownCache::shadow_->SetOpacity(0.18f);
-        ctx->FillRoundedRectangle(
-            D2D1::RoundedRect(D2D1::RectF(r.left+3.0f, r.top+5.0f, r.right+3.0f, r.bottom+5.0f), 7.0f, 7.0f),
-            DropdownCache::shadow_);
-        DropdownCache::shadow_->SetOpacity(0.10f);
-        ctx->FillRoundedRectangle(
-            D2D1::RoundedRect(D2D1::RectF(r.left+1.0f, r.top+1.0f, r.right+1.0f, r.bottom+1.0f), 7.0f, 7.0f),
-            DropdownCache::shadow_);
-        DropdownCache::shadow_->SetOpacity(1.0f);
-    }
-
     // ---- Background + border ----
     if (DropdownCache::bg_)
         ctx->FillRoundedRectangle(D2D1::RoundedRect(r, 6.0f, 6.0f), DropdownCache::bg_);
-    if (DropdownCache::border_)
-        ctx->DrawRoundedRectangle(
-            D2D1::RoundedRect(D2D1::RectF(r.left+0.5f, r.top+0.5f, r.right-0.5f, r.bottom-0.5f), 5.5f, 5.5f),
-            DropdownCache::border_, 1.0f);
 
-    const float panelPad          =  5.0f; // horizontal inset for hover rect
-    const float iconPad           = 12.0f; // left margin before icon
-    const float iconColumnWidth   = 22.0f; // icon cell width
-    const float textPadLeft       =  8.0f; // gap between icon and label
-    const float rightPad          = 14.0f;
+    const float panelPad          =  3.0f; // horizontal inset for hover rect
+    const float iconPad           =  9.0f; // retained for compatibility (icons disabled)
+    const float iconColumnWidth   =  0.0f; // no icon column
+    const float textPadLeft       =  2.0f; // small left inset for text
+    const float rightPad          = 10.0f;
     const float submenuChevronW   = 16.0f;
     const bool  drawShortcuts     = DropdownHasShortcuts(dd);
 
@@ -292,8 +202,8 @@ void DrawDropdownPanel(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, MenuDropd
         if (isEnabled && (int)i == dd.hoveredItem && DropdownCache::hover_)
         {
             ctx->FillRoundedRectangle(
-                D2D1::RoundedRect(D2D1::RectF(itemRect.left+2.0f, itemRect.top+2.0f,
-                                               itemRect.right-2.0f, itemRect.bottom-2.0f), 5.0f, 5.0f),
+                D2D1::RoundedRect(D2D1::RectF(itemRect.left+1.0f, itemRect.top+1.0f,
+                                   itemRect.right-1.0f, itemRect.bottom-1.0f), 4.0f, 4.0f),
                 DropdownCache::hover_);
         }
 
@@ -301,32 +211,10 @@ void DrawDropdownPanel(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, MenuDropd
 
         ID2D1SolidColorBrush *brush = isEnabled ? DropdownCache::text_ : DropdownCache::disabled_;
 
-        // ---- Icon (Segoe MDL2 Assets glyph) ----
         const std::wstring &label = dd.items[i];
-        std::wstring glyph = (dd.menuIndex == -1)
-            ? ContextMenuIconGlyph(label)
-            : MenuDropdownIconGlyph(label);
-        if (!glyph.empty() && DropdownCache::iconFmt_)
-        {
-            // "Delete" gets a red accent; everything else gets muted icon color
-            bool isDanger = (label.find(L"Delete") != std::wstring::npos ||
-                             label.find(L"Supprimer") != std::wstring::npos);
-            ID2D1SolidColorBrush *iconBrush = isEnabled
-                ? (isDanger ? DropdownCache::iconDanger_ : DropdownCache::icon_)
-                : DropdownCache::disabled_;
-
-            D2D1_RECT_F iconRect = D2D1::RectF(
-                itemRect.left + iconPad,
-                itemRect.top,
-                itemRect.left + iconPad + iconColumnWidth,
-                itemRect.bottom);
-            ctx->DrawTextW(glyph.c_str(), (UINT32)glyph.size(),
-                           DropdownCache::iconFmt_, iconRect, iconBrush,
-                           D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
-        }
 
         float shortcutWidth = drawShortcuts ? shortcutColWidth : 0.0f;
-        float shortcutGap   = drawShortcuts ? 14.0f : 0.0f;
+        float shortcutGap   = drawShortcuts ? 10.0f : 0.0f;
 
         D2D1_RECT_F textRect = D2D1::RectF(
             itemRect.left + iconPad + iconColumnWidth + textPadLeft,
@@ -484,9 +372,9 @@ void ShowMenuDropdown(HWND hwnd, int menuIndex, D2D1_RECT_F menuRect)
     float height = ComputeDropdownHeight(g_activeDropdown);
     g_activeDropdown.rect = D2D1::RectF(
         menuRect.left,
-        menuRect.bottom + 4.0f,
+        menuRect.bottom + 1.0f,
         menuRect.left + width,
-        menuRect.bottom + 4.0f + height);
+        menuRect.bottom + 1.0f + height);
 
     for (size_t i = 0; i < g_menuItems.size(); ++i)
         SetMenuItemHovered((int)i, (int)i == menuIndex);

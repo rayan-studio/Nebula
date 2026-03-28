@@ -10,15 +10,15 @@
 // ============================================================================
 
 struct LibraryCard {
-    LibraryInfo* library;
-    D2D1_RECT_F bounds;
-    D2D1_RECT_F iconRect;
-    D2D1_RECT_F headerRect;
-    D2D1_RECT_F ratingRect;
-    D2D1_RECT_F descRect;
-    D2D1_RECT_F tagsRect;
-    D2D1_RECT_F installButtonBounds;
-    D2D1_RECT_F uninstallButtonBounds;
+    LibraryInfo library;
+    D2D1_RECT_F bounds = D2D1::RectF(0, 0, 0, 0);
+    D2D1_RECT_F iconRect = D2D1::RectF(0, 0, 0, 0);
+    D2D1_RECT_F headerRect = D2D1::RectF(0, 0, 0, 0);
+    D2D1_RECT_F ratingRect = D2D1::RectF(0, 0, 0, 0);
+    D2D1_RECT_F descRect = D2D1::RectF(0, 0, 0, 0);
+    D2D1_RECT_F tagsRect = D2D1::RectF(0, 0, 0, 0);
+    D2D1_RECT_F installButtonBounds = D2D1::RectF(0, 0, 0, 0);
+    D2D1_RECT_F uninstallButtonBounds = D2D1::RectF(0, 0, 0, 0);
     bool isHoveringCard = false;
     bool isHoveringInstallBtn = false;
     bool isHoveringUninstallBtn = false;
@@ -79,7 +79,13 @@ private:
     float scrollOffset_ = 0.0f;
     std::wstring searchQuery_;
     D2D1_RECT_F searchBarBounds_;
+    D2D1_RECT_F allFilterBounds_;
+    D2D1_RECT_F installedFilterBounds_;
     std::wstring lastKnownRootPath_;  // detect project change
+    unsigned long long dataRevision_ = 0;
+    bool isHoveringAllFilter_ = false;
+    bool isHoveringInstalledFilter_ = false;
+    bool showInstalledOnly_ = false;
 
     // Search input component
     TextInput searchInput_;

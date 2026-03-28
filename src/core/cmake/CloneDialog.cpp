@@ -33,6 +33,18 @@ static COLORREF D2DColorToCOLORREF(const D2D1_COLOR_F &color)
     return RGB(r, g, b);
 }
 
+static COLORREF BlendColorRef(COLORREF a, COLORREF b, float t)
+{
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    const int ar = GetRValue(a), ag = GetGValue(a), ab = GetBValue(a);
+    const int br = GetRValue(b), bg = GetGValue(b), bb = GetBValue(b);
+    const int rr = (int)(ar + (br - ar) * t);
+    const int rg = (int)(ag + (bg - ag) * t);
+    const int rb = (int)(ab + (bb - ab) * t);
+    return RGB(rr, rg, rb);
+}
+
 // ---------------------------------------------------------------------------
 // Get theme colors dynamically from Theme system
 // ---------------------------------------------------------------------------
@@ -196,6 +208,9 @@ struct CloneDlgState
     std::wstring autoStartUrl;
 
     bool closeBtnHovered = false;
+    bool cloneBtnHovered = false;
+    bool cancelBtnHovered = false;
+    bool clientMouseTracked = false;
 };
 
 static constexpr int TITLE_H         = 35; // logical px — matches main window title bar height
@@ -291,44 +306,72 @@ static void CloneThread(CloneDlgState *s, std::wstring url, std::wstring destPat
 // ---------------------------------------------------------------------------
 // Helper — draw a themed flat button into a DRAWITEMSTRUCT
 // ---------------------------------------------------------------------------
-static void DrawFlatButton(const DRAWITEMSTRUCT *di, bool isPrimary)
+static void DrawFlatButton(const DRAWITEMSTRUCT *di, bool isPrimary, bool hovered)
 {
     bool pressed  = (di->itemState & ODS_SELECTED) != 0;
     bool disabled = (di->itemState & ODS_DISABLED)  != 0;
+    bool focused  = (di->itemState & ODS_FOCUS) != 0;
+    hovered = hovered || ((di->itemState & ODS_HOTLIGHT) != 0);
+
+    const bool isLight = (UI::Theme::GetMode() == UI::Theme::Mode::Light);
 
     COLORREF bg, fg, border;
-    COLORREF buttonBg        = D2DColorToCOLORREF(D2D1::ColorF(52.0f/255, 52.0f/255, 57.0f/255, 1.0f));
-    COLORREF buttonBgPressed = D2DColorToCOLORREF(D2D1::ColorF(40.0f/255, 40.0f/255, 45.0f/255, 1.0f));
+    const UI::Theme::Palette &p = UI::Theme::GetPalette();
+    const COLORREF chromeBg   = GetThemeBackground();
+    const COLORREF inputBg    = D2DColorToCOLORREF(p.inputBackground);
+    const COLORREF hoverBg    = D2DColorToCOLORREF(p.explorerToolbarHover);
+    const COLORREF borderBase = D2DColorToCOLORREF(p.inputBorder);
+    const COLORREF focusBorder = GetThemeFocusBorder();
     
     if (disabled) {
-        bg = buttonBg; fg = GetThemeMutedText(); border = GetThemeBorder();
+        bg = BlendColorRef(chromeBg, inputBg, 0.45f);
+        fg = GetThemeMutedText();
+        border = BlendColorRef(borderBase, chromeBg, 0.35f);
     } else if (isPrimary) {
-        bg = pressed ? GetThemeAccentStrong() : GetThemeAccent();
+        if (pressed)
+            bg = GetThemeAccentStrong();
+        else if (hovered)
+            bg = BlendColorRef(GetThemeAccent(), GetThemeAccentStrong(), 0.45f);
+        else
+            bg = GetThemeAccent();
         fg = RGB(255,255,255);
         border = bg;
     } else {
-        bg = pressed ? buttonBgPressed : buttonBg;
+        if (pressed)
+            bg = BlendColorRef(inputBg, hoverBg, isLight ? 0.72f : 0.52f);
+        else if (hovered)
+            bg = BlendColorRef(inputBg, hoverBg, isLight ? 0.54f : 0.34f);
+        else
+            bg = BlendColorRef(chromeBg, inputBg, isLight ? 0.72f : 0.60f);
         fg = GetThemeText();
-        border = GetThemeBorder();
+        if (focused)
+            border = focusBorder;
+        else if (hovered || pressed)
+            border = BlendColorRef(borderBase, focusBorder, isLight ? 0.38f : 0.20f);
+        else
+            border = borderBase;
     }
 
     HDC dc = di->hDC;
     RECT rc = di->rcItem;
 
-    // Background
-    HBRUSH br = CreateSolidBrush(bg);
-    FillRect(dc, &rc, br);
-    DeleteObject(br);
+    // Paint the full control rect with dialog background first so rounded
+    // corners blend correctly in dark theme (prevents white corner artifacts).
+    HBRUSH backplate = CreateSolidBrush(GetThemeBackground());
+    FillRect(dc, &rc, backplate);
+    DeleteObject(backplate);
 
-    // Border (1px)
+    // Background + border with a subtle radius (smaller in dark theme)
     HPEN pen   = CreatePen(PS_SOLID, 1, border);
+    HBRUSH br  = CreateSolidBrush(bg);
     HPEN oldP  = (HPEN)SelectObject(dc, pen);
-    HBRUSH nb  = (HBRUSH)GetStockObject(NULL_BRUSH);
-    HBRUSH oldB = (HBRUSH)SelectObject(dc, nb);
-    Rectangle(dc, rc.left, rc.top, rc.right, rc.bottom);
+    HBRUSH oldB = (HBRUSH)SelectObject(dc, br);
+    const int radius = isLight ? 6 : 4;
+    RoundRect(dc, rc.left, rc.top, rc.right, rc.bottom, radius, radius);
     SelectObject(dc, oldP);
     SelectObject(dc, oldB);
     DeleteObject(pen);
+    DeleteObject(br);
 
     // Text
     SetBkMode(dc, TRANSPARENT);
@@ -450,6 +493,8 @@ static LRESULT CALLBACK CloneDlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM
         const int W   = clientRc.right - clientRc.left; // accurate client width after WM_NCCALCSIZE
         const int pad = 20;
         const int btnW = 80, btnH = 28;  // Button dimensions
+        const int inputY = TITLE_H + 42;
+        const int inputH = 28;
 
         // ── Font ──
         HFONT hFont = CreateFontW(
@@ -470,7 +515,7 @@ static LRESULT CALLBACK CloneDlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM
         // Use ES_MULTILINE with vertical centering
         s->hUrl = CreateWindowExW(0, L"EDIT", L"",
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-            pad + 1, TITLE_H + 40, W - 2*pad - 2, 32, hwnd, nullptr, hi, nullptr);
+            pad + 1, inputY, W - 2*pad - 2, inputH, hwnd, nullptr, hi, nullptr);
         SendMessageW(s->hUrl, WM_SETFONT, (WPARAM)hFont, FALSE);
         SendMessageW(s->hUrl, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
                      MAKELPARAM(12, 12));
@@ -723,8 +768,73 @@ static LRESULT CALLBACK CloneDlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM
     {
         auto *di = reinterpret_cast<DRAWITEMSTRUCT *>(lParam);
         if (di->CtlType == ODT_BUTTON)
-            DrawFlatButton(di, di->CtlID == IDOK);
+        {
+            bool hovered = false;
+            if (s)
+            {
+                if (di->CtlID == IDOK) hovered = s->cloneBtnHovered;
+                else if (di->CtlID == IDCANCEL) hovered = s->cancelBtnHovered;
+            }
+            DrawFlatButton(di, di->CtlID == IDOK, hovered);
+        }
         return TRUE;
+    }
+
+    case WM_MOUSEMOVE:
+    {
+        if (!s) break;
+        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+
+        auto isHovering = [&](HWND hBtn) -> bool
+        {
+            if (!hBtn || !IsWindowVisible(hBtn)) return false;
+            RECT r{};
+            GetWindowRect(hBtn, &r);
+            MapWindowPoints(nullptr, hwnd, reinterpret_cast<POINT *>(&r), 2);
+            return PtInRect(&r, pt) != FALSE;
+        };
+
+        bool newCloneHover = isHovering(s->hCloneBtn);
+        bool newCancelHover = isHovering(s->hCancelBtn);
+
+        if (newCloneHover != s->cloneBtnHovered)
+        {
+            s->cloneBtnHovered = newCloneHover;
+            if (s->hCloneBtn) InvalidateRect(s->hCloneBtn, nullptr, FALSE);
+        }
+        if (newCancelHover != s->cancelBtnHovered)
+        {
+            s->cancelBtnHovered = newCancelHover;
+            if (s->hCancelBtn) InvalidateRect(s->hCancelBtn, nullptr, FALSE);
+        }
+
+        if (!s->clientMouseTracked)
+        {
+            TRACKMOUSEEVENT tme{};
+            tme.cbSize = sizeof(tme);
+            tme.dwFlags = TME_LEAVE;
+            tme.hwndTrack = hwnd;
+            if (TrackMouseEvent(&tme))
+                s->clientMouseTracked = true;
+        }
+        return 0;
+    }
+
+    case WM_MOUSELEAVE:
+    {
+        if (!s) break;
+        s->clientMouseTracked = false;
+        if (s->cloneBtnHovered)
+        {
+            s->cloneBtnHovered = false;
+            if (s->hCloneBtn) InvalidateRect(s->hCloneBtn, nullptr, FALSE);
+        }
+        if (s->cancelBtnHovered)
+        {
+            s->cancelBtnHovered = false;
+            if (s->hCancelBtn) InvalidateRect(s->hCancelBtn, nullptr, FALSE);
+        }
+        return 0;
     }
 
     // ── Commands ─────────────────────────────────────────────────────────────
@@ -891,6 +1001,8 @@ static LRESULT CALLBACK CloneDlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM
         int W = LOWORD(lParam);
         int H = HIWORD(lParam);
         const int pad = 20, btnW = 80, btnH = 28, gap = 12;
+        const int inputY = TITLE_H + 42;
+        const int inputH = 28;
 
         // Buttons anchor to bottom-right
         int btnY = H - pad - btnH;
@@ -903,7 +1015,7 @@ static LRESULT CALLBACK CloneDlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM
         const UINT swpFlags = SWP_NOZORDER | SWP_NOACTIVATE;
         HDWP dwp = BeginDeferWindowPos(6);
         if (s->hUrlLabel)  dwp = DeferWindowPos(dwp, s->hUrlLabel,  nullptr, pad,                         TITLE_H + 18,  W - 2*pad,        16,    swpFlags);
-        if (s->hUrl)       dwp = DeferWindowPos(dwp, s->hUrl,       nullptr, pad + 1,                     TITLE_H + 40,  W - 2*pad - 2,    32,    swpFlags);
+        if (s->hUrl)       dwp = DeferWindowPos(dwp, s->hUrl,       nullptr, pad + 1,                     inputY,        W - 2*pad - 2,    inputH, swpFlags);
         if (s->hStatus)    dwp = DeferWindowPos(dwp, s->hStatus,    nullptr, pad,                         TITLE_H + 80,  W - 2*pad,        20,    swpFlags);
         // Update custom progress bar rect (no HWND to move)
         s->progressRect = { pad, TITLE_H + 111, W - pad, TITLE_H + 115 };

@@ -430,8 +430,8 @@ namespace Orion
                 {
                     CustomTextRenderer renderer(ctx, drawBrush);
 
-                    float drawX = contentLeft - state_.scrollOffsetX;
-                    float drawY = lineY + verticalOffset;
+                    float drawX = std::round(contentLeft - state_.scrollOffsetX);
+                    float drawY = std::round(lineY + verticalOffset);
 
                     layout->Draw(nullptr, &renderer, drawX, drawY);
                     drawBrush->Release();

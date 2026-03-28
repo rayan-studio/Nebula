@@ -1,6 +1,7 @@
 #include "MarketplaceExtensionTab.h"
 
 #include "core/explorer/Explorer.h"
+#include "ui/marketplace/MarketplaceVisuals.h"
 #include "ui/panels/LibraryDatabase.h"
 #include "ui/theme/Theme.h"
 #include "utils/logger/Logger.h"
@@ -18,34 +19,12 @@
 
 static D2D1_COLOR_F CategoryColor(const std::wstring& cat)
 {
-    std::wstring l = cat;
-    std::transform(l.begin(), l.end(), l.begin(), [](wchar_t c){
-        return (wchar_t)std::tolower((unsigned char)c);
-    });
-    if (l == L"ui")         return D2D1::ColorF(0.32f, 0.58f, 0.89f);
-    if (l == L"graphics")   return D2D1::ColorF(0.15f, 0.65f, 0.60f);
-    if (l == L"math")       return D2D1::ColorF(0.49f, 0.34f, 0.76f);
-    if (l == L"utilities")  return D2D1::ColorF(1.00f, 0.44f, 0.26f);
-    if (l == L"audio")      return D2D1::ColorF(0.93f, 0.25f, 0.48f);
-    if (l == L"networking") return D2D1::ColorF(0.15f, 0.78f, 0.85f);
-    if (l == L"physics")    return D2D1::ColorF(0.94f, 0.33f, 0.31f);
-    if (l == L"testing")    return D2D1::ColorF(0.20f, 0.75f, 0.35f);
-    return D2D1::ColorF(0.50f, 0.55f, 0.65f);
+    return MarketplaceCategoryColor(cat);
 }
 
 static std::wstring Initials(const std::wstring& name)
 {
-    std::wstring result;
-    bool nextUpper = true;
-    for (wchar_t c : name) {
-        if (c == L'/' || c == L' ' || c == L'_') { nextUpper = true; continue; }
-        if (nextUpper && iswalpha(c)) { result += (wchar_t)towupper(c); nextUpper = false; }
-        else if (iswupper(c) && !result.empty()) result += c;
-        if (result.size() >= 2) break;
-    }
-    if (result.empty() && !name.empty()) result += (wchar_t)towupper(name[0]);
-    if (result.size() == 1 && name.size() > 1) result += (wchar_t)towupper(name[1]);
-    return result;
+    return MarketplaceInitials(name);
 }
 
 static std::wstring FormatNumber(int n)
@@ -231,8 +210,9 @@ void MarketplaceExtensionTabView::SetLibraryName(const std::wstring &name)
     readmePreviewEditor_.SetTextContent(L"Loading README...", false);
 
     if (!name.empty()) {
-        LibraryInfo* lib = LibraryDatabase::Instance().FindLibrary(name);
-        if (lib) FetchReadmeAsync(hwnd_, name, lib->gitUrl);
+        LibraryInfo lib;
+        if (LibraryDatabase::Instance().GetLibraryCopy(name, lib))
+            FetchReadmeAsync(hwnd_, name, lib.gitUrl);
     }
 }
 
@@ -294,9 +274,13 @@ void MarketplaceExtensionTabView::Draw(ID2D1RenderTarget *ctx,
     if (!ctx || !dwrite) return;
     if (hwnd_ != hwnd) { hwnd_ = hwnd; }
 
-    LibraryInfo *lib = nullptr;
-    if (!currentLibraryName_.empty())
-        lib = LibraryDatabase::Instance().FindLibrary(currentLibraryName_);
+    LibraryInfo library;
+    LibraryInfo* lib = nullptr;
+    if (!currentLibraryName_.empty() &&
+        LibraryDatabase::Instance().GetLibraryCopy(currentLibraryName_, library))
+    {
+        lib = &library;
+    }
 
     repositoryLinkRect_ = D2D1::RectF(0, 0, 0, 0);
 
@@ -338,6 +322,19 @@ void MarketplaceExtensionTabView::Draw(ID2D1RenderTarget *ctx,
     const float iconTop = bounds_.top + pad;
     D2D1_RECT_F iconRect = D2D1::RectF(x, iconTop, x + iconSz, iconTop + iconSz);
 
+    MarketplaceEnsureAvatarAsync(lib->avatarUrl, hwnd_);
+    ID2D1Bitmap* avatar = MarketplaceLoadAvatarBitmap(ctx, lib->avatarUrl);
+    if (avatar)
+    {
+        ctx->DrawBitmap(avatar, iconRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        ID2D1SolidColorBrush *border = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 0.10f), &border);
+        if (border) {
+            ctx->DrawRoundedRectangle(D2D1::RoundedRect(iconRect, 14.0f, 14.0f), border, 1.0f);
+            border->Release();
+        }
+    }
+    else
     {
         ID2D1SolidColorBrush *ibr = nullptr;
         ctx->CreateSolidColorBrush(catColor, &ibr);
@@ -345,8 +342,6 @@ void MarketplaceExtensionTabView::Draw(ID2D1RenderTarget *ctx,
             ctx->FillRoundedRectangle(D2D1::RoundedRect(iconRect, 14.0f, 14.0f), ibr);
             ibr->Release();
         }
-    }
-    {
         IDWriteTextFormat *fmt = nullptr;
         dwrite->CreateTextFormat(L"Segoe UI Variable Display", nullptr,
             DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL,
@@ -403,7 +398,11 @@ void MarketplaceExtensionTabView::Draw(ID2D1RenderTarget *ctx,
         if (fmt && br) {
             fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
             fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-            std::wstring meta = L"by " + lib->author + L"   •   v" + lib->version;
+            std::wstring meta = L"by " + lib->author;
+            if (!lib->version.empty())
+                meta += L"   •   v" + lib->version;
+            else if (!lib->language.empty())
+                meta += L"   •   " + lib->language;
             ctx->DrawTextW(meta.c_str(), (UINT32)meta.size(), fmt,
                 D2D1::RectF(nameL, nameTop + 33.0f * scale, xEnd, nameTop + 48.0f * scale), br);
         }
@@ -554,12 +553,10 @@ void MarketplaceExtensionTabView::Draw(ID2D1RenderTarget *ctx,
     // Stats row
     {
         struct StatItem { const wchar_t* label; std::wstring value; };
-        wchar_t ratingBuf[16];
-        swprintf_s(ratingBuf, L"%.1f \u2605", lib->rating);
         StatItem stats[] = {
-            { L"Rating",    ratingBuf                  },
-            { L"Downloads", FormatNumber(lib->downloads) },
-            { L"Stars",     FormatNumber(lib->stars)     },
+            { L"Stars",    FormatNumber(lib->stars) },
+            { L"Language", lib->language.empty() ? L"Unknown" : lib->language },
+            { L"License",  lib->license.empty() ? L"Unknown" : lib->license },
         };
 
         IDWriteTextFormat *valFmt = nullptr, *lblFmt = nullptr;
@@ -716,13 +713,13 @@ void MarketplaceExtensionTabView::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
     {
         if (!currentLibraryName_.empty())
         {
-            LibraryInfo *lib = LibraryDatabase::Instance().FindLibrary(currentLibraryName_);
-            if (lib && !lib->gitUrl.empty())
+            LibraryInfo lib;
+            if (LibraryDatabase::Instance().GetLibraryCopy(currentLibraryName_, lib) && !lib.gitUrl.empty())
             {
-                HINSTANCE r = ShellExecuteW(hwnd, L"open", lib->gitUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                HINSTANCE r = ShellExecuteW(hwnd, L"open", lib.gitUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                 if ((INT_PTR)r <= 32)
                 {
-                    Logger::Instance().Log(L"Failed to open repository URL: " + lib->gitUrl);
+                    Logger::Instance().Log(L"Failed to open repository URL: " + lib.gitUrl);
                 }
             }
         }
@@ -738,14 +735,14 @@ void MarketplaceExtensionTabView::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
     if (!IsPointInRect(clientPoint, actionButtonRect_)) return;
     if (currentLibraryName_.empty()) return;
 
-    LibraryInfo *lib = LibraryDatabase::Instance().FindLibrary(currentLibraryName_);
-    if (!lib) return;
+    LibraryInfo lib;
+    if (!LibraryDatabase::Instance().GetLibraryCopy(currentLibraryName_, lib)) return;
 
-    if (!lib->isInstalled)
+    if (!lib.isInstalled)
     {
         std::wstring installError;
         bool ok = GetExplorerManager().InstallLibraryFromGitUrl(
-            hwnd, lib->gitUrl, lib->name, &installError);
+            hwnd, lib.gitUrl, lib.name, &installError);
         if (ok) {
             LibraryDatabase::Instance().SetInstalled(currentLibraryName_, true);
             Logger::Instance().Log(L"Installed: " + currentLibraryName_);
@@ -759,8 +756,19 @@ void MarketplaceExtensionTabView::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
     }
     else
     {
-        LibraryDatabase::Instance().SetInstalled(currentLibraryName_, false);
-        Logger::Instance().Log(L"Uninstalled (state only): " + currentLibraryName_);
+        std::wstring uninstallError;
+        bool ok = GetExplorerManager().UninstallLibraryFromGitUrl(
+            hwnd, lib.gitUrl, lib.name, &uninstallError);
+        if (ok) {
+            LibraryDatabase::Instance().RefreshInstallationStatus(GetExplorerManager().GetState().rootPath);
+            Logger::Instance().Log(L"Uninstalled: " + currentLibraryName_);
+        } else {
+            if (uninstallError.empty()) uninstallError = L"Failed to remove library.";
+            MessageBoxW(hwnd, uninstallError.c_str(), L"Marketplace Remove",
+                MB_OK | MB_ICONERROR);
+            Logger::Instance().Log(L"Uninstall failed: " + currentLibraryName_
+                + L" - " + uninstallError);
+        }
     }
     InvalidateRect(hwnd, nullptr, FALSE);
 }

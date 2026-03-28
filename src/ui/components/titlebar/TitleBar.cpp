@@ -252,6 +252,22 @@ static void DrawPlayIcon(
     }
 }
 
+static void DrawDebugIcon(
+    ID2D1RenderTarget *ctx,
+    ID2D1SolidColorBrush *brush,
+    D2D1_RECT_F rect)
+{
+    if (!ctx || !brush)
+        return;
+
+    const float cx = std::round((rect.left + rect.right) * 0.5f);
+    const float cy = std::round((rect.top + rect.bottom) * 0.5f);
+    const float r = 4.5f;
+
+    ctx->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), r, r), brush, 1.2f);
+    ctx->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), 1.2f, 1.2f), brush);
+}
+
 void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd, int hoveredButton, bool hasFocus, const std::wstring &title)
 {
     (void)title;
@@ -270,6 +286,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     float aMin = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Minimize) : (hoveredButton == Window::Hovered_Minimize ? 1.0f : 0.0f);
     float aMax = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Maximize) : (hoveredButton == Window::Hovered_Maximize ? 1.0f : 0.0f);
     float aClose = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Close) : (hoveredButton == Window::Hovered_Close ? 1.0f : 0.0f);
+    float aDebug = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Debug) : (hoveredButton == Window::Hovered_Debug ? 1.0f : 0.0f);
     float aRun = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Run) : (hoveredButton == Window::Hovered_Run ? 1.0f : 0.0f);
     const D2D1_COLOR_F titlebarBg = UI::Theme::TitlebarBackground(hasFocus);
     const D2D1_COLOR_F titlebarText = UI::Theme::TitlebarText(hasFocus);
@@ -389,6 +406,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     D2D1_RECT_F rMin = D2D1::RectF((FLOAT)button_rects.minimize.left, (FLOAT)button_rects.minimize.top, (FLOAT)button_rects.minimize.right, (FLOAT)button_rects.minimize.bottom);
     D2D1_RECT_F rMax = D2D1::RectF((FLOAT)button_rects.maximize.left, (FLOAT)button_rects.maximize.top, (FLOAT)button_rects.maximize.right, (FLOAT)button_rects.maximize.bottom);
     D2D1_RECT_F rClose = D2D1::RectF((FLOAT)button_rects.close.left, (FLOAT)button_rects.close.top, (FLOAT)button_rects.close.right, (FLOAT)button_rects.close.bottom);
+    D2D1_RECT_F rDebug = D2D1::RectF((FLOAT)button_rects.debug.left, (FLOAT)button_rects.debug.top, (FLOAT)button_rects.debug.right, (FLOAT)button_rects.debug.bottom);
     D2D1_RECT_F rRun = D2D1::RectF((FLOAT)button_rects.run.left, (FLOAT)button_rects.run.top, (FLOAT)button_rects.run.right, (FLOAT)button_rects.run.bottom);
 
     ID2D1SolidColorBrush *hoverBrush = nullptr;
@@ -401,6 +419,13 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
 
     if (hoverBrush && aMin > 0.01f)
         ctx->FillRectangle(rMin, hoverBrush);
+    if (hoverBrush && aDebug > 0.01f)
+    {
+        D2D1_COLOR_F debugHoverColor = themePalette.explorerToolbarHover;
+        debugHoverColor.a = titlebarHoverOpacity * aDebug;
+        hoverBrush->SetColor(debugHoverColor);
+        ctx->FillRectangle(rDebug, hoverBrush);
+    }
     if (hoverBrush && aRun > 0.01f)
     {
         D2D1_COLOR_F runHoverColor = themePalette.explorerToolbarHover;
@@ -431,6 +456,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     if (iconBrush)
     {
         DrawMinimizeIcon(ctx, iconBrush, rMin);
+        DrawDebugIcon(ctx, iconBrush, rDebug);
         DrawPlayIcon(ctx, dwrite, iconBrush, rRun);
 
         if (isMaximized)
@@ -583,7 +609,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     {
         float badgeHeight = (float)win32_dpi_scale(22, dpi);
         float badgeWidth = (float)win32_dpi_scale(114, dpi);
-        float badgeRight = rRun.left - (float)win32_dpi_scale(10, dpi);
+        float badgeRight = rDebug.left - (float)win32_dpi_scale(10, dpi);
         float badgeTop = std::round((tb.top + tb.bottom - badgeHeight) * 0.5f);
         githubBadgeRect = D2D1::RectF(
             std::round(badgeRight - badgeWidth),
@@ -593,7 +619,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     }
 
     float titleLeft = currentX;
-    float titleRight = githubConnected ? (githubBadgeRect.left - (float)win32_dpi_scale(10, dpi)) : rRun.left;
+    float titleRight = githubConnected ? (githubBadgeRect.left - (float)win32_dpi_scale(10, dpi)) : rDebug.left;
     float titleWidth = titleRight - titleLeft;
     // Reuse menuFormat to avoid double rendering and keep ClearType
     if (menuFormat && titleWidth > 40.0f)

@@ -7,9 +7,9 @@
 #include <vector>
 
 // Layout constants shared between DropdownMenu.cpp and its callers
-inline constexpr float kDropdownItemH    = 32.0f;
-inline constexpr float kDropdownSepH     = 10.0f;
-inline constexpr float kDropdownInnerPad =  5.0f;
+inline constexpr float kDropdownItemH    = 30.0f;
+inline constexpr float kDropdownSepH     = 6.0f;
+inline constexpr float kDropdownInnerPad = 4.0f;
 
 struct MenuItem
 {

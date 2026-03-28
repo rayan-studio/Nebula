@@ -73,6 +73,7 @@ private:
     // Reset hover state for all top-level UI controls
     void ClearAllHoverStates();
     void RunActiveProject();
+    void RunActiveProjectDebug();
     void StopActiveRunProcess();
     bool IsRunProcessActive() const;
     bool TrackRunProcess(HANDLE processHandle, HANDLE threadHandle, DWORD processId);
@@ -167,6 +168,7 @@ public:
     enum CustomTitleBarHoveredButton
     {
         Hovered_None = 0,
+        Hovered_Debug,
         Hovered_Run,
         Hovered_Minimize,
         Hovered_Maximize,
@@ -176,6 +178,7 @@ public:
     float titlebarHoverMin_ = 0.0f;
     float titlebarHoverMax_ = 0.0f;
     float titlebarHoverClose_ = 0.0f;
+    float titlebarHoverDebug_ = 0.0f;
     float titlebarHoverRun_ = 0.0f;
     bool titlebarHoverAnimating_ = false;
     DWORD titlebarHoverLastTick_ = 0;

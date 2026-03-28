@@ -23,9 +23,6 @@
 #include <thread>
 #include <unordered_map>
 #include <ctime>
-#include <uxtheme.h>
-#include <vssym32.h>
-#include <commctrl.h>
 #include "helpers/window_helpers.h"
 #include "ui/components/menu/DropdownMenu.h"
 #include "ui/components/titlebar/TitleBar.h"
@@ -349,8 +346,8 @@ static bool IsPointInTitlebarMenuArea(HWND hwnd, POINT pt)
         return false;
 
     CustomTitleBarButtonRects button_rects = win32_get_title_bar_button_rects(hwnd, &tb);
-    // Ignore area occupied by custom window controls (run/min/max/close)
-    if (pt.x >= button_rects.run.left)
+    // Ignore area occupied by custom window controls (debug/run/min/max/close)
+    if (pt.x >= button_rects.debug.left)
         return false;
 
     // Avoid resize border clicks being treated as menu clicks
@@ -801,6 +798,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         {
             new_hovered_button = Window::Hovered_Run;
         }
+        else if (PtInRect(&button_rects.debug, cursor_point))
+        {
+            new_hovered_button = Window::Hovered_Debug;
+        }
         auto current = hoveredButton_;
         if (new_hovered_button != current)
         {
@@ -808,6 +809,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             InvalidateRect(hwnd_, &button_rects.minimize, FALSE);
             InvalidateRect(hwnd_, &button_rects.maximize, FALSE);
             InvalidateRect(hwnd_, &button_rects.run, FALSE);
+            InvalidateRect(hwnd_, &button_rects.debug, FALSE);
             hoveredButton_ = new_hovered_button;
             StartTitlebarHoverAnimation();
         }
@@ -2810,6 +2812,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 switch (index)
                 {
                 case 0: // Start Debugging
+                    RunActiveProjectDebug();
+                    return 0;
                 case 1: // Run
                     RunActiveProject();
                     return 0;
@@ -2818,7 +2822,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                     return 0;
                 case 3: // Restart Debugging
                     StopActiveRunProcess();
-                    RunActiveProject();
+                    RunActiveProjectDebug();
                     return 0;
                 default:
                     break;
@@ -2853,7 +2857,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     case WM_NCLBUTTONUP:
     {
         auto current = hoveredButton_;
-        if (newProjectVisible_ && current == Window::Hovered_Run)
+        if (newProjectVisible_ && (current == Window::Hovered_Run || current == Window::Hovered_Debug))
         {
             hoveredButton_ = Hovered_None;
             return 0;
@@ -2880,6 +2884,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 StopActiveRunProcess();
             else
                 RunActiveProject();
+            return 0;
+        }
+        else if (current == Window::Hovered_Debug)
+        {
+            if (IsRunProcessActive())
+                StopActiveRunProcess();
+            else
+                RunActiveProjectDebug();
             return 0;
         }
         return DefWindowProc(hwnd_, uMsg, wParam, lParam);
@@ -3123,6 +3135,7 @@ float Window::GetTitlebarHoverAlpha(CustomTitleBarHoveredButton btn) const
     case Hovered_Minimize: return titlebarHoverMin_;
     case Hovered_Maximize: return titlebarHoverMax_;
     case Hovered_Close: return titlebarHoverClose_;
+    case Hovered_Debug: return titlebarHoverDebug_;
     case Hovered_Run: return titlebarHoverRun_;
     default: break;
     }
@@ -3150,6 +3163,7 @@ void Window::StepTitlebarHoverAnimation()
     float targetMin = (hoveredButton_ == Hovered_Minimize) ? 1.0f : 0.0f;
     float targetMax = (hoveredButton_ == Hovered_Maximize) ? 1.0f : 0.0f;
     float targetClose = (hoveredButton_ == Hovered_Close) ? 1.0f : 0.0f;
+    float targetDebug = (hoveredButton_ == Hovered_Debug) ? 1.0f : 0.0f;
     float targetRun = (hoveredButton_ == Hovered_Run) ? 1.0f : 0.0f;
 
     float speed = 18.0f;
@@ -3162,12 +3176,14 @@ void Window::StepTitlebarHoverAnimation()
     titlebarHoverMin_ = approach(titlebarHoverMin_, targetMin);
     titlebarHoverMax_ = approach(titlebarHoverMax_, targetMax);
     titlebarHoverClose_ = approach(titlebarHoverClose_, targetClose);
+    titlebarHoverDebug_ = approach(titlebarHoverDebug_, targetDebug);
     titlebarHoverRun_ = approach(titlebarHoverRun_, targetRun);
 
     auto isNear = [](float a, float b) { return std::fabs(a - b) < 0.01f; };
     if (isNear(titlebarHoverMin_, targetMin) &&
         isNear(titlebarHoverMax_, targetMax) &&
         isNear(titlebarHoverClose_, targetClose) &&
+        isNear(titlebarHoverDebug_, targetDebug) &&
         isNear(titlebarHoverRun_, targetRun))
     {
         titlebarHoverAnimating_ = false;

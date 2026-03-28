@@ -16,6 +16,7 @@ typedef struct {
     RECT maximize;
     RECT minimize;
     RECT run;
+    RECT debug;
 } CustomTitleBarButtonRects;
 
 int win32_dpi_scale(int value, UINT dpi);

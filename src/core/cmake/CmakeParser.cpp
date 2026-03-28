@@ -629,3 +629,114 @@ bool AddLibraryToCmake(const std::wstring &projectCmakePath,
     wf.close();
     return true;
 }
+
+bool RemoveLibraryFromCmake(const std::wstring &projectCmakePath,
+                            const std::wstring &subdirRel,
+                            const std::wstring &libTargetName)
+{
+    std::ifstream rf(projectCmakePath, std::ios::binary);
+    if (!rf.is_open()) return false;
+
+    std::string existing((std::istreambuf_iterator<char>(rf)),
+                         std::istreambuf_iterator<char>());
+    rf.close();
+
+    auto toFwdSlash = [](std::wstring w) -> std::string {
+        std::replace(w.begin(), w.end(), L'\\', L'/');
+        return ToNarrow(w);
+    };
+
+    const std::string subdirLower = ToLowerCopy(NormalizeSlashes(toFwdSlash(subdirRel)));
+    const std::string libLower = ToLowerCopy(ToNarrow(libTargetName));
+    const bool isGladLib = subdirLower.find("glad") != std::string::npos;
+    const bool useCrLf = existing.find("\r\n") != std::string::npos;
+
+    std::vector<std::string> lines;
+    {
+        std::istringstream ss(existing);
+        std::string line;
+        while (std::getline(ss, line))
+        {
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
+            lines.push_back(line);
+        }
+    }
+
+    auto isManagedComment = [](const std::string &line) {
+        const std::string lower = ToLowerCopy(line);
+        return lower.find("external library:") != std::string::npos &&
+               lower.find("added by nebula") != std::string::npos;
+    };
+
+    auto isLibraryLine = [&](const std::string &line) {
+        const std::string trimmed = Trim(line);
+        const std::string lower = ToLowerCopy(NormalizeSlashes(trimmed));
+
+        if (lower.find("add_subdirectory") != std::string::npos &&
+            lower.find(subdirLower) != std::string::npos)
+            return true;
+
+        if (lower.find("target_include_directories") != std::string::npos &&
+            lower.find(subdirLower) != std::string::npos)
+            return true;
+
+        if (!libLower.empty() &&
+            lower.find("target_link_libraries") != std::string::npos &&
+            lower.find(libLower) != std::string::npos)
+            return true;
+
+        if (isGladLib && lower.find("glad_add_library(") != std::string::npos)
+            return true;
+
+        return false;
+    };
+
+    std::vector<std::string> kept;
+    kept.reserve(lines.size());
+    bool removedAny = false;
+
+    for (size_t i = 0; i < lines.size(); ++i)
+    {
+        bool remove = isLibraryLine(lines[i]);
+        if (!remove && isManagedComment(lines[i]))
+        {
+            for (size_t j = i + 1; j < lines.size(); ++j)
+            {
+                if (Trim(lines[j]).empty())
+                    continue;
+                remove = isLibraryLine(lines[j]);
+                break;
+            }
+        }
+
+        if (remove)
+        {
+            removedAny = true;
+            continue;
+        }
+
+        if (Trim(lines[i]).empty() && !kept.empty() && Trim(kept.back()).empty())
+            continue;
+
+        kept.push_back(lines[i]);
+    }
+
+    while (!kept.empty() && Trim(kept.back()).empty())
+        kept.pop_back();
+
+    if (!removedAny)
+        return true;
+
+    std::ofstream wf(projectCmakePath, std::ios::binary | std::ios::trunc);
+    if (!wf.is_open()) return false;
+
+    const char *newline = useCrLf ? "\r\n" : "\n";
+    for (size_t i = 0; i < kept.size(); ++i)
+    {
+        wf << kept[i];
+        wf << newline;
+    }
+    wf.close();
+    return true;
+}

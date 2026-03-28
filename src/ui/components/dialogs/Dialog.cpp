@@ -21,6 +21,18 @@ static COLORREF D2DColorToCOLORREF(const D2D1_COLOR_F &c)
     return RGB(r, g, b);
 }
 
+static COLORREF BlendColorRef(COLORREF a, COLORREF b, float t)
+{
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    const int ar = GetRValue(a), ag = GetGValue(a), ab = GetBValue(a);
+    const int br = GetRValue(b), bg = GetGValue(b), bb = GetBValue(b);
+    const int rr = (int)(ar + (br - ar) * t);
+    const int rg = (int)(ag + (bg - ag) * t);
+    const int rb = (int)(ab + (bb - ab) * t);
+    return RGB(rr, rg, rb);
+}
+
 static void SetDlgBorderColor(HWND hwnd, bool focused)
 {
     const DWORD DWMWA_BORDER_COLOR = 34;
@@ -47,6 +59,9 @@ struct DlgState
     HWND               hNoBtn  = nullptr;
     HBRUSH             hBgBrush = nullptr;
     bool               closeBtnHovered = false;
+    bool               okBtnHovered = false;
+    bool               noBtnHovered = false;
+    bool               clientMouseTracked = false;
     bool               hasYesNo  = false;
     bool               confirmed = false;
 };
@@ -56,39 +71,69 @@ static constexpr int TITLE_H = 35;
 // ---------------------------------------------------------------------------
 // Button drawing (owner-draw, identical to CloneDialog)
 // ---------------------------------------------------------------------------
-static void DrawFlatButton(const DRAWITEMSTRUCT *di, bool isPrimary)
+static void DrawFlatButton(const DRAWITEMSTRUCT *di, bool isPrimary, bool hovered)
 {
     bool pressed  = (di->itemState & ODS_SELECTED) != 0;
+    bool disabled = (di->itemState & ODS_DISABLED)  != 0;
+    bool focused  = (di->itemState & ODS_FOCUS) != 0;
+    hovered = hovered || ((di->itemState & ODS_HOTLIGHT) != 0);
 
-    static const COLORREF kBtnBg        = RGB(52, 52, 57);
-    static const COLORREF kBtnBgPressed = RGB(40, 40, 45);
+    const bool isLight = (UI::Theme::GetMode() == UI::Theme::Mode::Light);
+    const UI::Theme::Palette &p = UI::Theme::GetPalette();
+    const COLORREF chromeBg    = ThemeBg();
+    const COLORREF inputBg     = D2DColorToCOLORREF(p.inputBackground);
+    const COLORREF hoverBg     = D2DColorToCOLORREF(p.explorerToolbarHover);
+    const COLORREF borderBase  = D2DColorToCOLORREF(p.inputBorder);
+    const COLORREF focusBorder = D2DColorToCOLORREF(p.inputFocusBorder);
 
     COLORREF bg, fg, border;
-    if (isPrimary) {
-        bg     = pressed ? ThemeAccentStrong() : ThemeAccent();
-        fg     = RGB(255, 255, 255);
+    if (disabled) {
+        bg = BlendColorRef(chromeBg, inputBg, 0.45f);
+        fg = ThemeMutedText();
+        border = BlendColorRef(borderBase, chromeBg, 0.35f);
+    } else if (isPrimary) {
+        if (pressed)
+            bg = ThemeAccentStrong();
+        else if (hovered)
+            bg = BlendColorRef(ThemeAccent(), ThemeAccentStrong(), 0.45f);
+        else
+            bg = ThemeAccent();
+        fg = RGB(255, 255, 255);
         border = bg;
     } else {
-        bg     = pressed ? kBtnBgPressed : kBtnBg;
-        fg     = ThemeText();
-        border = ThemeBorder();
+        if (pressed)
+            bg = BlendColorRef(inputBg, hoverBg, isLight ? 0.72f : 0.52f);
+        else if (hovered)
+            bg = BlendColorRef(inputBg, hoverBg, isLight ? 0.54f : 0.34f);
+        else
+            bg = BlendColorRef(chromeBg, inputBg, isLight ? 0.72f : 0.60f);
+        fg = ThemeText();
+        if (focused)
+            border = focusBorder;
+        else if (hovered || pressed)
+            border = BlendColorRef(borderBase, focusBorder, isLight ? 0.38f : 0.20f);
+        else
+            border = borderBase;
     }
 
     HDC  dc = di->hDC;
     RECT rc = di->rcItem;
 
-    HBRUSH br = CreateSolidBrush(bg);
-    FillRect(dc, &rc, br);
-    DeleteObject(br);
+    // Fill full button rect with dialog background so rounded corners blend.
+    HBRUSH backplate = CreateSolidBrush(ThemeBg());
+    FillRect(dc, &rc, backplate);
+    DeleteObject(backplate);
 
     HPEN  pen  = CreatePen(PS_SOLID, 1, border);
+    HBRUSH br = CreateSolidBrush(bg);
     HPEN  oldP = (HPEN)SelectObject(dc, pen);
-    HBRUSH nb  = (HBRUSH)GetStockObject(NULL_BRUSH);
-    HBRUSH oldB = (HBRUSH)SelectObject(dc, nb);
-    Rectangle(dc, rc.left, rc.top, rc.right, rc.bottom);
+    HBRUSH oldB = (HBRUSH)SelectObject(dc, br);
+    const int radius = isLight ? 6 : 4;
+    RoundRect(dc, rc.left, rc.top, rc.right, rc.bottom, radius, radius);
     SelectObject(dc, oldP);
     SelectObject(dc, oldB);
     DeleteObject(pen);
+    DeleteObject(br);
 
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, fg);
@@ -242,6 +287,45 @@ static LRESULT CALLBACK DlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
         return 0;
     }
 
+    // ── Responsive layout ────────────────────────────────────────────────────
+    case WM_SIZE:
+    {
+        if (!s) break;
+
+        const int W = LOWORD(lParam);
+        const int H = HIWORD(lParam);
+        const int pad = 20;
+        const int btnW = 80;
+        const int btnH = 28;
+        const int gap = 8;
+
+        const int btnY = H - pad - btnH;
+        const int msgTop = TITLE_H + 18;
+        int msgH = btnY - msgTop - 10;
+        if (msgH < 24) msgH = 24;
+
+        const UINT swp = SWP_NOZORDER | SWP_NOACTIVATE;
+
+        if (s->hMsg)
+            SetWindowPos(s->hMsg, nullptr, pad, msgTop, W - 2 * pad, msgH, swp);
+
+        if (s->hasYesNo)
+        {
+            if (s->hNoBtn)
+                SetWindowPos(s->hNoBtn, nullptr, W - pad - btnW, btnY, btnW, btnH, swp);
+            if (s->hOkBtn)
+                SetWindowPos(s->hOkBtn, nullptr, W - pad - gap - 2 * btnW, btnY, btnW, btnH, swp);
+        }
+        else
+        {
+            if (s->hOkBtn)
+                SetWindowPos(s->hOkBtn, nullptr, W - pad - btnW, btnY, btnW, btnH, swp);
+        }
+
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    }
+
     case WM_DESTROY:
         if (s)
         {
@@ -348,15 +432,74 @@ static LRESULT CALLBACK DlgProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
         const auto *di = reinterpret_cast<const DRAWITEMSTRUCT *>(lParam);
         if (di && (di->CtlID == IDOK || di->CtlID == IDYES))
         {
-            DrawFlatButton(di, true);
+            bool hovered = s ? s->okBtnHovered : false;
+            DrawFlatButton(di, true, hovered);
             return TRUE;
         }
         if (di && di->CtlID == IDNO)
         {
-            DrawFlatButton(di, false);
+            bool hovered = s ? s->noBtnHovered : false;
+            DrawFlatButton(di, false, hovered);
             return TRUE;
         }
         break;
+    }
+
+    case WM_MOUSEMOVE:
+    {
+        if (!s) break;
+        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+
+        auto isHovering = [&](HWND hBtn) -> bool
+        {
+            if (!hBtn || !IsWindowVisible(hBtn)) return false;
+            RECT r{};
+            GetWindowRect(hBtn, &r);
+            MapWindowPoints(nullptr, hwnd, reinterpret_cast<POINT *>(&r), 2);
+            return PtInRect(&r, pt) != FALSE;
+        };
+
+        bool newOkHover = isHovering(s->hOkBtn);
+        bool newNoHover = isHovering(s->hNoBtn);
+
+        if (newOkHover != s->okBtnHovered)
+        {
+            s->okBtnHovered = newOkHover;
+            if (s->hOkBtn) InvalidateRect(s->hOkBtn, nullptr, FALSE);
+        }
+        if (newNoHover != s->noBtnHovered)
+        {
+            s->noBtnHovered = newNoHover;
+            if (s->hNoBtn) InvalidateRect(s->hNoBtn, nullptr, FALSE);
+        }
+
+        if (!s->clientMouseTracked)
+        {
+            TRACKMOUSEEVENT tme{};
+            tme.cbSize = sizeof(tme);
+            tme.dwFlags = TME_LEAVE;
+            tme.hwndTrack = hwnd;
+            if (TrackMouseEvent(&tme))
+                s->clientMouseTracked = true;
+        }
+        return 0;
+    }
+
+    case WM_MOUSELEAVE:
+    {
+        if (!s) break;
+        s->clientMouseTracked = false;
+        if (s->okBtnHovered)
+        {
+            s->okBtnHovered = false;
+            if (s->hOkBtn) InvalidateRect(s->hOkBtn, nullptr, FALSE);
+        }
+        if (s->noBtnHovered)
+        {
+            s->noBtnHovered = false;
+            if (s->hNoBtn) InvalidateRect(s->hNoBtn, nullptr, FALSE);
+        }
+        return 0;
     }
 
     // ── Commands ─────────────────────────────────────────────────────────────

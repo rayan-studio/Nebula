@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <thread>
 #include <fstream>
+#include <regex>
 
 namespace fs = std::filesystem;
 
@@ -74,6 +75,30 @@ static std::wstring NormalizeSlashes(std::wstring value)
 {
     std::replace(value.begin(), value.end(), L'\\', L'/');
     return value;
+}
+
+static bool PathsEqualInsensitive(const std::wstring &a, const std::wstring &b)
+{
+    return _wcsicmp(a.c_str(), b.c_str()) == 0;
+}
+
+static bool IsPathInside(const fs::path &parent, const fs::path &child)
+{
+    std::error_code ec;
+    fs::path normalizedParent = fs::weakly_canonical(parent, ec);
+    if (ec) normalizedParent = parent.lexically_normal();
+    ec.clear();
+    fs::path normalizedChild = fs::weakly_canonical(child, ec);
+    if (ec) normalizedChild = child.lexically_normal();
+
+    auto pit = normalizedParent.begin();
+    auto cit = normalizedChild.begin();
+    for (; pit != normalizedParent.end() && cit != normalizedChild.end(); ++pit, ++cit)
+    {
+        if (!PathsEqualInsensitive(pit->wstring(), cit->wstring()))
+            return false;
+    }
+    return pit == normalizedParent.end();
 }
 
 static std::string ToLowerAscii(std::string value)
@@ -182,6 +207,230 @@ static bool EnsureLibraryCmakeFallback(const std::wstring &libAbsPath,
         wf << "endif()\n";
     }
 
+    return true;
+}
+
+static bool ParseSemverTriplet(const std::string &version, int &major, int &minor, int &patch)
+{
+    major = 0;
+    minor = 0;
+    patch = 0;
+
+    std::regex re(R"(^\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?\s*$)");
+    std::smatch m;
+    if (!std::regex_match(version, m, re))
+        return false;
+
+    try
+    {
+        major = std::stoi(m[1].str());
+        if (m[2].matched) minor = std::stoi(m[2].str());
+        if (m[3].matched) patch = std::stoi(m[3].str());
+    }
+    catch (...)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+static bool IsVersionLowerThan(const std::string &candidate, const std::string &minimum)
+{
+    int cMaj = 0, cMin = 0, cPat = 0;
+    int mMaj = 0, mMin = 0, mPat = 0;
+    if (!ParseSemverTriplet(candidate, cMaj, cMin, cPat))
+        return false;
+    if (!ParseSemverTriplet(minimum, mMaj, mMin, mPat))
+        return false;
+
+    if (cMaj != mMaj) return cMaj < mMaj;
+    if (cMin != mMin) return cMin < mMin;
+    return cPat < mPat;
+}
+
+static bool EnsureLibraryCmakeMinimumVersion(const std::wstring &cmakePath,
+                                             const std::string &minimumVersion,
+                                             std::wstring *outError = nullptr)
+{
+    auto fail = [&](const std::wstring &msg) -> bool
+    {
+        if (outError)
+            *outError = msg;
+        return false;
+    };
+
+    std::ifstream in(cmakePath, std::ios::binary);
+    if (!in.is_open())
+        return fail(L"Unable to read library CMakeLists.txt: " + cmakePath);
+
+    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+
+    std::regex callRegex(R"(cmake_minimum_required\s*\(\s*VERSION\s*([0-9]+(?:\.[0-9]+){0,2}))",
+                         std::regex_constants::icase);
+    std::smatch match;
+    if (!std::regex_search(content, match, callRegex))
+        return true;
+
+    if (match.size() < 2)
+        return true;
+
+    const std::string detectedVersion = match[1].str();
+    if (!IsVersionLowerThan(detectedVersion, minimumVersion))
+        return true;
+
+    content.replace(static_cast<size_t>(match.position(1)), static_cast<size_t>(match.length(1)), minimumVersion);
+
+    std::ofstream out(cmakePath, std::ios::binary | std::ios::trunc);
+    if (!out.is_open())
+        return fail(L"Unable to update library CMakeLists.txt: " + cmakePath);
+    out << content;
+    out.close();
+
+    Logger::Instance().Log(
+        L"InstallLibraryFromGitUrl: raised cmake_minimum_required from " +
+        Utf8ToWide(detectedVersion.c_str()) + L" to " +
+        Utf8ToWide(minimumVersion.c_str()) + L" in " + cmakePath);
+
+    return true;
+}
+
+static bool EnsureLibraryCmakeMinimumVersionRecursively(const std::wstring &libraryRoot,
+                                                        const std::string &minimumVersion,
+                                                        std::wstring *outError = nullptr)
+{
+    std::error_code ec;
+    if (!fs::exists(libraryRoot, ec) || !fs::is_directory(libraryRoot, ec))
+        return true;
+
+    for (const auto &entry : fs::recursive_directory_iterator(libraryRoot, ec))
+    {
+        if (ec)
+            break;
+        if (!entry.is_regular_file())
+            continue;
+
+        const std::wstring filename = entry.path().filename().wstring();
+        if (_wcsicmp(filename.c_str(), L"CMakeLists.txt") != 0)
+            continue;
+
+        std::wstring patchError;
+        if (!EnsureLibraryCmakeMinimumVersion(entry.path().wstring(), minimumVersion, &patchError))
+        {
+            if (outError)
+                *outError = patchError;
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool EnsureGitSubmodulesInitialized(const std::wstring &repoPath,
+                                           std::wstring *outError = nullptr)
+{
+    auto fail = [&](const std::wstring &msg) -> bool
+    {
+        if (outError)
+            *outError = msg;
+        return false;
+    };
+
+    const fs::path gitmodules = fs::path(repoPath) / L".gitmodules";
+    std::error_code ec;
+    if (!fs::exists(gitmodules, ec))
+        return true;
+
+    std::wstring cmdLine = L"git -C \"" + repoPath + L"\" submodule update --init --recursive";
+
+    STARTUPINFOW si = { sizeof(si) };
+    PROCESS_INFORMATION pi = {};
+    if (!CreateProcessW(nullptr,
+                        cmdLine.data(),
+                        nullptr,
+                        nullptr,
+                        FALSE,
+                        CREATE_NO_WINDOW,
+                        nullptr,
+                        repoPath.c_str(),
+                        &si,
+                        &pi))
+    {
+        return fail(L"Failed to run git submodule update for " + repoPath);
+    }
+
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD exitCode = 1;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+
+    if (exitCode != 0)
+        return fail(L"git submodule update failed in " + repoPath);
+
+    Logger::Instance().Log(L"InstallLibraryFromGitUrl: initialized submodules in " + repoPath);
+    return true;
+}
+
+static bool PatchGlfwppDuplicateGlfwTarget(const std::wstring &cmakePath,
+                                           std::wstring *outError = nullptr)
+{
+    auto fail = [&](const std::wstring &msg) -> bool
+    {
+        if (outError)
+            *outError = msg;
+        return false;
+    };
+
+    std::ifstream in(cmakePath, std::ios::binary);
+    if (!in.is_open())
+        return fail(L"Unable to read glfwpp CMakeLists.txt: " + cmakePath);
+
+    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+
+    bool changed = false;
+
+    // Reduce integration friction: examples pull extra deps that are not needed for normal usage.
+    {
+        std::regex optRegex(R"(option\s*\(\s*GLFWPP_BUILD_EXAMPLES\s+"[^"]*"\s+ON\s*\))",
+                            std::regex_constants::icase);
+        std::string replacement = "option(GLFWPP_BUILD_EXAMPLES \"Should examples be built\" OFF)";
+        std::string updated = std::regex_replace(content, optRegex, replacement);
+        if (updated != content)
+        {
+            content = std::move(updated);
+            changed = true;
+        }
+    }
+
+    {
+        std::regex addGlfwRegex(R"(\n\s*add_subdirectory_checked\(\$\{CMAKE_CURRENT_SOURCE_DIR\}/external/glfw\)\s*\n)",
+                                std::regex_constants::icase);
+        std::string replacement =
+            "\n    if (NOT TARGET glfw)\n"
+            "        add_subdirectory_checked(${CMAKE_CURRENT_SOURCE_DIR}/external/glfw)\n"
+            "    endif()\n";
+        std::string updated = std::regex_replace(content, addGlfwRegex, replacement);
+        if (updated != content)
+        {
+            content = std::move(updated);
+            changed = true;
+        }
+    }
+
+    if (!changed)
+        return true;
+
+    std::ofstream out(cmakePath, std::ios::binary | std::ios::trunc);
+    if (!out.is_open())
+        return fail(L"Unable to update glfwpp CMakeLists.txt: " + cmakePath);
+
+    out << content;
+    out.close();
+
+    Logger::Instance().Log(L"InstallLibraryFromGitUrl: applied glfwpp compatibility patch in " + cmakePath);
     return true;
 }
 
@@ -710,9 +959,35 @@ bool ExplorerManager::InstallLibraryFromGitUrl(HWND hwnd,
             return fail(L"Clone cancelled or failed for " + (displayName.empty() ? repoName : displayName));
     }
 
+    {
+        std::wstring submoduleError;
+        if (!EnsureGitSubmodulesInitialized(destPath, &submoduleError))
+            return fail(submoduleError);
+    }
+
     std::wstring libCmake = destPath + L"\\CMakeLists.txt";
     if (!fs::exists(libCmake))
         libCmake = destPath + L"/CMakeLists.txt";
+
+    if (fs::exists(libCmake) && _wcsicmp(repoName.c_str(), L"glfwpp") == 0)
+    {
+        std::wstring glfwppError;
+        if (!PatchGlfwppDuplicateGlfwTarget(libCmake, &glfwppError))
+            return fail(glfwppError);
+    }
+
+    if (fs::exists(libCmake))
+    {
+        std::wstring cmakeVersionError;
+        if (!EnsureLibraryCmakeMinimumVersion(libCmake, "3.5", &cmakeVersionError))
+            return fail(cmakeVersionError);
+    }
+
+    {
+        std::wstring recursiveCmakeError;
+        if (!EnsureLibraryCmakeMinimumVersionRecursively(destPath, "3.5", &recursiveCmakeError))
+            return fail(recursiveCmakeError);
+    }
 
     std::wstring fallbackTarget;
     if (!fs::exists(libCmake))
@@ -774,5 +1049,92 @@ bool ExplorerManager::InstallLibraryFromGitUrl(HWND hwnd,
     ParseExternalLibs();
     InvalidateRect(hwnd, nullptr, FALSE);
     Logger::Instance().Log(L"InstallLibraryFromGitUrl: installed " + (displayName.empty() ? repoName : displayName));
+    return true;
+}
+
+bool ExplorerManager::UninstallLibraryFromGitUrl(HWND hwnd,
+                                                 const std::wstring &gitUrl,
+                                                 const std::wstring &displayName,
+                                                 std::wstring *outError)
+{
+    auto fail = [&](const std::wstring &msg) -> bool
+    {
+        if (outError)
+            *outError = msg;
+        Logger::Instance().Log(L"UninstallLibraryFromGitUrl: " + msg);
+        return false;
+    };
+
+    if (state_.rootPath.empty())
+        return fail(L"No project is open. Open a project folder before uninstalling from Marketplace.");
+
+    std::wstring repoName = RepoNameFromUrl(gitUrl);
+    if (repoName.empty())
+        repoName = displayName;
+    if (repoName.empty())
+        return fail(L"Could not determine the repository folder to uninstall.");
+
+    const fs::path externalDir = fs::path(state_.rootPath) / L"external";
+    fs::path destPath = externalDir / repoName;
+    std::wstring subdirRel = L"external/" + repoName;
+
+    ParseExternalLibs();
+    for (const auto &lib : extLibs_.cmake.libraries)
+    {
+        bool matchesRepo = !lib.subdirRel.empty() && PathsEqualInsensitive(NormalizeSlashes(lib.subdirRel), subdirRel);
+        bool matchesName = !displayName.empty() && !lib.name.empty() && PathsEqualInsensitive(lib.name, displayName);
+        bool matchesFolder = !lib.subdirAbs.empty() &&
+                             PathsEqualInsensitive(fs::path(lib.subdirAbs).filename().wstring(), repoName);
+
+        if (matchesRepo || matchesName || matchesFolder)
+        {
+            if (!lib.subdirRel.empty())
+                subdirRel = NormalizeSlashes(lib.subdirRel);
+            if (!lib.subdirAbs.empty())
+                destPath = fs::path(lib.subdirAbs);
+            break;
+        }
+    }
+
+    std::wstring libTarget = repoName;
+    {
+        const std::wstring libCmakeWin = (destPath / L"CMakeLists.txt").wstring();
+        const std::wstring libCmakeUnix = NormalizeSlashes(libCmakeWin);
+        CmakeProjectInfo libInfo;
+        if (fs::exists(libCmakeWin))
+            libInfo = ParseCmakeLists(libCmakeWin);
+        else if (fs::exists(libCmakeUnix))
+            libInfo = ParseCmakeLists(libCmakeUnix);
+
+        if (!libInfo.targetName.empty())
+            libTarget = libInfo.targetName;
+        else
+            libTarget = Utf8ToWide(MakeCmakeTargetName(repoName).c_str());
+    }
+
+    std::wstring projectCmake = state_.rootPath + L"\\CMakeLists.txt";
+    if (!fs::exists(projectCmake))
+        projectCmake = state_.rootPath + L"/CMakeLists.txt";
+    if (!fs::exists(projectCmake))
+        return fail(L"Could not find the project CMakeLists.txt.");
+
+    if (!RemoveLibraryFromCmake(projectCmake, subdirRel, libTarget))
+        return fail(L"Failed to update CMakeLists.txt for " + (displayName.empty() ? repoName : displayName));
+
+    if (fs::exists(destPath))
+    {
+        if (!IsPathInside(externalDir, destPath))
+            return fail(L"Refusing to remove a folder outside the project's external directory.");
+
+        std::error_code ec;
+        fs::remove_all(destPath, ec);
+        if (ec)
+            return fail(L"Failed to remove library files from " + destPath.wstring());
+    }
+
+    TriggerCmakeReconfigure(state_.rootPath);
+    ParseExternalLibs();
+    InvalidateRect(hwnd, nullptr, FALSE);
+    Logger::Instance().Log(L"UninstallLibraryFromGitUrl: removed " + (displayName.empty() ? repoName : displayName));
     return true;
 }

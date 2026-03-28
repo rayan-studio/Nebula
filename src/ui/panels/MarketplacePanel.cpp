@@ -1,6 +1,7 @@
 #include "MarketplacePanel.h"
 #include "core/window/Window.h"
 #include "core/explorer/Explorer.h"
+#include "ui/marketplace/MarketplaceVisuals.h"
 #include "ui/theme/Theme.h"
 #include "helpers/window_helpers.h"
 #include "utils/logger/Logger.h"
@@ -23,52 +24,7 @@ static constexpr float kBtnRight  = 14.0f;   // button right margin
 static constexpr float kBadgePadX = 8.0f;
 static constexpr float kBadgeH    = 16.0f;
 static constexpr float kBadgeR    = 3.0f;
-
-// ---------------------------------------------------------------------------
-// Helper: Category color map
-// ---------------------------------------------------------------------------
-static D2D1_COLOR_F CategoryColor(const std::wstring& cat)
-{
-    std::wstring l = cat;
-    std::transform(l.begin(), l.end(), l.begin(), [](wchar_t c) { 
-        return std::tolower(static_cast<unsigned char>(c)); 
-    });
-
-    if (l == L"ui")         return D2D1::ColorF(0.32f, 0.58f, 0.89f);
-    if (l == L"graphics")   return D2D1::ColorF(0.15f, 0.65f, 0.60f);
-    if (l == L"math")       return D2D1::ColorF(0.49f, 0.34f, 0.76f);
-    if (l == L"utilities")  return D2D1::ColorF(1.00f, 0.44f, 0.26f);
-    if (l == L"audio")      return D2D1::ColorF(0.93f, 0.25f, 0.48f);
-    if (l == L"networking") return D2D1::ColorF(0.15f, 0.78f, 0.85f);
-    if (l == L"physics")    return D2D1::ColorF(0.94f, 0.33f, 0.31f);
-    if (l == L"testing")    return D2D1::ColorF(0.20f, 0.75f, 0.35f);
-    return UI::Theme::Accent();
-}
-
-// ---------------------------------------------------------------------------
-// Helper: Extract initials from library name
-// ---------------------------------------------------------------------------
-static std::wstring Initials(const std::wstring& name)
-{
-    std::wstring result;
-    bool nextUpper = true;
-    for (wchar_t c : name)
-    {
-        if (c == L'/' || c == L' ' || c == L'_') { nextUpper = true; continue; }
-        if (nextUpper && std::iswalpha(c)) { 
-            result += std::towupper(c); 
-            nextUpper = false; 
-        }
-        else if (std::iswupper(c) && !result.empty()) 
-            result += c;
-        if (result.size() >= 2) break;
-    }
-    if (result.empty() && !name.empty()) 
-        result += std::towupper(name[0]);
-    if (result.size() == 1 && name.size() > 1) 
-        result += std::towupper(name[1]);
-    return result;
-}
+static constexpr float kControlsAreaH = 82.0f;
 
 // ---------------------------------------------------------------------------
 // MarketplacePanel constructor
@@ -97,8 +53,8 @@ void MarketplacePanel::Initialize()
     searchInput_.onTextChanged = [this](const std::wstring& text) {
         searchQuery_ = text;
         scrollOffset_ = 0.0f;
-        UpdateCardLayout();
-        if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+        if (hwnd_)
+            LibraryDatabase::Instance().RequestLibrariesAsync(searchQuery_, hwnd_);
     };
 
     LibraryDatabase::Instance().RefreshInstallationStatus(GetExplorerManager().GetState().rootPath);
@@ -139,6 +95,19 @@ void MarketplacePanel::UpdateLayout(HWND hwnd)
         searchTop + kSearchH);
     searchInput_.SetRect(searchBarBounds_);
 
+    const float filterTop = searchBarBounds_.bottom + 8.0f;
+    const float filterH = 24.0f;
+    allFilterBounds_ = D2D1::RectF(
+        state_.leftEdge + kSearchPad,
+        filterTop,
+        state_.leftEdge + kSearchPad + 52.0f,
+        filterTop + filterH);
+    installedFilterBounds_ = D2D1::RectF(
+        allFilterBounds_.right + 8.0f,
+        filterTop,
+        allFilterBounds_.right + 8.0f + 76.0f,
+        filterTop + filterH);
+
     UpdateCardLayout();
 }
 
@@ -148,32 +117,19 @@ void MarketplacePanel::UpdateCardLayout()
 
     float x  = state_.leftEdge;
     float w  = state_.rightEdge - state_.leftEdge;
-    const float kSearchAreaH = 48.0f; // search bar + padding
-    float y  = state_.topEdge + state_.titleHeight + kSearchAreaH + scrollOffset_;
+    float y  = state_.topEdge + state_.titleHeight + kControlsAreaH + scrollOffset_;
 
-    const auto& libs = LibraryDatabase::Instance().GetLibraries();
+    const std::vector<LibraryInfo> libs = LibraryDatabase::Instance().GetLibrariesCopy();
     for (size_t i = 0; i < libs.size(); ++i)
     {
-        // Filter by search query (case-insensitive, matches name or description)
-        if (!searchQuery_.empty())
-        {
-            std::wstring qLow = searchQuery_;
-            std::transform(qLow.begin(), qLow.end(), qLow.begin(), ::towlower);
-            std::wstring nameLow = libs[i].name;
-            std::transform(nameLow.begin(), nameLow.end(), nameLow.begin(), ::towlower);
-            std::wstring descLow = libs[i].description;
-            std::transform(descLow.begin(), descLow.end(), descLow.begin(), ::towlower);
-            std::wstring catLow = libs[i].category;
-            std::transform(catLow.begin(), catLow.end(), catLow.begin(), ::towlower);
-            if (nameLow.find(qLow) == std::wstring::npos &&
-                descLow.find(qLow) == std::wstring::npos &&
-                catLow.find(qLow) == std::wstring::npos)
-                continue;
-        }
+        if (showInstalledOnly_ && !libs[i].isInstalled)
+            continue;
 
         LibraryCard card;
-        card.library = const_cast<LibraryInfo*>(&libs[i]);
+        card.library = libs[i];
         card.bounds  = D2D1::RectF(x, y, x + w, y + kRowH);
+        card.installButtonBounds = D2D1::RectF(0, 0, 0, 0);
+        card.uninstallButtonBounds = D2D1::RectF(0, 0, 0, 0);
 
         // Button: vertically centered, flush right
         float btnX = card.bounds.right  - kBtnRight - kBtnW;
@@ -198,32 +154,86 @@ void MarketplacePanel::UpdateCardLayout()
 // ---------------------------------------------------------------------------
 void MarketplacePanel::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND hwnd)
 {
+    hwnd_ = hwnd;
+    LibraryDatabase::Instance().RequestLibrariesAsync(searchQuery_, hwnd);
+
     // Refresh installation status whenever the active project changes
     const std::wstring& currentRoot = GetExplorerManager().GetState().rootPath;
     if (currentRoot != lastKnownRootPath_)
     {
         lastKnownRootPath_ = currentRoot;
         LibraryDatabase::Instance().RefreshInstallationStatus(currentRoot);
-        UpdateCardLayout();
     }
 
-    hwnd_ = hwnd;  // store for callbacks
+    const unsigned long long revision = LibraryDatabase::Instance().GetRevision();
+    if (revision != dataRevision_)
+    {
+        dataRevision_ = revision;
+        UpdateCardLayout();
+    }
 
     DrawBackground(ctx);
     DrawTitle(ctx, dwrite);
 
     // Draw search bar (outside clip so it's always visible)
     searchInput_.Draw(ctx, dwrite);
+    DrawButton(ctx, dwrite, allFilterBounds_, L"All", isHoveringAllFilter_, !showInstalledOnly_);
+    DrawButton(ctx, dwrite, installedFilterBounds_, L"Installed", isHoveringInstalledFilter_, showInstalledOnly_);
 
     // Clip to content area (below search bar)
-    const float kSearchAreaH = 48.0f;
     D2D1_RECT_F clip = D2D1::RectF(
-        state_.leftEdge,   state_.topEdge + state_.titleHeight + kSearchAreaH,
+        state_.leftEdge,   state_.topEdge + state_.titleHeight + kControlsAreaH,
         state_.rightEdge,  state_.bottomEdge);
     ctx->PushAxisAlignedClip(clip, D2D1_ANTIALIAS_MODE_ALIASED);
 
-    for (auto& card : cards_)
-        DrawLibraryCard(ctx, dwrite, card);
+    if (!cards_.empty())
+    {
+        for (auto& card : cards_)
+            DrawLibraryCard(ctx, dwrite, card);
+    }
+    else
+    {
+        const std::wstring error = LibraryDatabase::Instance().GetLastError();
+        const std::wstring message = !error.empty()
+            ? error
+            : (LibraryDatabase::Instance().IsLoading()
+                ? L"Loading marketplace libraries..."
+                : (showInstalledOnly_
+                    ? L"No installed libraries found."
+                    : L"No libraries found."));
+
+        IDWriteTextFormat* fmt = nullptr;
+        dwrite->CreateTextFormat(
+            L"Segoe UI Variable Text",
+            nullptr,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            12.5f,
+            L"en-us",
+            &fmt);
+        if (!fmt)
+            dwrite->CreateTextFormat(
+                L"Segoe UI",
+                nullptr,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                12.5f,
+                L"en-us",
+                &fmt);
+
+        ID2D1SolidColorBrush* brush = nullptr;
+        ctx->CreateSolidColorBrush(UI::Theme::MutedText(), &brush);
+        if (fmt && brush)
+        {
+            fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            ctx->DrawTextW(message.c_str(), static_cast<UINT32>(message.size()), fmt, clip, brush);
+        }
+        if (fmt) fmt->Release();
+        if (brush) brush->Release();
+    }
 
     ctx->PopAxisAlignedClip();
 
@@ -236,18 +246,16 @@ void MarketplacePanel::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND
 void MarketplacePanel::DrawLibraryCard(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
                                         LibraryCard& card)
 {
-    if (!card.library) return;
+    if (card.library.name.empty()) return;
 
     const float L  = card.bounds.left;
     const float R  = card.bounds.right;
     const float T  = card.bounds.top;
     const float B  = card.bounds.bottom;
-    const float W  = R - L;
-
     // ── Row hover background ────────────────────────────────────────────────
     if (card.isHoveringCard)
     {
-        D2D1_COLOR_F cat = CategoryColor(card.library->category);
+        D2D1_COLOR_F cat = MarketplaceCategoryColor(card.library.category);
 
         // Strong overlay to make hover state clearly visible.
         ID2D1SolidColorBrush* hovBg = nullptr;
@@ -295,24 +303,33 @@ void MarketplacePanel::DrawLibraryCard(ID2D1RenderTarget* ctx, IDWriteFactory* d
     }
 
     // ── Colored icon block ──────────────────────────────────────────────────
-    D2D1_COLOR_F catColor = CategoryColor(card.library->category);
+    D2D1_COLOR_F catColor = MarketplaceCategoryColor(card.library.category);
     float iconX = L + kIconLeft;
     float iconY = T + (kRowH - kIconSz) * 0.5f;
     D2D1_RECT_F iconRect = D2D1::RectF(iconX, iconY, iconX + kIconSz, iconY + kIconSz);
 
-    // Icon background (gradient-like: filled + darker right edge)
+    MarketplaceEnsureAvatarAsync(card.library.avatarUrl, hwnd_);
+    ID2D1Bitmap* avatar = MarketplaceLoadAvatarBitmap(ctx, card.library.avatarUrl);
+    if (avatar)
     {
-        ID2D1SolidColorBrush* ibr = nullptr;
-        ctx->CreateSolidColorBrush(catColor, &ibr);
-        if (ibr) {
-            ctx->FillRoundedRectangle(D2D1::RoundedRect(iconRect, 8.0f, 8.0f), ibr);
-            ibr->Release();
+        ctx->DrawBitmap(avatar, iconRect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        ID2D1SolidColorBrush* border = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 0.10f), &border);
+        if (border) {
+            ctx->DrawRoundedRectangle(D2D1::RoundedRect(iconRect, 8.0f, 8.0f), border, 1.0f);
+            border->Release();
         }
     }
-
-    // Icon initials (2 chars, white, bold, centered)
+    else
     {
-        std::wstring ini = Initials(card.library->name);
+        ID2D1SolidColorBrush* bg = nullptr;
+        ctx->CreateSolidColorBrush(catColor, &bg);
+        if (bg) {
+            ctx->FillRoundedRectangle(D2D1::RoundedRect(iconRect, 8.0f, 8.0f), bg);
+            bg->Release();
+        }
+
+        std::wstring ini = MarketplaceInitials(card.library.name);
         IDWriteTextFormat* fmt = nullptr;
         dwrite->CreateTextFormat(L"Segoe UI Variable Display", nullptr,
             DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_STYLE_NORMAL,
@@ -321,15 +338,15 @@ void MarketplacePanel::DrawLibraryCard(ID2D1RenderTarget* ctx, IDWriteFactory* d
             dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_BOLD,
                 DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
                 15.0f, L"en-us", &fmt);
-        ID2D1SolidColorBrush* wbr = nullptr;
-        ctx->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 0.92f), &wbr);
-        if (fmt && wbr) {
+        ID2D1SolidColorBrush* fg = nullptr;
+        ctx->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 0.92f), &fg);
+        if (fmt && fg) {
             fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
             fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            ctx->DrawTextW(ini.c_str(), (UINT32)ini.size(), fmt, iconRect, wbr);
+            ctx->DrawTextW(ini.c_str(), (UINT32)ini.size(), fmt, iconRect, fg);
         }
         if (fmt) fmt->Release();
-        if (wbr) wbr->Release();
+        if (fg) fg->Release();
     }
 
     // ── Text content area ───────────────────────────────────────────────────
@@ -355,15 +372,15 @@ void MarketplacePanel::DrawLibraryCard(ID2D1RenderTarget* ctx, IDWriteFactory* d
             nameFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
             nameFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
             D2D1_RECT_F nameRect = D2D1::RectF(textL, T + 9.0f, textR, T + 24.0f);
-            ctx->DrawTextW(card.library->name.c_str(),
-                           (UINT32)card.library->name.size(), nameFmt, nameRect, txtBr);
+            ctx->DrawTextW(card.library.name.c_str(),
+                           (UINT32)card.library.name.size(), nameFmt, nameRect, txtBr);
         }
         if (nameFmt) nameFmt->Release();
         if (txtBr)   txtBr->Release();
     }
 
     // Version badge (right-aligned, same row as name)
-    if (!card.library->version.empty())
+    if (!card.library.version.empty())
     {
         IDWriteTextFormat* vFmt = nullptr;
         dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
@@ -374,7 +391,7 @@ void MarketplacePanel::DrawLibraryCard(ID2D1RenderTarget* ctx, IDWriteFactory* d
         mutedCol.a *= 0.7f;
         ctx->CreateSolidColorBrush(mutedCol, &vBr);
         if (vFmt && vBr) {
-            std::wstring ver = L"v" + card.library->version;
+            std::wstring ver = L"v" + card.library.version;
             vFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
             vFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
             D2D1_RECT_F vRect = D2D1::RectF(textL, T + 11.0f, textR, T + 24.0f);
@@ -385,7 +402,7 @@ void MarketplacePanel::DrawLibraryCard(ID2D1RenderTarget* ctx, IDWriteFactory* d
     }
 
     // Author line ("by authorname") — CLion style
-    if (!card.library->author.empty())
+    if (!card.library.author.empty())
     {
         IDWriteTextFormat* aFmt = nullptr;
         dwrite->CreateTextFormat(L"Segoe UI Variable Text", nullptr,
@@ -403,7 +420,7 @@ void MarketplacePanel::DrawLibraryCard(ID2D1RenderTarget* ctx, IDWriteFactory* d
             aFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
             aFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
             aFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-            std::wstring byLine = L"by " + card.library->author;
+            std::wstring byLine = L"by " + card.library.author;
             D2D1_RECT_F aRect = D2D1::RectF(textL, T + 26.0f, textR, T + 38.0f);
             ctx->DrawTextW(byLine.c_str(), (UINT32)byLine.size(), aFmt, aRect, aBr,
                            D2D1_DRAW_TEXT_OPTIONS_CLIP);
@@ -429,8 +446,8 @@ void MarketplacePanel::DrawLibraryCard(ID2D1RenderTarget* ctx, IDWriteFactory* d
             dFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
             dFmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
             D2D1_RECT_F descRect = D2D1::RectF(textL, T + 40.0f, textR, T + 54.0f);
-            ctx->DrawTextW(card.library->description.c_str(),
-                           (UINT32)card.library->description.size(),
+            ctx->DrawTextW(card.library.description.c_str(),
+                           (UINT32)card.library.description.size(),
                            dFmt, descRect, dBr,
                            D2D1_DRAW_TEXT_OPTIONS_CLIP);
         }
@@ -439,11 +456,11 @@ void MarketplacePanel::DrawLibraryCard(ID2D1RenderTarget* ctx, IDWriteFactory* d
     }
 
     // Category pill badge
-    DrawCardCategory(ctx, dwrite, card.library->category, catColor,
+    DrawCardCategory(ctx, dwrite, card.library.category, catColor,
                      textL, T + 57.0f);
 
     // ── Install / Uninstall button ──────────────────────────────────────────
-    if (card.library->isInstalled)
+    if (card.library.isInstalled)
         DrawInstalledButton(ctx, dwrite, card.uninstallButtonBounds,
                             card.isHoveringUninstallBtn);
     else
@@ -591,6 +608,54 @@ void MarketplacePanel::DrawInstalledButton(ID2D1RenderTarget* ctx, IDWriteFactor
     }
 }
 
+void MarketplacePanel::DrawButton(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
+                                  const D2D1_RECT_F& bounds, const std::wstring& text,
+                                  bool isHovering, bool isActive)
+{
+    D2D1_COLOR_F bg = UI::Theme::ChromeBackground();
+    D2D1_COLOR_F border = UI::Theme::ChromeBorder();
+    D2D1_COLOR_F fg = UI::Theme::MutedText();
+
+    if (isActive)
+    {
+        bg = D2D1::ColorF(UI::Theme::Accent().r, UI::Theme::Accent().g, UI::Theme::Accent().b, 0.16f);
+        border = D2D1::ColorF(UI::Theme::Accent().r, UI::Theme::Accent().g, UI::Theme::Accent().b, 0.55f);
+        fg = UI::Theme::PrimaryText();
+    }
+    else if (isHovering)
+    {
+        bg = D2D1::ColorF(1, 1, 1, 0.06f);
+        fg = UI::Theme::PrimaryText();
+    }
+
+    ID2D1SolidColorBrush* bgBr = nullptr;
+    ctx->CreateSolidColorBrush(bg, &bgBr);
+    if (bgBr) {
+        ctx->FillRoundedRectangle(D2D1::RoundedRect(bounds, 12.0f, 12.0f), bgBr);
+        bgBr->Release();
+    }
+
+    ID2D1SolidColorBrush* borderBr = nullptr;
+    ctx->CreateSolidColorBrush(border, &borderBr);
+    if (borderBr) {
+        ctx->DrawRoundedRectangle(D2D1::RoundedRect(bounds, 12.0f, 12.0f), borderBr, 1.0f);
+        borderBr->Release();
+    }
+
+    IDWriteTextFormat* fmt = nullptr;
+    dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+        DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 10.5f, L"en-us", &fmt);
+    ID2D1SolidColorBrush* textBr = nullptr;
+    ctx->CreateSolidColorBrush(fg, &textBr);
+    if (fmt && textBr) {
+        fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        ctx->DrawTextW(text.c_str(), (UINT32)text.size(), fmt, bounds, textBr);
+    }
+    if (fmt) fmt->Release();
+    if (textBr) textBr->Release();
+}
+
 // ---------------------------------------------------------------------------
 // Interaction
 // ---------------------------------------------------------------------------
@@ -601,20 +666,34 @@ void MarketplacePanel::OnMouseMove(HWND hwnd, POINT clientPoint)
 
     searchInput_.OnMouseMove(hwnd, clientPoint);
 
+    auto htest = [&](const D2D1_RECT_F& r) {
+        return clientPoint.x >= (int)r.left  && clientPoint.x <= (int)r.right &&
+               clientPoint.y >= (int)r.top   && clientPoint.y <= (int)r.bottom;
+    };
+
     bool changed = false;
+    bool wasAll = isHoveringAllFilter_;
+    bool wasInstalled = isHoveringInstalledFilter_;
+    isHoveringAllFilter_ = htest(allFilterBounds_);
+    isHoveringInstalledFilter_ = htest(installedFilterBounds_);
+    if (wasAll != isHoveringAllFilter_ || wasInstalled != isHoveringInstalledFilter_)
+        changed = true;
+
+    const D2D1_RECT_F contentClip = D2D1::RectF(
+        state_.leftEdge,
+        state_.topEdge + state_.titleHeight + kControlsAreaH,
+        state_.rightEdge,
+        state_.bottomEdge);
+    const bool inContentArea = htest(contentClip);
+
     for (auto& card : cards_)
     {
         bool wasCard = card.isHoveringCard;
-        card.isHoveringCard =
+        card.isHoveringCard = inContentArea &&
             clientPoint.x >= (int)card.bounds.left  &&
             clientPoint.x <= (int)card.bounds.right &&
             clientPoint.y >= (int)card.bounds.top   &&
             clientPoint.y <= (int)card.bounds.bottom;
-
-        auto htest = [&](const D2D1_RECT_F& r) {
-            return clientPoint.x >= (int)r.left  && clientPoint.x <= (int)r.right &&
-                   clientPoint.y >= (int)r.top   && clientPoint.y <= (int)r.bottom;
-        };
 
         bool wasI  = card.isHoveringInstallBtn;
         bool wasU  = card.isHoveringUninstallBtn;
@@ -645,9 +724,41 @@ void MarketplacePanel::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
                clientPoint.y >= (int)r.top   && clientPoint.y <= (int)r.bottom;
     };
 
+    if (hit(allFilterBounds_))
+    {
+        if (showInstalledOnly_)
+        {
+            showInstalledOnly_ = false;
+            scrollOffset_ = 0.0f;
+            UpdateCardLayout();
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+
+    if (hit(installedFilterBounds_))
+    {
+        if (!showInstalledOnly_)
+        {
+            showInstalledOnly_ = true;
+            scrollOffset_ = 0.0f;
+            UpdateCardLayout();
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        return;
+    }
+
+    const D2D1_RECT_F contentClip = D2D1::RectF(
+        state_.leftEdge,
+        state_.topEdge + state_.titleHeight + kControlsAreaH,
+        state_.rightEdge,
+        state_.bottomEdge);
+    if (!hit(contentClip))
+        return;
+
     for (auto& card : cards_)
     {
-        if (!card.library)
+        if (card.library.name.empty())
             continue;
 
         if (hit(card.installButtonBounds))
@@ -666,7 +777,7 @@ void MarketplacePanel::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
 
         if (hit(card.bounds))
         {
-            auto *libraryName = new std::wstring(card.library->name);
+            auto *libraryName = new std::wstring(card.library.name);
             if (!PostMessageW(hwnd, WM_OPEN_MARKETPLACE_LIBRARY, 0, reinterpret_cast<LPARAM>(libraryName)))
                 delete libraryName;
             return;
@@ -677,7 +788,11 @@ void MarketplacePanel::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
 void MarketplacePanel::OnLeftButtonUp(HWND hwnd)
 {
     HandleResizeLeftButtonUp(hwnd);
-    searchInput_.OnLeftButtonUp(hwnd, {0, 0});
+
+    POINT clientPoint{};
+    if (GetCursorPos(&clientPoint))
+        ScreenToClient(hwnd, &clientPoint);
+    searchInput_.OnLeftButtonUp(hwnd, clientPoint);
 }
 
 void MarketplacePanel::OnMouseWheel(HWND hwnd, int delta)
@@ -685,8 +800,7 @@ void MarketplacePanel::OnMouseWheel(HWND hwnd, int delta)
     scrollOffset_ += delta * 0.5f;
 
     // Match the exact clip height used in Draw() so the last card can be reached.
-    const float kSearchAreaH = 48.0f;
-    const float viewportH = state_.bottomEdge - (state_.topEdge + state_.titleHeight + kSearchAreaH);
+    const float viewportH = state_.bottomEdge - (state_.topEdge + state_.titleHeight + kControlsAreaH);
     float minScroll = -((float)cards_.size() * kRowH - viewportH);
 
     if (minScroll > 0.0f) minScroll = 0.0f;
@@ -697,36 +811,58 @@ void MarketplacePanel::OnMouseWheel(HWND hwnd, int delta)
 
 void MarketplacePanel::HandleInstallLibrary(HWND hwnd, LibraryCard* card)
 {
-    if (!card || !card->library) return;
+    if (!card || card->library.name.empty()) return;
 
     std::wstring installError;
     bool ok = GetExplorerManager().InstallLibraryFromGitUrl(
         hwnd,
-        card->library->gitUrl,
-        card->library->name,
+        card->library.gitUrl,
+        card->library.name,
         &installError);
 
     if (ok)
     {
-        LibraryDatabase::Instance().SetInstalled(card->library->name, true);
-        Logger::Instance().Log(L"Installing library: " + card->library->name);
+        card->library.isInstalled = true;
+        LibraryDatabase::Instance().SetInstalled(card->library.name, true);
+        Logger::Instance().Log(L"Installing library: " + card->library.name);
+        UpdateCardLayout();
     }
     else
     {
-        LibraryDatabase::Instance().SetInstalled(card->library->name, false);
+        card->library.isInstalled = false;
+        LibraryDatabase::Instance().SetInstalled(card->library.name, false);
         if (installError.empty())
             installError = L"Failed to install library.";
         MessageBoxW(hwnd, installError.c_str(), L"Marketplace Install", MB_OK | MB_ICONERROR);
-        Logger::Instance().Log(L"Install failed for " + card->library->name + L": " + installError);
+        Logger::Instance().Log(L"Install failed for " + card->library.name + L": " + installError);
     }
 }
 
 void MarketplacePanel::HandleUninstallLibrary(HWND hwnd, LibraryCard* card)
 {
-    (void)hwnd;
-    if (!card || !card->library) return;
-    LibraryDatabase::Instance().SetInstalled(card->library->name, false);
-    Logger::Instance().Log(L"Uninstalling library: " + card->library->name);
+    if (!card || card->library.name.empty()) return;
+
+    std::wstring uninstallError;
+    bool ok = GetExplorerManager().UninstallLibraryFromGitUrl(
+        hwnd,
+        card->library.gitUrl,
+        card->library.name,
+        &uninstallError);
+
+    if (ok)
+    {
+        card->library.isInstalled = false;
+        LibraryDatabase::Instance().RefreshInstallationStatus(GetExplorerManager().GetState().rootPath);
+        Logger::Instance().Log(L"Uninstalled library: " + card->library.name);
+        UpdateCardLayout();
+    }
+    else
+    {
+        if (uninstallError.empty())
+            uninstallError = L"Failed to remove library.";
+        MessageBoxW(hwnd, uninstallError.c_str(), L"Marketplace Remove", MB_OK | MB_ICONERROR);
+        Logger::Instance().Log(L"Uninstall failed for " + card->library.name + L": " + uninstallError);
+    }
 }
 
 void MarketplacePanel::OnChar(wchar_t ch)

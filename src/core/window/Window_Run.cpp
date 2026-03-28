@@ -1,9 +1,11 @@
 #pragma warning(disable: 4505)
 #include "core/window/Window.h"
+#include "core/window/OpenFileRequest.h"
 #include "utils/logger/Logger.h"
 #include "core/explorer/Explorer.h"
 #include "ui/panels/terminal/TerminalPanel.h"
 #include <windows.h>
+#include <dbghelp.h>
 #include <shellapi.h>
 #include <filesystem>
 #include <optional>
@@ -15,6 +17,10 @@
 #include <thread>
 #include <cwctype>
 #include <cctype>
+#include <iomanip>
+#include <algorithm>
+
+#pragma comment(lib, "dbghelp.lib")
 
 static std::wstring QuotePath(const std::filesystem::path &path)
 {
@@ -153,6 +159,106 @@ static std::wstring FormatWin32Error(DWORD err)
     return out;
 }
 
+static std::wstring TrimWide(const std::wstring &text)
+{
+    size_t a = 0;
+    while (a < text.size() && std::iswspace(text[a]))
+        ++a;
+
+    size_t b = text.size();
+    while (b > a && std::iswspace(text[b - 1]))
+        --b;
+
+    return text.substr(a, b - a);
+}
+
+static std::wstring ToLowerWide(std::wstring text)
+{
+    std::transform(text.begin(), text.end(), text.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
+    return text;
+}
+
+static bool ContainsCaseInsensitive(const std::wstring &text, const std::wstring &needle)
+{
+    if (needle.empty())
+        return true;
+    return ToLowerWide(text).find(ToLowerWide(needle)) != std::wstring::npos;
+}
+
+static std::wstring ExtractBetween(const std::wstring &text,
+                                   const std::wstring &left,
+                                   const std::wstring &right)
+{
+    const size_t start = text.find(left);
+    if (start == std::wstring::npos)
+        return {};
+    const size_t valueStart = start + left.size();
+    const size_t end = text.find(right, valueStart);
+    if (end == std::wstring::npos || end <= valueStart)
+        return {};
+    return text.substr(valueStart, end - valueStart);
+}
+
+// Returns a user-friendly error candidate and a severity score.
+static bool ParseBuildErrorCandidate(const std::wstring &rawLine,
+                                     std::wstring &outMessage,
+                                     int &outScore)
+{
+    std::wstring line = TrimWide(rawLine);
+    if (line.empty())
+        return false;
+
+    const std::wstring lower = ToLowerWide(line);
+
+    if (lower.find(L"error c1083") != std::wstring::npos)
+    {
+        std::wstring missingHeader = ExtractBetween(line, L"include file: '", L"'");
+        if (missingHeader.empty())
+            missingHeader = ExtractBetween(line, L"include file:\u00a0'", L"'");
+
+        if (!missingHeader.empty())
+            outMessage = L"Erreur C1083: include introuvable ('" + missingHeader + L"'). Verifie target_include_directories(...) et le dossier externe de la lib.";
+        else
+            outMessage = line;
+
+        outScore = 100;
+        return true;
+    }
+
+    if (lower.find(L"fatal error lnk1104") != std::wstring::npos)
+    {
+        std::wstring missingFile = ExtractBetween(line, L"'", L"'");
+        if (!missingFile.empty())
+            outMessage = L"Erreur LNK1104: fichier introuvable ou verrouille ('" + missingFile + L"').";
+        else
+            outMessage = line;
+
+        outScore = 95;
+        return true;
+    }
+
+    if (lower.find(L"cmake error") != std::wstring::npos)
+    {
+        outMessage = line;
+        outScore = 90;
+        return true;
+    }
+
+    const bool hasGenericErrorToken = (lower.find(L": error") != std::wstring::npos) ||
+                                      (lower.find(L" error:") != std::wstring::npos) ||
+                                      (lower.find(L" error ") != std::wstring::npos);
+    if (hasGenericErrorToken)
+    {
+        outMessage = line;
+        outScore = 70;
+        return true;
+    }
+
+    return false;
+}
+
 static bool RunCommandAndCapture(const std::wstring &command,
                                  const std::filesystem::path &workingDir,
                                  DWORD &exitCode,
@@ -257,6 +363,24 @@ static bool RunCommandAndCapture(const std::wstring &command,
     DWORD read = 0;
     std::wstring lineBuf;
     std::wstring lastLine;
+    std::wstring bestErrorLine;
+    int bestErrorScore = -1;
+
+    auto consumeLine = [&](const std::wstring &raw) {
+        std::wstring line = TrimWide(raw);
+        if (line.empty())
+            return;
+        lastLine = line;
+
+        std::wstring candidate;
+        int score = -1;
+        if (ParseBuildErrorCandidate(line, candidate, score) && score > bestErrorScore)
+        {
+            bestErrorScore = score;
+            bestErrorLine = candidate;
+        }
+    };
+
     while (true)
     {
         BOOL success = ReadFile(outRead, buffer, sizeof(buffer), &read, NULL);
@@ -274,7 +398,7 @@ static bool RunCommandAndCapture(const std::wstring &command,
                 if (c == L'\n')
                 {
                     if (!lineBuf.empty())
-                        lastLine = lineBuf;
+                        consumeLine(lineBuf);
                     lineBuf.clear();
                     continue;
                 }
@@ -298,8 +422,15 @@ static bool RunCommandAndCapture(const std::wstring &command,
     if (lastLineOut)
     {
         if (!lineBuf.empty())
-            lastLine = lineBuf;
-        *lastLineOut = lastLine;
+            consumeLine(lineBuf);
+
+        if (!bestErrorLine.empty())
+            *lastLineOut = bestErrorLine;
+        else
+            *lastLineOut = lastLine;
+
+        if (lastLineOut->empty())
+            *lastLineOut = L"Voir l'onglet Output pour le detail complet de la compilation.";
     }
     return exitCode == 0;
 }
@@ -1065,6 +1196,190 @@ static void ShowRunErrorPopup(HWND owner, const std::wstring &title, const std::
     PostMessageW(owner, WM_SHOW_RUN_ERROR_POPUP, 0, reinterpret_cast<LPARAM>(copy));
 }
 
+struct DebugCrashReport
+{
+    bool crashed = false;
+    DWORD exitCode = 0;
+    DWORD exceptionCode = 0;
+    DWORD64 exceptionAddress = 0;
+    std::wstring filePath;
+    int line = -1;
+    std::wstring symbol;
+};
+
+static std::wstring NarrowAcpToWide(const char *s)
+{
+    if (!s || !*s)
+        return {};
+    int n = MultiByteToWideChar(CP_ACP, 0, s, -1, nullptr, 0);
+    if (n <= 0)
+        return {};
+    std::wstring out((size_t)n, L'\0');
+    MultiByteToWideChar(CP_ACP, 0, s, -1, out.data(), n);
+    if (!out.empty() && out.back() == L'\0')
+        out.pop_back();
+    return out;
+}
+
+static std::wstring ExceptionCodeToText(DWORD code)
+{
+    switch (code)
+    {
+    case EXCEPTION_ACCESS_VIOLATION: return L"Access violation";
+    case EXCEPTION_ARRAY_BOUNDS_EXCEEDED: return L"Array bounds exceeded";
+    case EXCEPTION_BREAKPOINT: return L"Breakpoint";
+    case EXCEPTION_DATATYPE_MISALIGNMENT: return L"Datatype misalignment";
+    case EXCEPTION_FLT_DENORMAL_OPERAND: return L"Float denormal operand";
+    case EXCEPTION_FLT_DIVIDE_BY_ZERO: return L"Float divide by zero";
+    case EXCEPTION_FLT_INVALID_OPERATION: return L"Float invalid operation";
+    case EXCEPTION_FLT_OVERFLOW: return L"Float overflow";
+    case EXCEPTION_FLT_STACK_CHECK: return L"Float stack check";
+    case EXCEPTION_FLT_UNDERFLOW: return L"Float underflow";
+    case EXCEPTION_ILLEGAL_INSTRUCTION: return L"Illegal instruction";
+    case EXCEPTION_IN_PAGE_ERROR: return L"In-page error";
+    case EXCEPTION_INT_DIVIDE_BY_ZERO: return L"Integer divide by zero";
+    case EXCEPTION_INT_OVERFLOW: return L"Integer overflow";
+    case EXCEPTION_INVALID_DISPOSITION: return L"Invalid disposition";
+    case EXCEPTION_NONCONTINUABLE_EXCEPTION: return L"Noncontinuable exception";
+    case EXCEPTION_PRIV_INSTRUCTION: return L"Privileged instruction";
+    case EXCEPTION_SINGLE_STEP: return L"Single step";
+    case EXCEPTION_STACK_OVERFLOW: return L"Stack overflow";
+    default: return L"Unknown exception";
+    }
+}
+
+static std::wstring ToHexU64(unsigned long long value)
+{
+    std::wstringstream ss;
+    ss << std::hex << std::uppercase << value;
+    return ss.str();
+}
+
+static void ResolveCrashLocation(HANDLE process, DWORD64 address, std::wstring &outFile, int &outLine, std::wstring &outSymbol)
+{
+    outFile.clear();
+    outLine = -1;
+    outSymbol.clear();
+
+    if (!process || !address)
+        return;
+
+    SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME | SYMOPT_LOAD_LINES);
+    if (!SymInitialize(process, nullptr, TRUE))
+        return;
+
+    char symBuffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME] = {};
+    SYMBOL_INFO *sym = reinterpret_cast<SYMBOL_INFO *>(symBuffer);
+    sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+    sym->MaxNameLen = MAX_SYM_NAME;
+    DWORD64 displacement = 0;
+    if (SymFromAddr(process, address, &displacement, sym))
+        outSymbol = NarrowAcpToWide(sym->Name);
+
+    IMAGEHLP_LINE64 lineInfo = {};
+    lineInfo.SizeOfStruct = sizeof(lineInfo);
+    DWORD lineDisp = 0;
+    if (SymGetLineFromAddr64(process, address, &lineDisp, &lineInfo))
+    {
+        outFile = NarrowAcpToWide(lineInfo.FileName);
+        outLine = (int)lineInfo.LineNumber;
+    }
+
+    SymCleanup(process);
+}
+
+static DebugCrashReport LaunchExecutableWithDebugger(const std::filesystem::path &exePath)
+{
+    DebugCrashReport report;
+
+    STARTUPINFOW si = {};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi = {};
+
+    std::wstring cmdLine = QuotePath(exePath);
+    wchar_t *mutableCmd = _wcsdup(cmdLine.c_str());
+    BOOL ok = CreateProcessW(
+        nullptr,
+        mutableCmd,
+        nullptr,
+        nullptr,
+        FALSE,
+        DEBUG_ONLY_THIS_PROCESS | CREATE_NEW_CONSOLE,
+        nullptr,
+        exePath.parent_path().wstring().c_str(),
+        &si,
+        &pi);
+    free(mutableCmd);
+
+    if (!ok)
+    {
+        report.crashed = true;
+        report.exceptionCode = GetLastError();
+        return report;
+    }
+
+    bool running = true;
+    bool firstBreakpoint = true;
+
+    while (running)
+    {
+        DEBUG_EVENT ev = {};
+        if (!WaitForDebugEvent(&ev, INFINITE))
+            break;
+
+        DWORD continueStatus = DBG_CONTINUE;
+
+        switch (ev.dwDebugEventCode)
+        {
+        case CREATE_PROCESS_DEBUG_EVENT:
+            if (ev.u.CreateProcessInfo.hFile)
+                CloseHandle(ev.u.CreateProcessInfo.hFile);
+            break;
+        case LOAD_DLL_DEBUG_EVENT:
+            if (ev.u.LoadDll.hFile)
+                CloseHandle(ev.u.LoadDll.hFile);
+            break;
+        case EXCEPTION_DEBUG_EVENT:
+        {
+            const auto &ex = ev.u.Exception.ExceptionRecord;
+            const bool firstChance = ev.u.Exception.dwFirstChance != 0;
+
+            if (ex.ExceptionCode == EXCEPTION_BREAKPOINT && firstBreakpoint)
+            {
+                firstBreakpoint = false;
+                continueStatus = DBG_CONTINUE;
+            }
+            else if (!firstChance)
+            {
+                report.crashed = true;
+                report.exceptionCode = ex.ExceptionCode;
+                report.exceptionAddress = (DWORD64)(uintptr_t)ex.ExceptionAddress;
+                ResolveCrashLocation(pi.hProcess, report.exceptionAddress, report.filePath, report.line, report.symbol);
+                continueStatus = DBG_EXCEPTION_NOT_HANDLED;
+            }
+            else
+            {
+                continueStatus = DBG_EXCEPTION_NOT_HANDLED;
+            }
+            break;
+        }
+        case EXIT_PROCESS_DEBUG_EVENT:
+            report.exitCode = ev.u.ExitProcess.dwExitCode;
+            running = false;
+            break;
+        default:
+            break;
+        }
+
+        ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, continueStatus);
+    }
+
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return report;
+}
+
 static std::string GetProjectTypeFromRoot(const std::filesystem::path &root)
 {
     std::filesystem::path projPath = root / ".nebula" / "project.json";
@@ -1305,6 +1620,175 @@ void Window::RunActiveProject()
         Logger::Instance().Log(L"Run: Launching executable in integrated terminal.");
         std::wstring workDir = exe.parent_path().wstring();
         GetTerminalPanel().SendCommandToActive(hwnd, workDir, L"& " + QuotePath(exe));
+    }).detach();
+}
+
+void Window::RunActiveProjectDebug()
+{
+    if (IsRunProcessActive())
+    {
+        Logger::Instance().Log(L"Debug: An executable is already running.");
+        return;
+    }
+
+    std::wstring root = GetExplorerManager().GetState().rootPath;
+    std::filesystem::path rootPath(root);
+    std::error_code ec;
+    bool hasCMake = !root.empty() && std::filesystem::exists(rootPath / "CMakeLists.txt", ec);
+    if (!hasCMake)
+    {
+        ShowRunErrorPopup(hwnd_, L"Debug", L"Le debogage integre supporte les projets CMake.");
+        return;
+    }
+
+    ToolchainConfig tc{};
+    const bool hasToolchain = LoadToolchainConfig(tc);
+    const std::vector<wchar_t> envBlock = BuildEnvironmentBlock(hasToolchain ? &tc : nullptr);
+    const bool useNinja = hasToolchain;
+
+    if (useNinja)
+    {
+        std::wstring tcError = ValidateToolchain(tc);
+        if (!tcError.empty())
+        {
+            ShowRunErrorPopup(hwnd_, L"Toolchain MinGW incomplet", tcError);
+            return;
+        }
+    }
+
+    std::wstring systemCMake = L"C:\\Program Files\\CMake\\bin\\cmake.exe";
+    std::wstring systemCMakeX86 = L"C:\\Program Files (x86)\\CMake\\bin\\cmake.exe";
+    std::wstring cmakeExe;
+    if (hasToolchain)
+    {
+        std::error_code ec2;
+        if (!tc.cmakeBin.empty())
+        {
+            std::filesystem::path cmakeBin = tc.cmakeBin;
+            std::filesystem::path cmakePath = cmakeBin / "cmake.exe";
+            std::filesystem::path shareDir = cmakeBin.parent_path() / "share";
+            bool hasShare = false;
+            if (std::filesystem::exists(shareDir, ec2))
+            {
+                for (const auto &entry : std::filesystem::directory_iterator(shareDir, ec2))
+                {
+                    if (!entry.is_directory(ec2))
+                        continue;
+                    std::wstring name = entry.path().filename().wstring();
+                    if (name.rfind(L"cmake-", 0) == 0)
+                    {
+                        hasShare = true;
+                        break;
+                    }
+                }
+            }
+            if (std::filesystem::exists(cmakePath, ec2) && hasShare)
+                cmakeExe = cmakePath.wstring();
+        }
+    }
+    if (cmakeExe.empty())
+    {
+        std::error_code ec3;
+        if (std::filesystem::exists(systemCMake, ec3))
+            cmakeExe = systemCMake;
+        else if (std::filesystem::exists(systemCMakeX86, ec3))
+            cmakeExe = systemCMakeX86;
+    }
+
+    {
+        TerminalPanel &terminal = GetTerminalPanel();
+        terminal.SetVisible(true);
+        terminal.ClearOutput();
+        terminal.ShowOutput(true);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+
+    std::thread([rootPath, hwnd = hwnd_, envBlock, useNinja, cmakeExe]()
+    {
+        std::filesystem::path buildDir = rootPath / (useNinja ? "build-ninja" : "build");
+        DWORD exitCode = 0;
+        std::wstring cmakeCmd = cmakeExe.empty() ? L"cmake" : QuotePath(cmakeExe);
+        std::wstring configureCmd = cmakeCmd + L" -S " + QuotePath(rootPath) + L" -B " + QuotePath(buildDir);
+        if (useNinja)
+            configureCmd += L" -G \"Ninja\" -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++";
+
+        std::wstring buildCmd = cmakeCmd + L" --build " + QuotePath(buildDir);
+        if (!useNinja)
+            buildCmd += L" --config Release";
+
+        TerminalPanel &terminal = GetTerminalPanel();
+        terminal.AppendOutputChunk(L"$ " + configureCmd + L"\n");
+        std::wstring lastLine;
+        if (!RunCommandAndCapture(configureCmd, rootPath, exitCode, &envBlock, hwnd, &lastLine))
+        {
+            ShowRunErrorPopup(hwnd, L"Configuration CMake echouee", lastLine);
+            return;
+        }
+
+        terminal.AppendOutputChunk(L"$ " + buildCmd + L"\n");
+        lastLine.clear();
+        if (!RunCommandAndCapture(buildCmd, rootPath, exitCode, &envBlock, hwnd, &lastLine))
+        {
+            ShowRunErrorPopup(hwnd, L"Compilation echouee", lastLine);
+            return;
+        }
+
+        std::filesystem::path exe = FindNewestExecutable(buildDir / "Release");
+        if (exe.empty())
+            exe = FindNewestExecutable(buildDir / "Debug");
+        if (exe.empty())
+            exe = FindNewestExecutable(buildDir);
+
+        if (exe.empty())
+        {
+            ShowRunErrorPopup(hwnd, L"Aucun executable apres compilation", L"Verifie le panneau Sortie");
+            return;
+        }
+
+        TerminalPanel &t = GetTerminalPanel();
+        t.AppendOutputChunk(L"$ [debug] Launching under debugger: " + exe.wstring() + L"\n");
+        t.FlushOutputBuffer();
+
+        DebugCrashReport report = LaunchExecutableWithDebugger(exe);
+        if (!report.crashed)
+        {
+            std::wstring done = L"[debug] Process exited with code " + std::to_wstring(report.exitCode) + L"\n";
+            t.AppendOutputChunk(done);
+            t.FlushOutputBuffer();
+            if (hwnd)
+                InvalidateRect(hwnd, nullptr, FALSE);
+            return;
+        }
+
+        std::wstring detail;
+        if (report.exceptionAddress == 0)
+        {
+            detail = L"Failed to start debugger: " + FormatWin32Error(report.exceptionCode);
+        }
+        else
+        {
+            detail = ExceptionCodeToText(report.exceptionCode) +
+                     L" (0x" + ToHexU64((unsigned long long)report.exceptionCode) + L")";
+        }
+
+        if (!report.filePath.empty() && report.line > 0)
+        {
+            detail += L"\n" + report.filePath + L":" + std::to_wstring(report.line);
+
+            auto *req = new OpenFileRequest();
+            req->filePath = report.filePath;
+            req->line = (std::max)(0, report.line - 1);
+            req->column = 0;
+            PostMessageW(hwnd, WM_OPEN_FILE_AT, 0, reinterpret_cast<LPARAM>(req));
+        }
+
+        if (!report.symbol.empty())
+            detail += L"\nFunction: " + report.symbol;
+
+        if (report.exceptionAddress != 0)
+            detail += L"\nAddress: 0x" + ToHexU64((unsigned long long)report.exceptionAddress);
+
+        ShowRunErrorPopup(hwnd, L"Program crashed", detail);
     }).detach();
 }
 

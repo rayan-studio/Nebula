@@ -631,7 +631,7 @@ namespace Orion
         // IDWritePixelSnapping
         HRESULT STDMETHODCALLTYPE IsPixelSnappingDisabled(void *, BOOL *isDisabled) override
         {
-            *isDisabled = TRUE;
+            *isDisabled = FALSE;
             return S_OK;
         }
         HRESULT STDMETHODCALLTYPE GetCurrentTransform(void *, DWRITE_MATRIX *transform) override

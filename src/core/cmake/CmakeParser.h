@@ -35,3 +35,10 @@ bool AddLibraryToCmake(const std::wstring &projectCmakePath,
                        const std::wstring &subdirRel,
                        const std::wstring &libTargetName,
                        const std::wstring &includeRel);
+
+// Remove the Nebula-managed lines for a library from the project CMakeLists.txt.
+// The operation is best-effort and intentionally keeps generic system links
+// such as opengl32/ws2_32/Threads to avoid breaking other remaining libraries.
+bool RemoveLibraryFromCmake(const std::wstring &projectCmakePath,
+                            const std::wstring &subdirRel,
+                            const std::wstring &libTargetName);
