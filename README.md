@@ -144,10 +144,16 @@ Use the PowerShell helper:
 
 ```powershell
 scripts\publish_release.ps1 `
-  -Version 1.2.3 `
+  -Version 2.6.0 `
   -NoteVersion "Bug fixes and UI updates" `
-  -PortablePath "dist\Nebula-1.2.3-portable.exe" `
-  -SetupPath "dist\Nebula-1.2.3-setup.exe"
+  -PortablePath "dist\Nebula-2.6.0-portable\Nebula.exe" `
+  -SetupPath "dist\Nebula-2.6.0-setup.exe"
+```
+
+Or run the full pipeline (configure, build, package, upload):
+
+```powershell
+scripts\release.ps1 -Version 2.6.0 -NoteVersion "Bug fixes and UI updates"
 ```
 
 Auth cookie can be passed with `-Cookie` or via environment variable `ASTRACODE_ADMIN_COOKIE`.

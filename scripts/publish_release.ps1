@@ -12,6 +12,7 @@ param(
     [string]$SetupPath,
 
     [string]$Cookie = $env:ASTRACODE_ADMIN_COOKIE,
+    [string]$Token = $env:ASTRACODE_ADMIN_TOKEN,
     [string]$ApiBase = "https://api.astracode.dev",
     [string]$UploadBase = "https://upload.astracode.dev"
 )
@@ -43,8 +44,13 @@ function Resolve-RequiredFile {
     return $resolved.Path
 }
 
-if ([string]::IsNullOrWhiteSpace($Cookie)) {
-    throw "Missing cookie. Pass -Cookie or set ASTRACODE_ADMIN_COOKIE in your environment."
+$authValue = $Cookie
+if ([string]::IsNullOrWhiteSpace($authValue)) {
+    $authValue = $Token
+}
+
+if ([string]::IsNullOrWhiteSpace($authValue)) {
+    throw "Missing auth. Pass -Cookie or -Token, or set ASTRACODE_ADMIN_COOKIE / ASTRACODE_ADMIN_TOKEN in your environment."
 }
 
 $portableVersion = Get-VersionFromArtifactPath -PathValue $PortablePath
@@ -70,7 +76,7 @@ $curlArgs = @(
     "-sS",
     "-X", "POST",
     $uploadUrl,
-    "-F", "cookie=$Cookie",
+    "-F", "cookie=$authValue",
     "-F", "version=$Version",
     "-F", "note_version=$NoteVersion",
     "-F", "file_portable=@$portable",

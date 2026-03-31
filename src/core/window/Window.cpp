@@ -346,8 +346,8 @@ static bool IsPointInTitlebarMenuArea(HWND hwnd, POINT pt)
         return false;
 
     CustomTitleBarButtonRects button_rects = win32_get_title_bar_button_rects(hwnd, &tb);
-    // Ignore area occupied by custom window controls (debug/run/min/max/close)
-    if (pt.x >= button_rects.debug.left)
+    // Ignore area occupied by custom window controls (run/min/max/close)
+    if (pt.x >= button_rects.run.left)
         return false;
 
     // Avoid resize border clicks being treated as menu clicks
@@ -798,10 +798,6 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         {
             new_hovered_button = Window::Hovered_Run;
         }
-        else if (PtInRect(&button_rects.debug, cursor_point))
-        {
-            new_hovered_button = Window::Hovered_Debug;
-        }
         auto current = hoveredButton_;
         if (new_hovered_button != current)
         {
@@ -809,7 +805,6 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             InvalidateRect(hwnd_, &button_rects.minimize, FALSE);
             InvalidateRect(hwnd_, &button_rects.maximize, FALSE);
             InvalidateRect(hwnd_, &button_rects.run, FALSE);
-            InvalidateRect(hwnd_, &button_rects.debug, FALSE);
             hoveredButton_ = new_hovered_button;
             StartTitlebarHoverAnimation();
         }
@@ -2904,7 +2899,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     case WM_NCLBUTTONUP:
     {
         auto current = hoveredButton_;
-        if (newProjectVisible_ && (current == Window::Hovered_Run || current == Window::Hovered_Debug))
+        if (newProjectVisible_ && current == Window::Hovered_Run)
         {
             hoveredButton_ = Hovered_None;
             return 0;
@@ -2928,17 +2923,53 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         else if (current == Window::Hovered_Run)
         {
             if (IsRunProcessActive())
+            {
                 StopActiveRunProcess();
+            }
             else
-                RunActiveProject();
-            return 0;
-        }
-        else if (current == Window::Hovered_Debug)
-        {
-            if (IsRunProcessActive())
-                StopActiveRunProcess();
-            else
-                RunActiveProjectDebug();
+            {
+                POINT cursor = {};
+                GetCursorPos(&cursor);
+                ScreenToClient(hwnd_, &cursor);
+
+                RECT tb = win32_titlebar_rect(hwnd_);
+                CustomTitleBarButtonRects buttonRects = win32_get_title_bar_button_rects(hwnd_, &tb);
+                UINT dpi = win32_get_dpi_for_window(hwnd_);
+                int arrowZoneWidth = win32_dpi_scale(14, dpi);
+                bool openRunMenu = cursor.x >= (buttonRects.run.right - arrowZoneWidth);
+
+                if (openRunMenu)
+                {
+                    HMENU runMenu = CreatePopupMenu();
+                    if (runMenu)
+                    {
+                        AppendMenuW(runMenu, MF_STRING, 1, L"Run (Release)");
+                        AppendMenuW(runMenu, MF_STRING, 2, L"Run with Debug Reports");
+
+                        POINT menuPos = {buttonRects.run.left, buttonRects.run.bottom};
+                        ClientToScreen(hwnd_, &menuPos);
+
+                        UINT cmd = TrackPopupMenu(
+                            runMenu,
+                            TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN,
+                            menuPos.x,
+                            menuPos.y,
+                            0,
+                            hwnd_,
+                            nullptr);
+                        DestroyMenu(runMenu);
+
+                        if (cmd == 1)
+                            RunActiveProject();
+                        else if (cmd == 2)
+                            RunActiveProjectDebug();
+                    }
+                }
+                else
+                {
+                    RunActiveProject();
+                }
+            }
             return 0;
         }
         return DefWindowProc(hwnd_, uMsg, wParam, lParam);

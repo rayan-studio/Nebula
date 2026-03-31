@@ -152,6 +152,13 @@ class PackageBuilder:
             deps.append(assets_dir)
             self.log(f"  TrouvÃ© (assets): {assets_dir.name}/")
 
+        # OAuth config files for production auth flow
+        for cfg_name in ("github_oauth.env", ".env.local", ".env"):
+            cfg_path = self.project_root / cfg_name
+            if cfg_path.exists():
+                deps.append(cfg_path)
+                self.log(f"  Ajoute (oauth config): {cfg_name}")
+
         def add_first_existing(candidates: list[Path], label: str) -> None:
             for candidate in candidates:
                 if candidate.exists():

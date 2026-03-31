@@ -473,6 +473,15 @@ void KeyboardManager::SaveActiveTab()
     if (!editor)
         return;
 
+    auto requestDiagnosticsForActive = [this, active](Orion::Editor *ed, const std::wstring &path)
+    {
+        if (!ed || path.empty() || path.rfind(L"__untitled__", 0) == 0)
+            return;
+        auto lines = ed->GetLinesSnapshot();
+        Lsp::LspManager::Instance().UpdateFile(path, lines);
+        Lsp::LspManager::Instance().RequestDiagnosticsAsync(path, lines, window_->GetHwnd(), active, true);
+    };
+
     std::wstring currentPath = editor->GetFilePath();
     const bool isUntitled = currentPath.empty() || currentPath.rfind(L"__untitled__", 0) == 0;
 
@@ -501,6 +510,8 @@ void KeyboardManager::SaveActiveTab()
                 // âœ… IMPORTANT: enlever le rond
                 window_->GetTabBar()->SetTabDirty(active, false);
 
+                requestDiagnosticsForActive(editor, chosen);
+
                 InvalidateRect(window_->GetHwnd(), nullptr, FALSE);
             }
         }
@@ -511,6 +522,8 @@ void KeyboardManager::SaveActiveTab()
         {
             // âœ… IMPORTANT: enlever le rond
             window_->GetTabBar()->SetTabDirty(active, false);
+
+            requestDiagnosticsForActive(editor, currentPath);
 
             InvalidateRect(window_->GetHwnd(), nullptr, FALSE);
         }
@@ -867,4 +880,3 @@ bool KeyboardManager::RouteCharToFocused(WPARAM wParam)
 
     return false;
 }
-

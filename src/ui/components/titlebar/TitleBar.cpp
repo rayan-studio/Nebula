@@ -252,6 +252,27 @@ static void DrawPlayIcon(
     }
 }
 
+static void DrawChevronDownIcon(
+    ID2D1RenderTarget *ctx,
+    ID2D1SolidColorBrush *brush,
+    D2D1_RECT_F rect)
+{
+    if (!ctx || !brush)
+        return;
+
+    const float cx = std::round((rect.left + rect.right) * 0.5f);
+    const float cy = std::round((rect.top + rect.bottom) * 0.5f);
+    const float halfW = 2.5f;
+    const float halfH = 1.8f;
+
+    const D2D1_POINT_2F p0 = D2D1::Point2F(cx - halfW, cy - halfH);
+    const D2D1_POINT_2F p1 = D2D1::Point2F(cx, cy + halfH);
+    const D2D1_POINT_2F p2 = D2D1::Point2F(cx + halfW, cy - halfH);
+
+    ctx->DrawLine(p0, p1, brush, 1.2f);
+    ctx->DrawLine(p1, p2, brush, 1.2f);
+}
+
 static void DrawDebugIcon(
     ID2D1RenderTarget *ctx,
     ID2D1SolidColorBrush *brush,
@@ -286,7 +307,6 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     float aMin = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Minimize) : (hoveredButton == Window::Hovered_Minimize ? 1.0f : 0.0f);
     float aMax = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Maximize) : (hoveredButton == Window::Hovered_Maximize ? 1.0f : 0.0f);
     float aClose = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Close) : (hoveredButton == Window::Hovered_Close ? 1.0f : 0.0f);
-    float aDebug = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Debug) : (hoveredButton == Window::Hovered_Debug ? 1.0f : 0.0f);
     float aRun = window ? window->GetTitlebarHoverAlpha(Window::Hovered_Run) : (hoveredButton == Window::Hovered_Run ? 1.0f : 0.0f);
     const D2D1_COLOR_F titlebarBg = UI::Theme::TitlebarBackground(hasFocus);
     const D2D1_COLOR_F titlebarText = UI::Theme::TitlebarText(hasFocus);
@@ -406,7 +426,6 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     D2D1_RECT_F rMin = D2D1::RectF((FLOAT)button_rects.minimize.left, (FLOAT)button_rects.minimize.top, (FLOAT)button_rects.minimize.right, (FLOAT)button_rects.minimize.bottom);
     D2D1_RECT_F rMax = D2D1::RectF((FLOAT)button_rects.maximize.left, (FLOAT)button_rects.maximize.top, (FLOAT)button_rects.maximize.right, (FLOAT)button_rects.maximize.bottom);
     D2D1_RECT_F rClose = D2D1::RectF((FLOAT)button_rects.close.left, (FLOAT)button_rects.close.top, (FLOAT)button_rects.close.right, (FLOAT)button_rects.close.bottom);
-    D2D1_RECT_F rDebug = D2D1::RectF((FLOAT)button_rects.debug.left, (FLOAT)button_rects.debug.top, (FLOAT)button_rects.debug.right, (FLOAT)button_rects.debug.bottom);
     D2D1_RECT_F rRun = D2D1::RectF((FLOAT)button_rects.run.left, (FLOAT)button_rects.run.top, (FLOAT)button_rects.run.right, (FLOAT)button_rects.run.bottom);
 
     ID2D1SolidColorBrush *hoverBrush = nullptr;
@@ -419,13 +438,6 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
 
     if (hoverBrush && aMin > 0.01f)
         ctx->FillRectangle(rMin, hoverBrush);
-    if (hoverBrush && aDebug > 0.01f)
-    {
-        D2D1_COLOR_F debugHoverColor = themePalette.explorerToolbarHover;
-        debugHoverColor.a = titlebarHoverOpacity * aDebug;
-        hoverBrush->SetColor(debugHoverColor);
-        ctx->FillRectangle(rDebug, hoverBrush);
-    }
     if (hoverBrush && aRun > 0.01f)
     {
         D2D1_COLOR_F runHoverColor = themePalette.explorerToolbarHover;
@@ -456,8 +468,19 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     if (iconBrush)
     {
         DrawMinimizeIcon(ctx, iconBrush, rMin);
-        DrawDebugIcon(ctx, iconBrush, rDebug);
-        DrawPlayIcon(ctx, dwrite, iconBrush, rRun);
+
+        float splitW = (float)win32_dpi_scale(14, dpi);
+        D2D1_RECT_F runMain = D2D1::RectF(rRun.left, rRun.top, rRun.right - splitW, rRun.bottom);
+        D2D1_RECT_F runArrow = D2D1::RectF(rRun.right - splitW, rRun.top, rRun.right, rRun.bottom);
+        DrawPlayIcon(ctx, dwrite, iconBrush, runMain);
+
+        D2D1_RECT_F splitLine = D2D1::RectF(
+            std::round(runArrow.left),
+            std::round(runArrow.top + 8.0f),
+            std::round(runArrow.left + 1.0f),
+            std::round(runArrow.bottom - 8.0f));
+        ctx->FillRectangle(splitLine, iconBrush);
+        DrawChevronDownIcon(ctx, iconBrush, runArrow);
 
         if (isMaximized)
             DrawRestoreIcon(ctx, dwrite, iconBrush, rMax);
@@ -609,7 +632,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     {
         float badgeHeight = (float)win32_dpi_scale(22, dpi);
         float badgeWidth = (float)win32_dpi_scale(114, dpi);
-        float badgeRight = rDebug.left - (float)win32_dpi_scale(10, dpi);
+        float badgeRight = rRun.left - (float)win32_dpi_scale(10, dpi);
         float badgeTop = std::round((tb.top + tb.bottom - badgeHeight) * 0.5f);
         githubBadgeRect = D2D1::RectF(
             std::round(badgeRight - badgeWidth),
@@ -619,7 +642,7 @@ void DrawCustomTitleBarD2D(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
     }
 
     float titleLeft = currentX;
-    float titleRight = githubConnected ? (githubBadgeRect.left - (float)win32_dpi_scale(10, dpi)) : rDebug.left;
+    float titleRight = githubConnected ? (githubBadgeRect.left - (float)win32_dpi_scale(10, dpi)) : rRun.left;
     float titleWidth = titleRight - titleLeft;
     // Reuse menuFormat to avoid double rendering and keep ClearType
     if (menuFormat && titleWidth > 40.0f)

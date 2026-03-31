@@ -1205,6 +1205,7 @@ struct DebugCrashReport
     std::wstring filePath;
     int line = -1;
     std::wstring symbol;
+    std::vector<std::wstring> stackFrames;
 };
 
 static std::wstring NarrowAcpToWide(const char *s)
@@ -1288,6 +1289,105 @@ static void ResolveCrashLocation(HANDLE process, DWORD64 address, std::wstring &
     SymCleanup(process);
 }
 
+static std::wstring ResolveAddressToSymbolLine(HANDLE process, DWORD64 address)
+{
+    if (!process || !address)
+        return L"";
+
+    char symBuffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME] = {};
+    SYMBOL_INFO *sym = reinterpret_cast<SYMBOL_INFO *>(symBuffer);
+    sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+    sym->MaxNameLen = MAX_SYM_NAME;
+
+    DWORD64 displacement = 0;
+    std::wstring symbolName = L"?";
+    if (SymFromAddr(process, address, &displacement, sym))
+        symbolName = NarrowAcpToWide(sym->Name);
+
+    std::wstring fileName;
+    int line = -1;
+    IMAGEHLP_LINE64 lineInfo = {};
+    lineInfo.SizeOfStruct = sizeof(lineInfo);
+    DWORD lineDisp = 0;
+    if (SymGetLineFromAddr64(process, address, &lineDisp, &lineInfo))
+    {
+        fileName = NarrowAcpToWide(lineInfo.FileName);
+        line = (int)lineInfo.LineNumber;
+    }
+
+    std::wstring out = L"0x" + ToHexU64((unsigned long long)address) + L"  " + symbolName;
+    if (!fileName.empty() && line > 0)
+        out += L"  (" + fileName + L":" + std::to_wstring(line) + L")";
+    return out;
+}
+
+static std::vector<std::wstring> CaptureStackTraceForThread(HANDLE process, DWORD threadId, size_t maxFrames)
+{
+    std::vector<std::wstring> frames;
+    if (!process || threadId == 0 || maxFrames == 0)
+        return frames;
+
+    HANDLE thread = OpenThread(THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, threadId);
+    if (!thread)
+        return frames;
+
+    CONTEXT context = {};
+    context.ContextFlags = CONTEXT_FULL;
+    if (!GetThreadContext(thread, &context))
+    {
+        CloseHandle(thread);
+        return frames;
+    }
+
+    STACKFRAME64 frame = {};
+    DWORD machineType = 0;
+
+#if defined(_M_X64)
+    machineType = IMAGE_FILE_MACHINE_AMD64;
+    frame.AddrPC.Offset = context.Rip;
+    frame.AddrPC.Mode = AddrModeFlat;
+    frame.AddrFrame.Offset = context.Rbp;
+    frame.AddrFrame.Mode = AddrModeFlat;
+    frame.AddrStack.Offset = context.Rsp;
+    frame.AddrStack.Mode = AddrModeFlat;
+#else
+    machineType = IMAGE_FILE_MACHINE_I386;
+    frame.AddrPC.Offset = context.Eip;
+    frame.AddrPC.Mode = AddrModeFlat;
+    frame.AddrFrame.Offset = context.Ebp;
+    frame.AddrFrame.Mode = AddrModeFlat;
+    frame.AddrStack.Offset = context.Esp;
+    frame.AddrStack.Mode = AddrModeFlat;
+#endif
+
+    for (size_t i = 0; i < maxFrames; ++i)
+    {
+        if (!StackWalk64(
+                machineType,
+                process,
+                thread,
+                &frame,
+                &context,
+                nullptr,
+                SymFunctionTableAccess64,
+                SymGetModuleBase64,
+                nullptr))
+        {
+            break;
+        }
+
+        if (frame.AddrPC.Offset == 0)
+            break;
+
+        std::wstring line = ResolveAddressToSymbolLine(process, frame.AddrPC.Offset);
+        if (!line.empty())
+            frames.push_back(std::move(line));
+    }
+
+    CloseHandle(thread);
+    return frames;
+}
+
 static DebugCrashReport LaunchExecutableWithDebugger(const std::filesystem::path &exePath)
 {
     DebugCrashReport report;
@@ -1320,6 +1420,9 @@ static DebugCrashReport LaunchExecutableWithDebugger(const std::filesystem::path
 
     bool running = true;
     bool firstBreakpoint = true;
+    bool symReady = false;
+    SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME | SYMOPT_LOAD_LINES);
+    symReady = (SymInitialize(pi.hProcess, nullptr, TRUE) == TRUE);
 
     while (running)
     {
@@ -1355,6 +1458,8 @@ static DebugCrashReport LaunchExecutableWithDebugger(const std::filesystem::path
                 report.exceptionCode = ex.ExceptionCode;
                 report.exceptionAddress = (DWORD64)(uintptr_t)ex.ExceptionAddress;
                 ResolveCrashLocation(pi.hProcess, report.exceptionAddress, report.filePath, report.line, report.symbol);
+                if (symReady)
+                    report.stackFrames = CaptureStackTraceForThread(pi.hProcess, ev.dwThreadId, 20);
                 continueStatus = DBG_EXCEPTION_NOT_HANDLED;
             }
             else
@@ -1375,6 +1480,8 @@ static DebugCrashReport LaunchExecutableWithDebugger(const std::filesystem::path
     }
 
     WaitForSingleObject(pi.hProcess, INFINITE);
+    if (symReady)
+        SymCleanup(pi.hProcess);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     return report;
@@ -1579,7 +1686,7 @@ void Window::RunActiveProject()
         std::wstring cmakeCmd = cmakeExe.empty() ? L"cmake" : QuotePath(cmakeExe);
         std::wstring configureCmd = cmakeCmd + L" -S " + QuotePath(rootPath) + L" -B " + QuotePath(buildDir);
         if (useNinja)
-            configureCmd += L" -G \"Ninja\" -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++";
+            configureCmd += L" -G \"Ninja\" -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Release";
 
         std::wstring buildCmd = cmakeCmd + L" --build " + QuotePath(buildDir);
         if (!useNinja)
@@ -1710,11 +1817,11 @@ void Window::RunActiveProjectDebug()
         std::wstring cmakeCmd = cmakeExe.empty() ? L"cmake" : QuotePath(cmakeExe);
         std::wstring configureCmd = cmakeCmd + L" -S " + QuotePath(rootPath) + L" -B " + QuotePath(buildDir);
         if (useNinja)
-            configureCmd += L" -G \"Ninja\" -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++";
+            configureCmd += L" -G \"Ninja\" -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Debug";
 
         std::wstring buildCmd = cmakeCmd + L" --build " + QuotePath(buildDir);
         if (!useNinja)
-            buildCmd += L" --config Release";
+            buildCmd += L" --config Debug";
 
         TerminalPanel &terminal = GetTerminalPanel();
         terminal.AppendOutputChunk(L"$ " + configureCmd + L"\n");
@@ -1733,9 +1840,9 @@ void Window::RunActiveProjectDebug()
             return;
         }
 
-        std::filesystem::path exe = FindNewestExecutable(buildDir / "Release");
+        std::filesystem::path exe = FindNewestExecutable(buildDir / "Debug");
         if (exe.empty())
-            exe = FindNewestExecutable(buildDir / "Debug");
+            exe = FindNewestExecutable(buildDir / "Release");
         if (exe.empty())
             exe = FindNewestExecutable(buildDir);
 
@@ -1787,6 +1894,18 @@ void Window::RunActiveProjectDebug()
 
         if (report.exceptionAddress != 0)
             detail += L"\nAddress: 0x" + ToHexU64((unsigned long long)report.exceptionAddress);
+
+        if (!report.stackFrames.empty())
+        {
+            t.AppendOutputChunk(L"[debug] Stack trace:\n");
+            for (size_t i = 0; i < report.stackFrames.size(); ++i)
+            {
+                std::wstring frame = L"  #" + std::to_wstring((unsigned long long)i) + L"  " + report.stackFrames[i] + L"\n";
+                t.AppendOutputChunk(frame);
+            }
+            t.FlushOutputBuffer();
+            detail += L"\n\nStack trace available in Output panel.";
+        }
 
         ShowRunErrorPopup(hwnd, L"Program crashed", detail);
     }).detach();

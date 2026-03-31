@@ -60,60 +60,101 @@ namespace
         return out;
     }
 
+    void AddConfigCandidates(std::vector<std::filesystem::path> &out,
+                             const std::filesystem::path &dir,
+                             const std::wstring &name)
+    {
+        if (dir.empty())
+            return;
+        out.push_back(dir / name);
+    }
+
+    std::vector<std::filesystem::path> GetConfigFileCandidates()
+    {
+        std::vector<std::filesystem::path> out;
+        static const std::wstring kConfigNames[] = {L"github_oauth.env", L".env.local", L".env"};
+
+        wchar_t modulePath[MAX_PATH] = {0};
+        if (GetModuleFileNameW(nullptr, modulePath, MAX_PATH) != 0)
+        {
+            std::filesystem::path dir = std::filesystem::path(modulePath).parent_path();
+            for (int i = 0; i < 8; ++i)
+            {
+                for (const auto &name : kConfigNames)
+                    AddConfigCandidates(out, dir, name);
+                if (!dir.has_parent_path())
+                    break;
+                dir = dir.parent_path();
+            }
+        }
+
+        for (const auto &name : kConfigNames)
+            AddConfigCandidates(out, std::filesystem::current_path(), name);
+
+        auto addUserConfigDir = [&](const wchar_t *envName)
+        {
+            DWORD needed = GetEnvironmentVariableW(envName, nullptr, 0);
+            if (needed == 0)
+                return;
+            std::wstring value((size_t)needed, L'\0');
+            DWORD written = GetEnvironmentVariableW(envName, value.data(), needed);
+            if (written == 0)
+                return;
+            if (!value.empty() && value.back() == L'\0')
+                value.pop_back();
+            std::filesystem::path base = Trim(value);
+            if (base.empty())
+                return;
+            std::filesystem::path nebulaDir = base / L"Nebula";
+            for (const auto &name : kConfigNames)
+                AddConfigCandidates(out, nebulaDir, name);
+        };
+
+        addUserConfigDir(L"APPDATA");
+        addUserConfigDir(L"LOCALAPPDATA");
+        addUserConfigDir(L"PROGRAMDATA");
+
+        return out;
+    }
+
     bool ReadEnvFileValue(const std::wstring &key, std::wstring &outValue)
     {
         outValue.clear();
-        wchar_t modulePath[MAX_PATH] = {0};
-        if (GetModuleFileNameW(nullptr, modulePath, MAX_PATH) == 0)
-            return false;
-
-        std::filesystem::path dir = std::filesystem::path(modulePath).parent_path();
-        std::filesystem::path envPath;
-        for (int i = 0; i < 8; ++i)
-        {
-            std::filesystem::path candidate = dir / L".env";
-            if (std::filesystem::exists(candidate))
-            {
-                envPath = candidate;
-                break;
-            }
-            if (!dir.has_parent_path())
-                break;
-            dir = dir.parent_path();
-        }
-
-        if (envPath.empty())
-            return false;
-
-        std::ifstream in(envPath);
-        if (!in.is_open())
-            return false;
-
         std::string keyUtf8 = WideToUtf8(key);
-        std::string line;
-        while (std::getline(in, line))
+        for (const auto &envPath : GetConfigFileCandidates())
         {
-            if (line.empty() || line[0] == '#')
+            if (!std::filesystem::exists(envPath))
                 continue;
-            size_t eq = line.find('=');
-            if (eq == std::string::npos)
+
+            std::ifstream in(envPath);
+            if (!in.is_open())
                 continue;
-            std::string k = line.substr(0, eq);
-            std::string v = line.substr(eq + 1);
-            auto trimAscii = [](std::string &x)
+
+            std::string line;
+            while (std::getline(in, line))
             {
-                auto notSpace = [](unsigned char c) { return !std::isspace(c); };
-                x.erase(x.begin(), std::find_if(x.begin(), x.end(), notSpace));
-                x.erase(std::find_if(x.rbegin(), x.rend(), notSpace).base(), x.end());
-            };
-            trimAscii(k);
-            trimAscii(v);
-            if (k != keyUtf8)
-                continue;
-            if (v.size() >= 2 && ((v.front() == '"' && v.back() == '"') || (v.front() == '\'' && v.back() == '\'')))
-                v = v.substr(1, v.size() - 2);
-            outValue = Trim(Utf8ToWide(v));
-            return !outValue.empty();
+                if (line.empty() || line[0] == '#')
+                    continue;
+                size_t eq = line.find('=');
+                if (eq == std::string::npos)
+                    continue;
+                std::string k = line.substr(0, eq);
+                std::string v = line.substr(eq + 1);
+                auto trimAscii = [](std::string &x)
+                {
+                    auto notSpace = [](unsigned char c) { return !std::isspace(c); };
+                    x.erase(x.begin(), std::find_if(x.begin(), x.end(), notSpace));
+                    x.erase(std::find_if(x.rbegin(), x.rend(), notSpace).base(), x.end());
+                };
+                trimAscii(k);
+                trimAscii(v);
+                if (k != keyUtf8)
+                    continue;
+                if (v.size() >= 2 && ((v.front() == '"' && v.back() == '"') || (v.front() == '\'' && v.back() == '\'')))
+                    v = v.substr(1, v.size() - 2);
+                outValue = Trim(Utf8ToWide(v));
+                return !outValue.empty();
+            }
         }
 
         return false;
@@ -142,24 +183,24 @@ namespace
         redirectUri.clear();
         outError.clear();
 
-        if (!ReadEnvFileValue(L"CLIENT_ID_GITHUB", clientId))
-            ReadEnvVar(L"CLIENT_ID_GITHUB", clientId);
-        if (!ReadEnvFileValue(L"CLIENT_SECRET_GITHUB", clientSecret))
-            ReadEnvVar(L"CLIENT_SECRET_GITHUB", clientSecret);
-        if (!ReadEnvFileValue(L"GITHUB_CALLBACK_URL", redirectUri))
-            ReadEnvVar(L"GITHUB_CALLBACK_URL", redirectUri);
+        if (!ReadEnvVar(L"CLIENT_ID_GITHUB", clientId))
+            ReadEnvFileValue(L"CLIENT_ID_GITHUB", clientId);
+        if (!ReadEnvVar(L"CLIENT_SECRET_GITHUB", clientSecret))
+            ReadEnvFileValue(L"CLIENT_SECRET_GITHUB", clientSecret);
+        if (!ReadEnvVar(L"GITHUB_CALLBACK_URL", redirectUri))
+            ReadEnvFileValue(L"GITHUB_CALLBACK_URL", redirectUri);
 
         if (redirectUri.empty())
             redirectUri = L"http://localhost:8080/auth/github/callback";
 
         if (clientId.empty())
         {
-            outError = L"CLIENT_ID_GITHUB missing in .env.";
+            outError = L"CLIENT_ID_GITHUB missing. Set env var CLIENT_ID_GITHUB or define it in github_oauth.env/.env.local/.env.";
             return false;
         }
         if (clientSecret.empty())
         {
-            outError = L"CLIENT_SECRET_GITHUB missing in .env.";
+            outError = L"CLIENT_SECRET_GITHUB missing. Set env var CLIENT_SECRET_GITHUB or define it in github_oauth.env/.env.local/.env.";
             return false;
         }
         return true;

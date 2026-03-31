@@ -301,7 +301,7 @@ void MarketplaceExtensionTabView::Draw(ID2D1RenderTarget *ctx,
         if (fmt && br) {
             fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
             fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-            const wchar_t *msg = L"Select a library from the marketplace to view details.";
+            const wchar_t *msg = L"Select a library to view details.";
             ctx->DrawTextW(msg, (UINT32)wcslen(msg), fmt, bounds_, br);
         }
         if (fmt) fmt->Release();
@@ -748,7 +748,7 @@ void MarketplaceExtensionTabView::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
             Logger::Instance().Log(L"Installed: " + currentLibraryName_);
         } else {
             if (installError.empty()) installError = L"Failed to install library.";
-            MessageBoxW(hwnd, installError.c_str(), L"Marketplace Install",
+            MessageBoxW(hwnd, installError.c_str(), L"Library Install",
                 MB_OK | MB_ICONERROR);
             Logger::Instance().Log(L"Install failed: " + currentLibraryName_
                 + L" - " + installError);
@@ -764,7 +764,7 @@ void MarketplaceExtensionTabView::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
             Logger::Instance().Log(L"Uninstalled: " + currentLibraryName_);
         } else {
             if (uninstallError.empty()) uninstallError = L"Failed to remove library.";
-            MessageBoxW(hwnd, uninstallError.c_str(), L"Marketplace Remove",
+            MessageBoxW(hwnd, uninstallError.c_str(), L"Library Remove",
                 MB_OK | MB_ICONERROR);
             Logger::Instance().Log(L"Uninstall failed: " + currentLibraryName_
                 + L" - " + uninstallError);

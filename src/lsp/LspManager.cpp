@@ -13,6 +13,8 @@
 
 namespace Lsp
 {
+    static constexpr DWORD CLANGD_RESTART_TIMEOUT_MS = 10000;
+
     static bool IsLspTraceEnabled()
     {
         static int cached = -1;
@@ -565,59 +567,90 @@ namespace Lsp
         return inst;
     }
 
+    void LspManager::ApplyClangdRunningState(bool running, bool ready)
+    {
+        // Must be called with mutex_ held.
+        if (ready)
+        {
+            clangdState_ = ClangdRuntimeState::Running;
+            clangdReason_.clear();
+            clangdRestartingUntilTick_ = 0;
+        }
+        else if (running)
+        {
+            clangdState_ = ClangdRuntimeState::Restarting;
+            clangdReason_ = L"synchronisation clangd";
+            clangdRestartingUntilTick_ = GetTickCount() + CLANGD_RESTART_TIMEOUT_MS;
+        }
+    }
+
     ClangdUiStatus LspManager::GetClangdUiStatus() const
     {
+        bool runningNow = false, readyNow = false;
+        ClangdClient::Instance().GetRunningState(runningNow, readyNow);
+
         ClangdUiStatus status;
+        std::lock_guard<std::mutex> lk(mutex_);
+        status.state = clangdState_;
+        status.reason = clangdReason_;
+        if (readyNow)
         {
-            std::lock_guard<std::mutex> lk(mutex_);
-            status.state = clangdState_;
-            status.reason = clangdReason_;
-            if (status.state == ClangdRuntimeState::Restarting)
+            status.state = ClangdRuntimeState::Running;
+            status.reason.clear();
+        }
+        else if (runningNow)
+        {
+            status.state = ClangdRuntimeState::Restarting;
+            if (status.reason.empty())
+                status.reason = L"synchronisation clangd";
+        }
+        else if (status.state == ClangdRuntimeState::Restarting)
+        {
+            DWORD now = GetTickCount();
+            if (clangdRestartingUntilTick_ != 0 && now >= clangdRestartingUntilTick_)
             {
-                DWORD now = GetTickCount();
-                if (now >= clangdRestartingUntilTick_)
-                {
-                    if (ClangdClient::Instance().IsRunning())
-                    {
-                        status.state = ClangdRuntimeState::Running;
-                        status.reason.clear();
-                    }
-                    else
-                    {
-                        status.state = ClangdRuntimeState::Failed;
-                        if (status.reason.empty())
-                            status.reason = L"restart timeout";
-                    }
-                }
+                status.state = ClangdRuntimeState::Failed;
+                if (status.reason.empty())
+                    status.reason = L"restart timeout";
             }
         }
         return status;
     }
 
+    std::unordered_map<std::wstring, std::vector<std::wstring>> LspManager::GetFileIncludes() const
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        return fileIncludes_;
+    }
+
     void LspManager::SetProjectRoot(const std::wstring &rootPath)
     {
+        const std::wstring normalizedRoot = NormalizePath(rootPath);
+        bool rootChanged = false;
         {
             std::lock_guard<std::mutex> lk(mutex_);
-            projectRoot_ = NormalizePath(rootPath);
+            rootChanged = (projectRoot_ != normalizedRoot);
+            projectRoot_ = normalizedRoot;
         }
-        StartProjectIndexAsync();
+        if (rootChanged)
+            StartProjectIndexAsync();
 
         // Start the real clangd LSP client for this project.
         // If clangd is already running (project switch), restart it for the new root.
-        bool started = false;
-        if (ClangdClient::Instance().IsRunning())
-            started = ClangdClient::Instance().RestartForProject(rootPath);
-        else
-            started = ClangdClient::Instance().Start(rootPath);
+        bool running = false, ready = false;
+        ClangdClient::Instance().GetRunningState(running, ready);
 
+        bool started = false;
+        if (running)
+            started = rootChanged ? ClangdClient::Instance().RestartForProject(normalizedRoot) : true;
+        else
+            started = ClangdClient::Instance().Start(normalizedRoot);
+
+        ClangdClient::Instance().GetRunningState(running, ready);
         {
             std::lock_guard<std::mutex> lk(mutex_);
-            if (started && ClangdClient::Instance().IsRunning())
-            {
-                clangdState_ = ClangdRuntimeState::Running;
-                clangdReason_.clear();
-                clangdRestartingUntilTick_ = 0;
-            }
+            if (started)
+                ApplyClangdRunningState(running, ready);
             else
             {
                 clangdState_ = ClangdRuntimeState::Failed;
@@ -628,7 +661,7 @@ namespace Lsp
 
         // If there's no compile_commands.json yet, regenerate it in the background
         // and restart clangd once it's ready — fixes "iostream not found" on first launch.
-        ClangdClient::Instance().EnsureCompileCommandsAsync(rootPath);
+        ClangdClient::Instance().EnsureCompileCommandsAsync(normalizedRoot);
 
         ClangdClient::Instance().SetDiagnosticsCallback(
             [this](const std::wstring& filePath, int tabIndex, HWND hwnd, const std::vector<Diagnostic>& diags) {
@@ -1720,7 +1753,8 @@ namespace Lsp
     void LspManager::RequestDiagnosticsAsync(const std::wstring &filePath,
     const std::vector<std::wstring> &lines,
     HWND hwnd,
-    int tabIndex)
+    int tabIndex,
+    bool documentSaved)
     {
         if (!IsCppFile(std::filesystem::path(filePath)))
         return;
@@ -1730,6 +1764,7 @@ namespace Lsp
         TraceLsp(L"RequestDiagnosticsAsync tab=" + std::to_wstring(tabIndex) +
              L" file=" + filePath +
              L" lines=" + std::to_wstring((unsigned long long)lines.size()) +
+             (documentSaved ? L" saved=yes" : L" saved=no") +
              (ClangdClient::Instance().IsRunning() ? L" clangd=running" : L" clangd=stopped"));
 
         // Check if an #include line was just added/modified
@@ -1784,86 +1819,13 @@ namespace Lsp
         // Register context so clangd callback can post WM_LSP_DIAGNOSTICS
         ClangdClient::Instance().SetContext(pathCopy, hwnd, tabIndex);
 
-        // Pro mode: diagnostics are clangd-only.
-        // If clangd is down, try to restart it once (throttled) and report explicit status.
-        if (!ClangdClient::Instance().IsRunning())
-        {
-            static std::mutex s_restartMutex;
-            static DWORD s_lastRestartAttempt = 0;
-
-            std::wstring rootCopy;
-            {
-                std::lock_guard<std::mutex> lk(mutex_);
-                rootCopy = projectRoot_;
-            }
-
-            DWORD nowRestart = GetTickCount();
-            bool canAttemptRestart = false;
-            {
-                std::lock_guard<std::mutex> lk(s_restartMutex);
-                if (nowRestart - s_lastRestartAttempt > 1500)
-                {
-                    s_lastRestartAttempt = nowRestart;
-                    canAttemptRestart = true;
-                }
-            }
-
-            {
-                std::lock_guard<std::mutex> lk(mutex_);
-                clangdState_ = ClangdRuntimeState::Restarting;
-                clangdReason_ = canAttemptRestart ? L"redemarrage en cours" : L"attente avant nouvelle tentative";
-                clangdRestartingUntilTick_ = nowRestart + 2200;
-            }
-
-            if (canAttemptRestart && !rootCopy.empty())
-            {
-                bool restarted = ClangdClient::Instance().Start(rootCopy);
-                ClangdClient::Instance().EnsureCompileCommandsAsync(rootCopy);
-                if (restarted && ClangdClient::Instance().IsRunning())
-                {
-                    std::lock_guard<std::mutex> lk(mutex_);
-                    clangdState_ = ClangdRuntimeState::Running;
-                    clangdReason_.clear();
-                    clangdRestartingUntilTick_ = 0;
-                }
-            }
-
-            if (!ClangdClient::Instance().IsRunning())
-            {
-                TraceLsp(L"ClangdUnavailable file=" + pathCopy + L" -> fallback local diagnostics");
-
-                {
-                    std::lock_guard<std::mutex> lk(mutex_);
-                    clangdState_ = ClangdRuntimeState::Failed;
-                    clangdReason_ = L"clangd indisponible (verifier binaire et compile_commands.json)";
-                    clangdRestartingUntilTick_ = 0;
-                }
-
-                // Keep Orion diagnostics usable even when clangd is temporarily unavailable.
-                std::vector<Diagnostic> diags = AnalyzeDiagnostics(pathCopy, linesCopy);
-                Logger::Instance().Log(
-                    L"[LSP-DIAG] clangd unavailable fallback file=" + pathCopy +
-                    L" count=" + std::to_wstring((unsigned long long)diags.size()));
-
-                {
-                    std::lock_guard<std::mutex> lk(mutex_);
-                    diagnostics_[pathCopy] = diags;
-                }
-
-                auto *payload = new LspDiagnosticsResult();
-                payload->tabIndex = tabIndex;
-                payload->filePath = pathCopy;
-                payload->diagnostics = std::move(diags);
-                PostMessageW(hwnd, WM_LSP_DIAGNOSTICS, 0, (LPARAM)payload);
-                return;
-            }
-        }
-        else
+        // Sync document state with clangd; lifecycle is managed by SetProjectRoot.
+        bool clangdRunning = false, clangdReady = false;
+        ClangdClient::Instance().GetRunningState(clangdRunning, clangdReady);
         {
             std::lock_guard<std::mutex> lk(mutex_);
-            clangdState_ = ClangdRuntimeState::Running;
-            clangdReason_.clear();
-            clangdRestartingUntilTick_ = 0;
+            if (clangdReady || clangdRunning)
+                ApplyClangdRunningState(clangdRunning, clangdReady);
         }
 
         // Always send (or buffer) file content to clangd.
@@ -1881,10 +1843,14 @@ namespace Lsp
             std::lock_guard<std::mutex> lk(s_versionsMutex);
             ver = ++s_versions[pathCopy];
         }
-        const DWORD requestTick = GetTickCount();
-
         if (ver == 1) {
             ClangdClient::Instance().DidOpen(pathCopy, content, 1);
+        } else if (documentSaved) {
+            {
+                std::lock_guard<std::mutex> lk(mutex_);
+                clangdPendingVer_.erase(pathCopy);
+            }
+            ClangdClient::Instance().DidChange(pathCopy, content, ver);
         } else {
             // Debounce: envoyer à clangd 300ms après le dernier keystroke
             {
@@ -1902,44 +1868,11 @@ namespace Lsp
             }).detach();
         }
 
-        // Fallback local: if clangd stays silent for this edit, surface at
-        // least local syntax diagnostics so Orion still reports obvious errors.
-        std::thread([this, hwnd, tabIndex, pathCopy, linesCopy, requestTick, ver]() {
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        if (!clangdReady)
+            TraceLsp(L"ClangdQueued file=" + pathCopy + L" ver=" + std::to_wstring(ver));
 
-            {
-                std::lock_guard<std::mutex> lk(mutex_);
-                auto tickIt = clangdLastDiagTickByFile_.find(pathCopy);
-                if (tickIt != clangdLastDiagTickByFile_.end() && tickIt->second >= requestTick)
-                    return;
-
-                auto verIt = clangdPendingVer_.find(pathCopy);
-                if (verIt != clangdPendingVer_.end() && verIt->second > ver)
-                    return;
-            }
-
-            auto localDiags = AnalyzeDiagnostics(pathCopy, linesCopy);
-            if (localDiags.empty())
-                return;
-
-            Logger::Instance().Log(
-                L"[LSP-DIAG] clangd silent fallback file=" + pathCopy +
-                L" count=" + std::to_wstring((unsigned long long)localDiags.size()));
-
-            {
-                std::lock_guard<std::mutex> lk(mutex_);
-                auto tickIt = clangdLastDiagTickByFile_.find(pathCopy);
-                if (tickIt != clangdLastDiagTickByFile_.end() && tickIt->second >= requestTick)
-                    return;
-                diagnostics_[pathCopy] = localDiags;
-            }
-
-            auto *payload = new LspDiagnosticsResult();
-            payload->tabIndex = tabIndex;
-            payload->filePath = pathCopy;
-            payload->diagnostics = std::move(localDiags);
-            PostMessageW(hwnd, WM_LSP_DIAGNOSTICS, 0, (LPARAM)payload);
-        }).detach();
+        if (documentSaved)
+            ClangdClient::Instance().DidSave(pathCopy);
     }
 
     std::optional<Location> LspManager::ResolveIncludeAtCursor(const std::wstring &filePath,
@@ -2158,7 +2091,9 @@ namespace Lsp
         auto dit = symbolIndexDecl_.find(lookupWord);
         if (dit != symbolIndexDecl_.end())
         return dit->second;
-        return std::nullopt;
+
+        // Fallback: ask clangd directly (authoritative, handles templates/macros/STL).
+        return ClangdClient::Instance().RequestDefinitionSync(filePath, line, column);
     }
 
     std::vector<Diagnostic> LspManager::GetDiagnostics(const std::wstring &filePath) const
@@ -2174,9 +2109,14 @@ namespace Lsp
     const std::wstring &lineText,
     int column) const
     {
+        // Try clangd first — it provides accurate, context-aware completions.
+        auto clangdItems = ClangdClient::Instance().RequestCompletionsSync(filePath, column > 0 ? column - 1 : 0, column);
+        if (!clangdItems.empty())
+            return clangdItems;
+
+        // Fallback: filtered static std:: list when clangd is unavailable.
         std::vector<CompletionItem> result;
 
-        // Extract the word being typed before cursor
         std::wstring prefix;
         int pos = column -1;
 
@@ -2186,16 +2126,12 @@ namespace Lsp
             pos--;
         }
 
-        // Check if we're in a context where std:: is relevant
         bool inStdContext = false;
 
-        // Check if user typed "std::" prefix
         if (prefix.find(L"std::") != std::wstring::npos)
         {
             inStdContext = true;
         }
-        // Also offer std:: completions if we're in a typical C++ context
-        // (after keywords like 'using', 'new', 'auto', '=', etc.)
         else if (pos >= 0)
         {
             // Look backwards for context keywords

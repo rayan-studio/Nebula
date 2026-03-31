@@ -15,9 +15,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-
 TRACE_TAG = "[LSP-TRACE]"
-
 
 def extract_event(line: str) -> str:
     idx = line.find(TRACE_TAG)

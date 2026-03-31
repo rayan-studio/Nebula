@@ -32,11 +32,11 @@ static constexpr float kControlsAreaH = 82.0f;
 MarketplacePanel::MarketplacePanel()
     : Panel(PanelId::Marketplace)
 {
-    title_ = L"Marketplace";
+    title_ = L"Libraries";
     config_ = PanelConfig(
         PanelId::Marketplace,
-        L"\uE7BF",
-        L"Marketplace",
+        L"assets/ressource/icons/cpp-libs-sidebar.svg",
+        L"C++ Libraries",
         true,
         false,
         4
@@ -197,7 +197,7 @@ void MarketplacePanel::Draw(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND
         const std::wstring message = !error.empty()
             ? error
             : (LibraryDatabase::Instance().IsLoading()
-                ? L"Loading marketplace libraries..."
+                ? L"Loading C++ libraries..."
                 : (showInstalledOnly_
                     ? L"No installed libraries found."
                     : L"No libraries found."));

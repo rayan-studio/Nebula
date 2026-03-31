@@ -21,6 +21,9 @@ public:
     // Find and start clangd. Returns false if clangd not found.
     bool Start(const std::wstring& projectRoot);
     bool IsRunning() const;
+    bool IsReady() const;
+    // Returns both flags under a single mutex acquisition (avoids double syscall on hot paths).
+    void GetRunningState(bool& running, bool& ready) const;
     void Stop();
 
     // Call these when a file is opened or modified
@@ -47,8 +50,18 @@ public:
     bool RestartForProject(const std::wstring& projectRoot);
 
     // If projectRoot has a CMakeLists.txt and a build dir, runs cmake in the
-    // background with CMAKE_EXPORT_COMPILE_COMMANDS=ON, then restarts clangd.
+    // background with CMAKE_EXPORT_COMPILE_COMMANDS=ON, then notifies clangd.
     void EnsureCompileCommandsAsync(const std::wstring& projectRoot);
+
+    // Blocking definition request via clangd (returns nullopt on timeout/error).
+    std::optional<Location> RequestDefinitionSync(const std::wstring& filePath,
+                                                   int line, int col,
+                                                   int timeoutMs = 2000);
+
+    // Blocking completion request via clangd (returns empty on timeout/error).
+    std::vector<CompletionItem> RequestCompletionsSync(const std::wstring& filePath,
+                                                        int line, int col,
+                                                        int timeoutMs = 500);
 
 private:
     ClangdClient() = default;
@@ -67,7 +80,7 @@ private:
     mutable std::mutex lifecycleMutex_;
     std::mutex sendMutex_;
 
-    bool initialized_ = false;
+    std::atomic<bool> initialized_{false};
     std::wstring projectRoot_;
 
     DiagCallback diagCb_;
@@ -90,6 +103,14 @@ private:
     };
     std::mutex pendingMutex_;
     std::vector<PendingNotification> pendingNotifications_;
+
+    // Pending LSP requests (id → callback)
+    struct PendingRequest {
+        std::function<void(const std::string&)> callback;
+    };
+    mutable std::mutex requestsMutex_;
+    std::unordered_map<int, PendingRequest> pendingRequests_;
+    std::atomic<int> nextRequestId_{2}; // 1 is reserved for initialize
 
     bool StartLocked(const std::wstring& projectRoot);
     bool IsRunningLocked() const;

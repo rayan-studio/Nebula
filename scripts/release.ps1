@@ -5,6 +5,7 @@ param(
     [string]$NoteVersion,
 
     [string]$Cookie = $env:ASTRACODE_ADMIN_COOKIE,
+    [string]$Token = $env:ASTRACODE_ADMIN_TOKEN,
     [string]$BuildDir = "build",
     [string]$Config = "Release",
     [string]$PythonExe = "python",
@@ -58,9 +59,10 @@ function Get-DotEnvValue {
     return $null
 }
 
-function Resolve-ReleaseCookie {
+function Resolve-ReleaseAuth {
     param(
         [string]$CookieValue,
+        [string]$TokenValue,
         [string]$EnvFilePath
     )
 
@@ -68,8 +70,16 @@ function Resolve-ReleaseCookie {
         return $CookieValue
     }
 
+    if (-not [string]::IsNullOrWhiteSpace($TokenValue)) {
+        return $TokenValue
+    }
+
     if (-not [string]::IsNullOrWhiteSpace($env:ASTRACODE_ADMIN_COOKIE)) {
         return $env:ASTRACODE_ADMIN_COOKIE
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:ASTRACODE_ADMIN_TOKEN)) {
+        return $env:ASTRACODE_ADMIN_TOKEN
     }
 
     $fromEnvFile = Get-DotEnvValue -Path $EnvFilePath -Key "ASTRACODE_ADMIN_COOKIE"
@@ -77,9 +87,19 @@ function Resolve-ReleaseCookie {
         return $fromEnvFile
     }
 
+    $fromTokenEnvFile = Get-DotEnvValue -Path $EnvFilePath -Key "ASTRACODE_ADMIN_TOKEN"
+    if (-not [string]::IsNullOrWhiteSpace($fromTokenEnvFile)) {
+        return $fromTokenEnvFile
+    }
+
     $fromEnvLocal = Get-DotEnvValue -Path ".env.local" -Key "ASTRACODE_ADMIN_COOKIE"
     if (-not [string]::IsNullOrWhiteSpace($fromEnvLocal)) {
         return $fromEnvLocal
+    }
+
+    $fromTokenEnvLocal = Get-DotEnvValue -Path ".env.local" -Key "ASTRACODE_ADMIN_TOKEN"
+    if (-not [string]::IsNullOrWhiteSpace($fromTokenEnvLocal)) {
+        return $fromTokenEnvLocal
     }
 
     return $null
@@ -153,17 +173,17 @@ try {
     }
 
     if (-not $SkipUpload) {
-        $resolvedCookie = Resolve-ReleaseCookie -CookieValue $Cookie -EnvFilePath $EnvFile
-        if ([string]::IsNullOrWhiteSpace($resolvedCookie)) {
-            $resolvedCookie = Read-Host "ASTRACODE_ADMIN_COOKIE (colle ton cookie)"
+        $resolvedAuth = Resolve-ReleaseAuth -CookieValue $Cookie -TokenValue $Token -EnvFilePath $EnvFile
+        if ([string]::IsNullOrWhiteSpace($resolvedAuth)) {
+            $resolvedAuth = Read-Host "ASTRACODE_ADMIN_COOKIE / ASTRACODE_ADMIN_TOKEN"
         }
-        if ([string]::IsNullOrWhiteSpace($resolvedCookie)) {
-            throw "Missing cookie. Pass -Cookie, set ASTRACODE_ADMIN_COOKIE, or put it in .env/.env.local."
+        if ([string]::IsNullOrWhiteSpace($resolvedAuth)) {
+            throw "Missing auth. Pass -Cookie or -Token, set ASTRACODE_ADMIN_COOKIE/ASTRACODE_ADMIN_TOKEN, or put one in .env/.env.local."
         }
 
         if ($RememberCookie) {
-            [Environment]::SetEnvironmentVariable("ASTRACODE_ADMIN_COOKIE", $resolvedCookie, "User")
-            Write-Host "Cookie saved in user environment variable ASTRACODE_ADMIN_COOKIE." -ForegroundColor Green
+            [Environment]::SetEnvironmentVariable("ASTRACODE_ADMIN_COOKIE", $resolvedAuth, "User")
+            Write-Host "Auth saved in user environment variable ASTRACODE_ADMIN_COOKIE." -ForegroundColor Green
         }
 
         Write-Host "==> Upload release" -ForegroundColor Cyan
@@ -172,7 +192,7 @@ try {
             -NoteVersion $NoteVersion `
             -PortablePath $portablePath `
             -SetupPath $setupPath `
-            -Cookie $resolvedCookie `
+            -Cookie $resolvedAuth `
             -ApiBase $ApiBase `
             -UploadBase $UploadBase
 

@@ -28,9 +28,9 @@ namespace Lsp
 
     struct CompletionItem
     {
-        std::wstring label;           // The text to insert
-        std::wstring description;     // Short description
-        std::wstring category;        // e.g. "std_container", "std_algorithm"
+        std::wstring label;
+        std::wstring description;
+        std::wstring category;
     };
 
     struct Location
@@ -63,7 +63,8 @@ namespace Lsp
         void RequestDiagnosticsAsync(const std::wstring &filePath,
                                      const std::vector<std::wstring> &lines,
                                      HWND hwnd,
-                                     int tabIndex);
+                                     int tabIndex,
+                                     bool documentSaved = false);
 
         std::optional<Location> GoToDefinition(const std::wstring &filePath,
                                                const std::wstring &lineText,
@@ -78,6 +79,9 @@ namespace Lsp
         std::wstring GetProjectRoot() const;
         ClangdUiStatus GetClangdUiStatus() const;
 
+        // Include dependency map — used by the CodeMap panel.
+        std::unordered_map<std::wstring, std::vector<std::wstring>> GetFileIncludes() const;
+
     private:
         LspManager() = default;
 
@@ -87,6 +91,10 @@ namespace Lsp
         std::optional<Location> ResolveIncludeAtCursor(const std::wstring &filePath,
                                                        const std::wstring &lineText,
                                                        int column) const;
+
+        // Updates clangdState_/clangdReason_ based on current ClangdClient state.
+        // Must be called with mutex_ held.
+        void ApplyClangdRunningState(bool running, bool ready);
 
         std::wstring projectRoot_;
 

@@ -330,17 +330,21 @@ void ClangdClient::EnsureCompileCommandsAsync(const std::wstring& projectRoot)
             std::filesystem::copy_file(src, ccdbFile,
                 std::filesystem::copy_options::overwrite_existing, ec2);
 
-            // Avoid restarting for a stale project after a quick project switch.
+            // Notify clangd that compile_commands.json changed so it reindexes
+            // without requiring a full restart. clangd 14+ responds to this event.
             bool stillCurrentProject = false;
             {
                 std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex_);
                 stillCurrentProject = !projectRoot_.empty() &&
                                      NormalizePathKey(projectRoot_) == NormalizePathKey(projectRoot);
             }
-
-            // Restart clangd so it picks up the new compile_commands.json.
-            if (stillCurrentProject)
-                RestartForProject(projectRoot);
+            if (stillCurrentProject && initialized_) {
+                std::string ccdbUri = FilePathToUri(ccdbFile.wstring());
+                std::string notif =
+                    "{\"jsonrpc\":\"2.0\",\"method\":\"workspace/didChangeWatchedFiles\","
+                    "\"params\":{\"changes\":[{\"uri\":\"" + ccdbUri + "\",\"type\":2}]}}";
+                Send(notif);
+            }
         }
     }).detach();
 }
@@ -683,7 +687,22 @@ bool ClangdClient::StartLocked(const std::wstring& projectRoot) {
     si.dwFlags    = STARTF_USESTDHANDLES;
     si.hStdInput  = hStdinRd;
     si.hStdOutput = hStdoutWr;
-    si.hStdError  = INVALID_HANDLE_VALUE; // discard stderr
+    HANDLE hStderrWr = CreateFileW(L"NUL",
+                                   GENERIC_WRITE,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                   &sa,
+                                   OPEN_EXISTING,
+                                   FILE_ATTRIBUTE_NORMAL,
+                                   nullptr);
+    if (hStderrWr == INVALID_HANDLE_VALUE) {
+        Logger::Instance().Log(L"[LSP-CORE] Start failed: CreateFile(NUL) err=" + std::to_wstring(GetLastError()));
+        CloseHandle(hStdinRd);
+        CloseHandle(hStdoutWr);
+        CloseHandle(hStdinWr_); hStdinWr_ = nullptr;
+        CloseHandle(hStdoutRd_); hStdoutRd_ = nullptr;
+        return false;
+    }
+    si.hStdError  = hStderrWr;
 
     PROCESS_INFORMATION pi{};
 
@@ -703,6 +722,7 @@ bool ClangdClient::StartLocked(const std::wstring& projectRoot) {
     // Child now owns its ends — close our copies
     CloseHandle(hStdinRd);
     CloseHandle(hStdoutWr);
+    CloseHandle(hStderrWr);
 
     if (!ok) {
         Logger::Instance().Log(L"[LSP-CORE] Start failed: CreateProcess err=" + std::to_wstring(GetLastError()) +
@@ -727,6 +747,17 @@ bool ClangdClient::StartLocked(const std::wstring& projectRoot) {
 bool ClangdClient::IsRunning() const {
     std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex_);
     return IsRunningLocked();
+}
+
+bool ClangdClient::IsReady() const {
+    std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex_);
+    return IsRunningLocked() && initialized_.load();
+}
+
+void ClangdClient::GetRunningState(bool& running, bool& ready) const {
+    std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex_);
+    running = IsRunningLocked();
+    ready   = running && initialized_.load();
 }
 
 bool ClangdClient::IsRunningLocked() const {
@@ -897,12 +928,6 @@ void ClangdClient::SendOrBuffer(const std::string& json) {
     } else {
         std::lock_guard<std::mutex> lk(pendingMutex_);
         pendingNotifications_.push_back({ json });
-
-        // Robust mode: also send immediately while buffering.
-        // If clangd is already ready, this avoids diagnostics silence when
-        // initialize response parsing is delayed or brittle.
-        if (running_ && hStdinWr_)
-            Send(json);
     }
 }
 
@@ -1148,6 +1173,21 @@ void ClangdClient::HandleMessage(const std::string& json) {
         }
     }
 
+    // Dispatch response to a pending request callback (definition, completion, etc.)
+    int respId = JsonGetInt(json, "id", -1);
+    if (respId >= 2) {
+        std::function<void(const std::string&)> cb;
+        {
+            std::lock_guard<std::mutex> lk(requestsMutex_);
+            auto it = pendingRequests_.find(respId);
+            if (it != pendingRequests_.end()) {
+                cb = std::move(it->second.callback);
+                pendingRequests_.erase(it);
+            }
+        }
+        if (cb) { cb(json); return; }
+    }
+
     // Notification: textDocument/publishDiagnostics
     std::string method = JsonGetString(json, "method");
     if (method == "textDocument/publishDiagnostics") {
@@ -1277,6 +1317,125 @@ std::vector<std::string> ClangdClient::FindMinGWIncludes() {
 }
 
 // ---------------------------------------------------------------------------
+// RequestDefinitionSync / RequestCompletionsSync
+// ---------------------------------------------------------------------------
+
+std::optional<Location> ClangdClient::RequestDefinitionSync(
+    const std::wstring& filePath, int line, int col, int timeoutMs)
+{
+    if (!IsReady()) return std::nullopt;
+
+    struct State {
+        std::mutex mtx;
+        std::condition_variable cv;
+        std::optional<Location> result;
+        bool done = false;
+    };
+    auto state = std::make_shared<State>();
+
+    int id = nextRequestId_++;
+    {
+        std::lock_guard<std::mutex> lk(requestsMutex_);
+        pendingRequests_[id] = { [state, this](const std::string& json) {
+            std::string resultArr = JsonGetArray(json, "result");
+            if (!resultArr.empty()) {
+                auto objs = JsonSplitObjects(resultArr);
+                if (!objs.empty()) {
+                    std::string uri   = JsonGetString(objs[0], "uri");
+                    std::string range = JsonGetObject(objs[0], "range");
+                    std::string start = JsonGetObject(range, "start");
+                    Location loc;
+                    loc.filePath = UriToFilePath(uri);
+                    loc.line     = JsonGetInt(start, "line", 0);
+                    loc.column   = JsonGetInt(start, "character", 0);
+                    std::lock_guard<std::mutex> lk2(state->mtx);
+                    state->result = loc;
+                }
+            }
+            std::lock_guard<std::mutex> lk2(state->mtx);
+            state->done = true;
+            state->cv.notify_one();
+        }};
+    }
+
+    std::string uri = FilePathToUri(filePath);
+    std::string req =
+        "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+        ",\"method\":\"textDocument/definition\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" + uri + "\"},"
+        "\"position\":{\"line\":" + std::to_string(line) +
+        ",\"character\":" + std::to_string(col) + "}}}";
+    Send(req);
+
+    std::unique_lock<std::mutex> lk(state->mtx);
+    state->cv.wait_for(lk, std::chrono::milliseconds(timeoutMs), [&] { return state->done; });
+
+    if (!state->done) {
+        std::lock_guard<std::mutex> lk2(requestsMutex_);
+        pendingRequests_.erase(id);
+    }
+    return state->result;
+}
+
+std::vector<CompletionItem> ClangdClient::RequestCompletionsSync(
+    const std::wstring& filePath, int line, int col, int timeoutMs)
+{
+    if (!IsReady()) return {};
+
+    struct State {
+        std::mutex mtx;
+        std::condition_variable cv;
+        std::vector<CompletionItem> result;
+        bool done = false;
+    };
+    auto state = std::make_shared<State>();
+
+    int id = nextRequestId_++;
+    {
+        std::lock_guard<std::mutex> lk(requestsMutex_);
+        pendingRequests_[id] = { [state, this](const std::string& json) {
+            // Response is either an array or {"isIncomplete":...,"items":[...]}
+            std::string itemsArr = JsonGetArray(json, "result");
+            if (itemsArr.empty()) {
+                std::string result = JsonGetObject(json, "result");
+                if (!result.empty())
+                    itemsArr = JsonGetArray(result, "items");
+            }
+            std::vector<CompletionItem> items;
+            for (const auto& obj : JsonSplitObjects(itemsArr)) {
+                CompletionItem item;
+                item.label       = Utf8ToWide(JsonGetString(obj, "label"));
+                item.description = Utf8ToWide(JsonGetString(obj, "detail"));
+                item.category    = L"lsp";
+                items.push_back(std::move(item));
+            }
+            std::lock_guard<std::mutex> lk2(state->mtx);
+            state->result = std::move(items);
+            state->done   = true;
+            state->cv.notify_one();
+        }};
+    }
+
+    std::string uri = FilePathToUri(filePath);
+    std::string req =
+        "{\"jsonrpc\":\"2.0\",\"id\":" + std::to_string(id) +
+        ",\"method\":\"textDocument/completion\",\"params\":{"
+        "\"textDocument\":{\"uri\":\"" + uri + "\"},"
+        "\"position\":{\"line\":" + std::to_string(line) +
+        ",\"character\":" + std::to_string(col) + "}}}";
+    Send(req);
+
+    std::unique_lock<std::mutex> lk(state->mtx);
+    state->cv.wait_for(lk, std::chrono::milliseconds(timeoutMs), [&] { return state->done; });
+
+    if (!state->done) {
+        std::lock_guard<std::mutex> lk2(requestsMutex_);
+        pendingRequests_.erase(id);
+    }
+    return state->result;
+}
+
+// ---------------------------------------------------------------------------
 // SendInitialize / SendInitialized
 // ---------------------------------------------------------------------------
 
@@ -1303,6 +1462,7 @@ void ClangdClient::SendInitialize() {
         "\"rootUri\":\"" + rootUri + "\","
         + initOptions +
         "\"capabilities\":{"
+        "\"workspace\":{\"didChangeWatchedFiles\":{\"dynamicRegistration\":false}},"
         "\"textDocument\":{"
         "\"publishDiagnostics\":{\"relatedInformation\":false}"
         "}},"

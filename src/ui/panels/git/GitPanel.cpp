@@ -230,7 +230,7 @@ GitPanel::GitPanel()
 {
     config_ = PanelConfig(
         PanelId::Git,
-        L"\uEB05",
+        L"assets/ressource/icons/git-sidebar.svg",
         L"Source Control",
         true,
         false,

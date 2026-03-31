@@ -91,9 +91,8 @@ CustomTitleBarButtonRects win32_get_title_bar_button_rects(HWND handle, const RE
     button_rects.run = button_rects.minimize;
     button_rects.run.left -= button_width;
     button_rects.run.right -= button_width;
+    // Keep debug aligned with run for compatibility. The dedicated debug button is no longer drawn.
     button_rects.debug = button_rects.run;
-    button_rects.debug.left -= button_width;
-    button_rects.debug.right -= button_width;
     return button_rects;
 }
 
