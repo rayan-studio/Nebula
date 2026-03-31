@@ -14,6 +14,8 @@
 namespace Lsp
 {
     static constexpr DWORD CLANGD_RESTART_TIMEOUT_MS = 10000;
+    static constexpr DWORD DIAG_REQUEST_THROTTLE_MS = 120;
+    static constexpr int CLANGD_DIDCHANGE_DEBOUNCE_MS = 120;
 
     static bool IsLspTraceEnabled()
     {
@@ -587,12 +589,15 @@ namespace Lsp
     ClangdUiStatus LspManager::GetClangdUiStatus() const
     {
         bool runningNow = false, readyNow = false;
-        ClangdClient::Instance().GetRunningState(runningNow, readyNow);
+        std::wstring failureReason;
+        ClangdClient::Instance().GetRunningState(runningNow, readyNow, failureReason);
 
         ClangdUiStatus status;
         std::lock_guard<std::mutex> lk(mutex_);
         status.state = clangdState_;
         status.reason = clangdReason_;
+        ClangdRuntimeState previousState = status.state;
+        DWORD now = GetTickCount();
         if (readyNow)
         {
             status.state = ClangdRuntimeState::Running;
@@ -600,19 +605,27 @@ namespace Lsp
         }
         else if (runningNow)
         {
-            status.state = ClangdRuntimeState::Restarting;
-            if (status.reason.empty())
-                status.reason = L"synchronisation clangd";
-        }
-        else if (status.state == ClangdRuntimeState::Restarting)
-        {
-            DWORD now = GetTickCount();
             if (clangdRestartingUntilTick_ != 0 && now >= clangdRestartingUntilTick_)
             {
                 status.state = ClangdRuntimeState::Failed;
-                if (status.reason.empty())
-                    status.reason = L"restart timeout";
+                status.reason = failureReason.empty() ? L"initialize timeout" : failureReason;
             }
+            else
+            {
+                status.state = ClangdRuntimeState::Restarting;
+                status.reason = failureReason.empty() ? L"synchronisation clangd" : failureReason;
+            }
+        }
+        else
+        {
+            status.state = ClangdRuntimeState::Failed;
+            if (!failureReason.empty())
+                status.reason = failureReason;
+            else if (previousState == ClangdRuntimeState::Restarting &&
+                     clangdRestartingUntilTick_ != 0 && now >= clangdRestartingUntilTick_)
+                status.reason = L"restart timeout";
+            else if (status.reason.empty() || status.reason == L"synchronisation clangd")
+                status.reason = L"clangd arrete";
         }
         return status;
     }
@@ -638,7 +651,8 @@ namespace Lsp
         // Start the real clangd LSP client for this project.
         // If clangd is already running (project switch), restart it for the new root.
         bool running = false, ready = false;
-        ClangdClient::Instance().GetRunningState(running, ready);
+        std::wstring failureReason;
+        ClangdClient::Instance().GetRunningState(running, ready, failureReason);
 
         bool started = false;
         if (running)
@@ -646,7 +660,7 @@ namespace Lsp
         else
             started = ClangdClient::Instance().Start(normalizedRoot);
 
-        ClangdClient::Instance().GetRunningState(running, ready);
+        ClangdClient::Instance().GetRunningState(running, ready, failureReason);
         {
             std::lock_guard<std::mutex> lk(mutex_);
             if (started)
@@ -654,7 +668,7 @@ namespace Lsp
             else
             {
                 clangdState_ = ClangdRuntimeState::Failed;
-                clangdReason_ = L"clangd introuvable ou lancement echoue";
+                clangdReason_ = failureReason.empty() ? L"clangd introuvable ou lancement echoue" : failureReason;
                 clangdRestartingUntilTick_ = 0;
             }
         }
@@ -1808,7 +1822,7 @@ namespace Lsp
             std::lock_guard<std::mutex> lk(mutex_);
             DWORD &last = lastDiagTick_[filePath];
             // Skip throttle if includes changed (force immediate update)
-            if (!hasIncludeChange && now -last < 200)
+            if (!hasIncludeChange && now -last < DIAG_REQUEST_THROTTLE_MS)
             return;
             last = now;
         }
@@ -1821,11 +1835,18 @@ namespace Lsp
 
         // Sync document state with clangd; lifecycle is managed by SetProjectRoot.
         bool clangdRunning = false, clangdReady = false;
-        ClangdClient::Instance().GetRunningState(clangdRunning, clangdReady);
+        std::wstring failureReason;
+        ClangdClient::Instance().GetRunningState(clangdRunning, clangdReady, failureReason);
         {
             std::lock_guard<std::mutex> lk(mutex_);
             if (clangdReady || clangdRunning)
                 ApplyClangdRunningState(clangdRunning, clangdReady);
+            else
+            {
+                clangdState_ = ClangdRuntimeState::Failed;
+                clangdReason_ = failureReason.empty() ? L"clangd arrete" : failureReason;
+                clangdRestartingUntilTick_ = 0;
+            }
         }
 
         // Always send (or buffer) file content to clangd.
@@ -1858,7 +1879,7 @@ namespace Lsp
                 clangdPendingVer_[pathCopy] = ver;
             }
             std::thread([this, pathCopy, content, ver]() {
-                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                std::this_thread::sleep_for(std::chrono::milliseconds(CLANGD_DIDCHANGE_DEBOUNCE_MS));
                 std::lock_guard<std::mutex> lk(mutex_);
                 auto it = clangdPendingVer_.find(pathCopy);
                 if (it != clangdPendingVer_.end() && it->second == ver) {

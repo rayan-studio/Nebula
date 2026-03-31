@@ -16,6 +16,8 @@
 namespace Lsp {
 
 namespace {
+constexpr DWORD CLANGD_INITIALIZE_TIMEOUT_MS = 10000;
+
 std::wstring GetNebulaClangdDbDir(const std::wstring &projectRoot)
 {
     if (projectRoot.empty())
@@ -488,6 +490,12 @@ bool ClangdClient::StartLocked(const std::wstring& projectRoot) {
     if (IsRunningLocked())
         return true;
 
+    {
+        std::lock_guard<std::mutex> failureLock(failureMutex_);
+        lastFailureReason_.clear();
+    }
+    initializeRequestedTick_ = 0;
+
     // If clangd exited unexpectedly, the previous reader thread may still be
     // joinable. Reassigning std::thread without joining would call
     // std::terminate (observed as abort() in MSVC runtime).
@@ -505,6 +513,8 @@ bool ClangdClient::StartLocked(const std::wstring& projectRoot) {
 
     std::wstring clangdPath = FindClangd();
     if (clangdPath.empty()) {
+        std::lock_guard<std::mutex> failureLock(failureMutex_);
+        lastFailureReason_ = L"clangd introuvable";
         Logger::Instance().Log(L"[LSP-CORE] Start failed: clangd not found");
         return false;
     }
@@ -527,6 +537,8 @@ bool ClangdClient::StartLocked(const std::wstring& projectRoot) {
 
     if (!CreatePipe(&hStdinRd, &hStdinWr_, &sa, 0))
     {
+        std::lock_guard<std::mutex> failureLock(failureMutex_);
+        lastFailureReason_ = L"CreatePipe(stdin) a echoue";
         Logger::Instance().Log(L"[LSP-CORE] Start failed: CreatePipe(stdin) err=" + std::to_wstring(GetLastError()));
         return false;
     }
@@ -534,6 +546,8 @@ bool ClangdClient::StartLocked(const std::wstring& projectRoot) {
     SetHandleInformation(hStdinWr_, HANDLE_FLAG_INHERIT, 0);
 
     if (!CreatePipe(&hStdoutRd_, &hStdoutWr, &sa, 0)) {
+        std::lock_guard<std::mutex> failureLock(failureMutex_);
+        lastFailureReason_ = L"CreatePipe(stdout) a echoue";
         Logger::Instance().Log(L"[LSP-CORE] Start failed: CreatePipe(stdout) err=" + std::to_wstring(GetLastError()));
         CloseHandle(hStdinRd);
         CloseHandle(hStdinWr_);
@@ -609,75 +623,6 @@ bool ClangdClient::StartLocked(const std::wstring& projectRoot) {
         cmdLine += L" \"--query-driver=" + queryDriverArg + L"\"";
     }
 
-    // Always inject project include paths via --extra-arg as a safety net.
-    // This covers the window between startup and compile_commands.json being
-    // ready, and also makes clangd resilient against stale compile_commands.
-    if (!projectRoot.empty()) {
-        namespace fs = std::filesystem;
-        std::error_code ec2;
-        fs::path root(projectRoot);
-
-        std::set<std::wstring> addedPaths;
-        auto addExtraArg = [&](const fs::path& p) {
-            if (!fs::is_directory(p, ec2)) return;
-            std::wstring key = p.lexically_normal().wstring();
-            if (!addedPaths.insert(key).second) return;
-            std::wstring pathStr = key;
-            std::replace(pathStr.begin(), pathStr.end(), L'\\', L'/');
-            cmdLine += L" \"--extra-arg=-I" + pathStr + L"\"";
-        };
-
-        // Common project dirs
-        addExtraArg(root / L"include");
-        addExtraArg(root / L"src");
-
-        // external/<name>/include  and  external/<name>  (for libs like imgui)
-        fs::path externalDir = root / L"external";
-        if (fs::is_directory(externalDir, ec2)) {
-            for (const auto& entry : fs::directory_iterator(externalDir, ec2)) {
-                if (!entry.is_directory(ec2)) continue;
-                addExtraArg(entry.path() / L"include");
-                addExtraArg(entry.path());
-            }
-        }
-
-        // Parse add_subdirectory() paths from CMakeLists.txt and inject their
-        // include/ dirs — covers libs placed outside of external/ (e.g. libs/, vendor/).
-        fs::path cmakeLists = root / L"CMakeLists.txt";
-        std::ifstream cmakeFile(cmakeLists);
-        if (cmakeFile.is_open()) {
-            std::string line;
-            while (std::getline(cmakeFile, line)) {
-                // Strip comments
-                auto hash = line.find('#');
-                if (hash != std::string::npos) line = line.substr(0, hash);
-
-                // Match add_subdirectory(<path> ...) — case-insensitive
-                std::string low = line;
-                std::transform(low.begin(), low.end(), low.begin(),
-                               [](unsigned char c){ return (char)std::tolower(c); });
-                auto pos = low.find("add_subdirectory");
-                if (pos == std::string::npos) continue;
-                auto open  = line.find('(', pos);
-                auto close = line.find(')', open != std::string::npos ? open : 0);
-                if (open == std::string::npos || close == std::string::npos) continue;
-                std::string args = line.substr(open + 1, close - open - 1);
-                // First token is the path
-                std::istringstream ss(args);
-                std::string subdir;
-                if (!(ss >> subdir) || subdir.empty()) continue;
-                // Convert to wide and resolve
-                int wn = MultiByteToWideChar(CP_UTF8, 0, subdir.c_str(), -1, nullptr, 0);
-                if (wn <= 1) continue;
-                std::wstring wsubdir(wn - 1, L'\0');
-                MultiByteToWideChar(CP_UTF8, 0, subdir.c_str(), -1, wsubdir.data(), wn);
-                fs::path libPath = root / wsubdir;
-                addExtraArg(libPath / L"include");
-                addExtraArg(libPath);
-            }
-        }
-    }
-
     TraceLsp(L"Start options compile_commands=" + std::wstring(hasCompileCommands ? L"yes" : L"no") +
              (compileCommandsDir.empty() ? L"" : (L" dir=" + compileCommandsDir)) +
              (queryDriverArg.empty() ? L" query_driver=no" : (L" query_driver=" + queryDriverArg)));
@@ -695,6 +640,8 @@ bool ClangdClient::StartLocked(const std::wstring& projectRoot) {
                                    FILE_ATTRIBUTE_NORMAL,
                                    nullptr);
     if (hStderrWr == INVALID_HANDLE_VALUE) {
+        std::lock_guard<std::mutex> failureLock(failureMutex_);
+        lastFailureReason_ = L"CreateFile(NUL) a echoue";
         Logger::Instance().Log(L"[LSP-CORE] Start failed: CreateFile(NUL) err=" + std::to_wstring(GetLastError()));
         CloseHandle(hStdinRd);
         CloseHandle(hStdoutWr);
@@ -725,6 +672,8 @@ bool ClangdClient::StartLocked(const std::wstring& projectRoot) {
     CloseHandle(hStderrWr);
 
     if (!ok) {
+        std::lock_guard<std::mutex> failureLock(failureMutex_);
+        lastFailureReason_ = L"CreateProcess clangd a echoue";
         Logger::Instance().Log(L"[LSP-CORE] Start failed: CreateProcess err=" + std::to_wstring(GetLastError()) +
                                L" root=" + projectRoot + L" cmd=" + cmdLine);
         CloseHandle(hStdinWr_); hStdinWr_ = nullptr;
@@ -755,9 +704,30 @@ bool ClangdClient::IsReady() const {
 }
 
 void ClangdClient::GetRunningState(bool& running, bool& ready) const {
+    std::wstring ignored;
+    GetRunningState(running, ready, ignored);
+}
+
+void ClangdClient::GetRunningState(bool& running, bool& ready, std::wstring& failureReason) const {
     std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex_);
     running = IsRunningLocked();
     ready   = running && initialized_.load();
+    {
+        std::lock_guard<std::mutex> failureLock(failureMutex_);
+        failureReason = lastFailureReason_;
+    }
+    if (running && !ready) {
+        DWORD now = GetTickCount();
+        if (initializeRequestedTick_ != 0 &&
+            now - initializeRequestedTick_ >= CLANGD_INITIALIZE_TIMEOUT_MS)
+        {
+            failureReason = L"initialize timeout";
+        }
+        else if (failureReason.empty())
+        {
+            failureReason = L"synchronisation clangd";
+        }
+    }
 }
 
 bool ClangdClient::IsRunningLocked() const {
@@ -767,18 +737,44 @@ bool ClangdClient::IsRunningLocked() const {
     HANDLE process = hProcess_;
     if (!process)
     {
+        {
+            std::lock_guard<std::mutex> failureLock(failureMutex_);
+            if (lastFailureReason_.empty())
+                const_cast<ClangdClient*>(this)->lastFailureReason_ = L"process handle null";
+        }
         Logger::Instance().Log(L"[LSP-CORE] IsRunning=false: process handle null");
         const_cast<ClangdClient*>(this)->running_ = false;
         const_cast<ClangdClient*>(this)->initialized_ = false;
+        const_cast<ClangdClient*>(this)->initializeRequestedTick_ = 0;
         return false;
     }
 
     DWORD code = 0;
-    if (!GetExitCodeProcess(process, &code) || code != STILL_ACTIVE)
+    if (!GetExitCodeProcess(process, &code))
     {
+        DWORD err = GetLastError();
+        {
+            std::lock_guard<std::mutex> failureLock(failureMutex_);
+            const_cast<ClangdClient*>(this)->lastFailureReason_ =
+                L"GetExitCodeProcess err=" + std::to_wstring(err);
+        }
+        Logger::Instance().Log(L"[LSP-CORE] IsRunning=false: GetExitCodeProcess err=" + std::to_wstring(err));
+        const_cast<ClangdClient*>(this)->running_ = false;
+        const_cast<ClangdClient*>(this)->initialized_ = false;
+        const_cast<ClangdClient*>(this)->initializeRequestedTick_ = 0;
+        return false;
+    }
+    if (code != STILL_ACTIVE)
+    {
+        {
+            std::lock_guard<std::mutex> failureLock(failureMutex_);
+            const_cast<ClangdClient*>(this)->lastFailureReason_ =
+                L"process exited code=" + std::to_wstring((unsigned long long)code);
+        }
         Logger::Instance().Log(L"[LSP-CORE] IsRunning=false: process exited code=" + std::to_wstring((unsigned long long)code));
         const_cast<ClangdClient*>(this)->running_ = false;
         const_cast<ClangdClient*>(this)->initialized_ = false;
+        const_cast<ClangdClient*>(this)->initializeRequestedTick_ = 0;
         return false;
     }
 
@@ -811,6 +807,7 @@ void ClangdClient::StopLocked() {
     }
 
     initialized_ = false;
+    initializeRequestedTick_ = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -917,8 +914,16 @@ void ClangdClient::Send(const std::string& json) {
     DWORD written = 0;
     if (!WriteFile(hStdinWr_, msg.data(), static_cast<DWORD>(msg.size()), &written, nullptr))
     {
+        DWORD err = GetLastError();
+        Logger::Instance().Log(L"[LSP-CORE] Send failed: WriteFile err=" + std::to_wstring(err) +
+                               L" bytes=" + std::to_wstring((unsigned long long)msg.size()));
+        {
+            std::lock_guard<std::mutex> failureLock(failureMutex_);
+            lastFailureReason_ = L"WriteFile err=" + std::to_wstring(err);
+        }
         running_ = false;
         initialized_ = false;
+        initializeRequestedTick_ = 0;
     }
 }
 
@@ -966,12 +971,20 @@ void ClangdClient::ReaderLoop() {
     buf.reserve(65536);
 
     char tmp[4096];
+    DWORD readErr = 0;
+    bool pipeClosed = false;
 
     while (running_) {
         DWORD bytesRead = 0;
         BOOL ok = ReadFile(hStdoutRd_, tmp, sizeof(tmp), &bytesRead, nullptr);
-        if (!ok || bytesRead == 0)
+        if (!ok) {
+            readErr = GetLastError();
             break; // pipe closed or process died
+        }
+        if (bytesRead == 0) {
+            pipeClosed = true;
+            break; // pipe closed or process died
+        }
 
         buf.append(tmp, bytesRead);
 
@@ -1013,6 +1026,31 @@ void ClangdClient::ReaderLoop() {
 
     // If the reader loop exits unexpectedly, ensure the client state reflects
     // that clangd is no longer available.
+    if (readErr != 0)
+    {
+        std::lock_guard<std::mutex> failureLock(failureMutex_);
+        lastFailureReason_ = L"ReadFile err=" + std::to_wstring(readErr);
+        Logger::Instance().Log(L"[LSP-CORE] ReaderLoop exit: ReadFile err=" + std::to_wstring(readErr));
+    }
+    else if (pipeClosed)
+    {
+        DWORD code = 0;
+        if (hProcess_ && GetExitCodeProcess(hProcess_, &code))
+        {
+            std::lock_guard<std::mutex> failureLock(failureMutex_);
+            lastFailureReason_ = (code == STILL_ACTIVE)
+                ? L"stdout pipe closed"
+                : (L"process exited code=" + std::to_wstring((unsigned long long)code));
+            Logger::Instance().Log(L"[LSP-CORE] ReaderLoop exit: pipe closed code=" + std::to_wstring((unsigned long long)code));
+        }
+        else
+        {
+            std::lock_guard<std::mutex> failureLock(failureMutex_);
+            lastFailureReason_ = L"stdout pipe closed";
+            Logger::Instance().Log(L"[LSP-CORE] ReaderLoop exit: pipe closed");
+        }
+    }
+    initializeRequestedTick_ = 0;
     running_ = false;
     initialized_ = false;
 }
@@ -1157,7 +1195,14 @@ void ClangdClient::HandleMessage(const std::string& json) {
         if ((id == 1 && !result.empty()) || looksLikeInitResponse) {
             // Initialize response received
             SendInitialized();
-            initialized_ = true;
+            {
+                std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex_);
+                std::lock_guard<std::mutex> failureLock(failureMutex_);
+                initialized_ = true;
+                initializeRequestedTick_ = 0;
+                lastFailureReason_.clear();
+            }
+            Logger::Instance().Log(L"[LSP-CORE] Initialize ok");
             FlushPending();
 
             bool replayOpenDocuments = false;
@@ -1469,6 +1514,12 @@ void ClangdClient::SendInitialize() {
         "\"trace\":\"off\""
         "}}";
 
+    initializeRequestedTick_ = GetTickCount();
+    {
+        std::lock_guard<std::mutex> failureLock(failureMutex_);
+        lastFailureReason_.clear();
+    }
+    Logger::Instance().Log(L"[LSP-CORE] Initialize sent root=" + projectRoot_);
     Send(json);
 }
 

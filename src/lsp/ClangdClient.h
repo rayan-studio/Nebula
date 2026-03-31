@@ -24,6 +24,7 @@ public:
     bool IsReady() const;
     // Returns both flags under a single mutex acquisition (avoids double syscall on hot paths).
     void GetRunningState(bool& running, bool& ready) const;
+    void GetRunningState(bool& running, bool& ready, std::wstring& failureReason) const;
     void Stop();
 
     // Call these when a file is opened or modified
@@ -78,10 +79,13 @@ private:
     std::thread readerThread_;
     std::atomic<bool> running_{false};
     mutable std::mutex lifecycleMutex_;
+    mutable std::mutex failureMutex_;
     std::mutex sendMutex_;
 
     std::atomic<bool> initialized_{false};
     std::wstring projectRoot_;
+    std::wstring lastFailureReason_;
+    std::atomic<DWORD> initializeRequestedTick_{0};
 
     DiagCallback diagCb_;
 

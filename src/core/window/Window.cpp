@@ -200,6 +200,7 @@ static constexpr UINT TITLEBAR_HOVER_TIMER_ID = 2;
 static constexpr UINT TITLEBAR_HOVER_TIMER_INTERVAL_MS = 16;
 static constexpr UINT DIAG_TIMER_ID = 3;
 static constexpr UINT DIAG_TIMER_INTERVAL_MS = 80;
+static constexpr DWORD DIAG_DISPATCH_DELAY_MS = 120;
 static constexpr UINT EDITOR_DRAG_TIMER_ID = 4;
 static constexpr UINT EDITOR_DRAG_TIMER_INTERVAL_MS = 16;
 
@@ -2469,7 +2470,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             std::vector<int> ready;
             for (const auto &kv : pendingDiagTick_)
             {
-                if (now - kv.second >= 200)
+                if (now - kv.second >= DIAG_DISPATCH_DELAY_MS)
                     ready.push_back(kv.first);
             }
 
