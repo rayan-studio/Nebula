@@ -643,6 +643,19 @@ namespace Lsp
         {
             std::lock_guard<std::mutex> lk(mutex_);
             rootChanged = (projectRoot_ != normalizedRoot);
+            if (rootChanged)
+            {
+                diagnostics_.clear();
+                fileSymbols_.clear();
+                fileSymbolDefLocs_.clear();
+                fileSymbolDeclLocs_.clear();
+                fileIncludes_.clear();
+                symbolIndexDef_.clear();
+                symbolIndexDecl_.clear();
+                lastDiagTick_.clear();
+                clangdLastDiagTickByFile_.clear();
+                clangdPendingVer_.clear();
+            }
             projectRoot_ = normalizedRoot;
         }
         if (rootChanged)

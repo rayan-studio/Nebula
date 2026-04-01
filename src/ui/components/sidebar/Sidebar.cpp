@@ -145,7 +145,10 @@ void SidebarRenderer::UpdateItemRects(HWND hwnd)
     for (const auto& cfg : topItems) {
         SidebarItemState state;
         state.panelId = cfg.id;
-        state.isActive = GetPanelManager().IsPanelActive(cfg.id);
+        Window *window = GetWindowFromHwnd(hwnd);
+        state.isActive = GetPanelManager().IsPanelActive(cfg.id) ||
+                         (window && cfg.id == PanelId::Settings && window->IsSettingsTabActive()) ||
+                         (window && cfg.id == PanelId::CodeMap && window->IsCodeMapTabActive());
         
         float centerY = currentY + (itemSize_ * 0.5f);
         
@@ -172,10 +175,13 @@ void SidebarRenderer::UpdateItemRects(HWND hwnd)
     
     for (auto it = bottomItems.rbegin(); it != bottomItems.rend(); ++it) {
         const auto& cfg = *it;
-        
+
         SidebarItemState state;
         state.panelId = cfg.id;
-        state.isActive = GetPanelManager().IsPanelActive(cfg.id);
+        Window *window = GetWindowFromHwnd(hwnd);
+        state.isActive = GetPanelManager().IsPanelActive(cfg.id) ||
+                         (window && cfg.id == PanelId::Settings && window->IsSettingsTabActive()) ||
+                         (window && cfg.id == PanelId::CodeMap && window->IsCodeMapTabActive());
         
         float itemTop = bottomY - itemSize_;
         float centerY = itemTop + (itemSize_ * 0.5f);
@@ -439,6 +445,23 @@ bool SidebarRenderer::HandleLeftClick(HWND hwnd, POINT clientPoint)
             Panel* settingsPanel = GetPanelManager().GetPanel(PanelId::Settings);
             if (settingsPanel) {
                 settingsPanel->SetVisible(false);
+            }
+
+            SetFocus(hwnd);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return true;
+        }
+
+        if (clickedPanel == PanelId::CodeMap) {
+            PostMessageW(hwnd, WM_OPEN_CODE_MAP, 0, 0);
+
+            if (GetPanelManager().IsPanelActive(PanelId::CodeMap)) {
+                GetPanelManager().SetActivePanel(PanelId::Explorer);
+            }
+
+            Panel* codeMapPanel = GetPanelManager().GetPanel(PanelId::CodeMap);
+            if (codeMapPanel) {
+                codeMapPanel->SetVisible(false);
             }
 
             SetFocus(hwnd);

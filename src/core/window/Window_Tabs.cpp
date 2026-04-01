@@ -11,6 +11,7 @@
 
 static const std::wstring kSettingsTabPath = L"__settings__";
 static const std::wstring kMarketplaceTabPrefix = L"__marketplace_lib__:";
+static const std::wstring kCodeMapTabPath = L"__codemap__";
 
 static std::wstring ToLower(std::wstring value)
 {
@@ -114,6 +115,11 @@ const std::wstring &Window::SettingsTabPath()
     return kSettingsTabPath;
 }
 
+const std::wstring &Window::CodeMapTabPath()
+{
+    return kCodeMapTabPath;
+}
+
 const std::wstring &Window::MarketplaceTabPrefix()
 {
     return kMarketplaceTabPrefix;
@@ -138,9 +144,20 @@ bool Window::IsMarketplaceTabIndex(int tabIndex) const
     return tab && tab->filePath.rfind(kMarketplaceTabPrefix, 0) == 0;
 }
 
+bool Window::IsCodeMapTabIndex(int tabIndex) const
+{
+    const Tab *tab = tabBar_.GetTab(tabIndex);
+    return tab && tab->filePath == kCodeMapTabPath;
+}
+
 bool Window::IsSettingsTabActive() const
 {
     return IsSettingsTabIndex(tabBar_.GetActiveTabIndex());
+}
+
+bool Window::IsCodeMapTabActive() const
+{
+    return IsCodeMapTabIndex(tabBar_.GetActiveTabIndex());
 }
 
 void Window::OpenMarketplaceLibraryTab(const std::wstring &libraryName)
@@ -158,6 +175,20 @@ void Window::OpenMarketplaceLibraryTab(const std::wstring &libraryName)
     }
 
     tabBar_.AddTab(tabPath, libraryName);
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void Window::OpenCodeMapTab()
+{
+    int existing = tabBar_.FindTabIndexByFilePath(kCodeMapTabPath);
+    if (existing >= 0)
+    {
+        tabBar_.SetActiveTab(existing);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+
+    tabBar_.AddTab(kCodeMapTabPath, L"Code Map");
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 

@@ -8,6 +8,7 @@
 #include "orion/rendering/gutter/Gutter.h"
 #include "orion/rendering/GuideRenderer.h"
 #include "orion/geometry/IndentationHelper.h"
+#include "orion/geometry/TextColumns.h"
 #include "orion/selection/Selection.h"
 #include "orion/caret/Caret.h"
 #include "core/explorer/Explorer.h"
@@ -1017,34 +1018,106 @@ namespace Orion
         Orion::CaretPosition end = {state_.caret.line, state_.caret.column};
         const std::vector<std::wstring> *linesForSelection = &state_.lines;
         std::vector<std::wstring> visibleLines;
+        std::vector<int> actualLineBySelectionLine;
         if (!collapsedFolds_.empty())
         {
             EnsureFoldLineMaps();
             visibleLines.reserve(state_.actualLineByVisual.size());
+            actualLineBySelectionLine.reserve(state_.actualLineByVisual.size());
             for (int actual : state_.actualLineByVisual)
             {
                 if (actual >= 0 && actual < (int)state_.lines.size())
+                {
                     visibleLines.push_back(state_.lines[(size_t)actual]);
+                    actualLineBySelectionLine.push_back(actual);
+                }
             }
             start.line = ActualLineToVisibleLine(start.line);
             end.line = ActualLineToVisibleLine(end.line);
             linesForSelection = &visibleLines;
         }
+        else
+        {
+            actualLineBySelectionLine.resize(state_.lines.size());
+            for (int i = 0; i < (int)state_.lines.size(); ++i)
+                actualLineBySelectionLine[(size_t)i] = i;
+        }
 
-        auto regions = Rendering::Selection::CalculateRegions(
-            start,
-            end,
-            *linesForSelection,
-            contentLeft,
-            state_.topEdge,
-            state_.scrollOffsetX,
-            state_.scrollOffsetY,
-            metrics_.lineHeight,
-            GetIndentConfig().tabSize,
-            metrics_.characterWidth,
-            3.0f,
-            pDWriteFactory_,
-            cachedTextFormat_);
+        std::vector<D2D1_ROUNDED_RECT> regions;
+        Orion::CaretPosition a = start;
+        Orion::CaretPosition b = end;
+        if (a.line > b.line || (a.line == b.line && a.column > b.column))
+            std::swap(a, b);
+
+        if (!linesForSelection->empty())
+        {
+            int sLine = (std::max)(0, (std::min)(a.line, (int)linesForSelection->size() - 1));
+            int eLine = (std::max)(0, (std::min)(b.line, (int)linesForSelection->size() - 1));
+            regions.reserve((size_t)(eLine - sLine + 1));
+
+            for (int line = sLine; line <= eLine; ++line)
+            {
+                const std::wstring &ln = (*linesForSelection)[(size_t)line];
+                const int actualLine = (line >= 0 && line < (int)actualLineBySelectionLine.size())
+                                           ? actualLineBySelectionLine[(size_t)line]
+                                           : line;
+                const int lineLen = (int)ln.size();
+                const float y = state_.topEdge + (line * metrics_.lineHeight) - state_.scrollOffsetY;
+
+                auto getXForColumn = [&](int column) -> float
+                {
+                    float hitX = 0.0f;
+                    if (TryGetStyledColumnX(ln, actualLine, column, hitX))
+                        return contentLeft - state_.scrollOffsetX + hitX;
+
+                    int visualCol = 0;
+                    const int clampedColumn = (std::max)(0, (std::min)(column, lineLen));
+                    const int tabSize = GetIndentConfig().tabSize;
+                    for (int i = 0; i < clampedColumn; ++i)
+                        visualCol = Orion::Geometry::AdvanceVisualCol(visualCol, ln[(size_t)i], tabSize);
+                    return contentLeft - state_.scrollOffsetX + (visualCol * metrics_.characterWidth);
+                };
+
+                float x1 = contentLeft - state_.scrollOffsetX;
+                float x2 = contentLeft - state_.scrollOffsetX;
+
+                if (sLine == eLine)
+                {
+                    x1 = getXForColumn(a.column);
+                    x2 = getXForColumn(b.column);
+                }
+                else if (line == sLine)
+                {
+                    x1 = getXForColumn(a.column);
+                    x2 = getXForColumn(lineLen);
+                }
+                else if (line == eLine)
+                {
+                    x1 = contentLeft - state_.scrollOffsetX;
+                    x2 = getXForColumn(b.column);
+                }
+                else
+                {
+                    x1 = contentLeft - state_.scrollOffsetX;
+                    x2 = getXForColumn(lineLen);
+                }
+
+                if (x2 < x1)
+                    std::swap(x1, x2);
+
+                x2 += metrics_.characterWidth * 0.3f;
+
+                const float minWidth = metrics_.characterWidth * 0.5f;
+                if (x2 - x1 < minWidth)
+                    x2 = x1 + minWidth;
+
+                D2D1_ROUNDED_RECT rr{};
+                rr.rect = D2D1::RectF(x1, y, x2, y + metrics_.lineHeight);
+                rr.radiusX = 3.0f;
+                rr.radiusY = 3.0f;
+                regions.push_back(rr);
+            }
+        }
 
         std::vector<D2D1_ROUNDED_RECT> valid;
         for (const auto &r : regions)

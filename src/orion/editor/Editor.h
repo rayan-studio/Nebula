@@ -441,6 +441,9 @@ namespace Orion
 
         D2D1_POINT_2F TextToScreenPosition(CaretPosition pos);
         CaretPosition ScreenToTextPosition(POINT screenPoint);
+        bool CreateStyledTextLayout(const std::wstring &line, int actualLine, IDWriteTextLayout **outLayout);
+        bool TryGetStyledColumnX(const std::wstring &line, int actualLine, int column, float &outX);
+        bool TryGetStyledColumnFromX(const std::wstring &line, int actualLine, float localX, int &outColumn);
 
         void DeleteSelection();
         void EnsureFoldLineMaps();

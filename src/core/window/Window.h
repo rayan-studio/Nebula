@@ -25,6 +25,7 @@ static constexpr UINT WM_OPEN_NEW_PROJECT = WM_USER + 781;
 static constexpr UINT WM_SHOW_RUN_ERROR_POPUP = WM_USER + 782;
 static constexpr UINT WM_RUN_PROCESS_EXITED = WM_USER + 783;
 static constexpr UINT WM_OPEN_MARKETPLACE_LIBRARY = WM_USER + 784;
+static constexpr UINT WM_OPEN_CODE_MAP = WM_USER + 785;
 
 struct RenamePathPayload
 {
@@ -42,6 +43,7 @@ struct LspDiagnosticsResult
 class Skia;
 class SettingsTabView;
 class MarketplaceExtensionTabView;
+class CodeMapTabView;
 
 class Window
 {
@@ -56,6 +58,7 @@ private:
     KeyboardManager keyboard_;
     std::unique_ptr<SettingsTabView> settingsTab_;
     std::unique_ptr<MarketplaceExtensionTabView> marketplaceTab_;
+    std::unique_ptr<CodeMapTabView> codeMapTab_;
     std::map<int, std::pair<int, int>> pendingGoToLocation_;
     std::unordered_set<int> pendingMarkdownPreview_;
     std::optional<Lsp::Location> pendingContextGoto_;
@@ -114,6 +117,7 @@ public:
     TabBar *GetTabBar() { return &tabBar_; }
     SettingsTabView *GetSettingsTabView() { return settingsTab_.get(); }
     MarketplaceExtensionTabView *GetMarketplaceExtensionTabView() { return marketplaceTab_.get(); }
+    CodeMapTabView *GetCodeMapTabView() { return codeMapTab_.get(); }
     void SetUpdateToastRect(const D2D1_RECT_F &rect);
     void ClearUpdateToastRect();
     bool IsPointInUpdateToast(POINT pt) const;
@@ -137,12 +141,16 @@ public:
     void OpenFileInNewTab(const std::wstring &filePath, int lineNumber = -1, int column = -1);
     void OpenFileInNewTabWithMarkdownPreview(const std::wstring &filePath);
     void OpenMarketplaceLibraryTab(const std::wstring &libraryName);
+    void OpenCodeMapTab();
     void OpenSettingsTab();
     bool IsSettingsTabIndex(int tabIndex) const;
     bool IsMarketplaceTabIndex(int tabIndex) const;
+    bool IsCodeMapTabIndex(int tabIndex) const;
     bool IsSettingsTabActive() const;
+    bool IsCodeMapTabActive() const;
     static const std::wstring &SettingsTabPath();
     static const std::wstring &MarketplaceTabPrefix();
+    static const std::wstring &CodeMapTabPath();
     static std::wstring MarketplaceLibraryNameFromTabPath(const std::wstring &tabPath);
     // Dialogs
     void OpenFileDialog();

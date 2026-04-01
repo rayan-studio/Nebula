@@ -43,12 +43,14 @@
 #include "orion/font/CustomFontLoader.h"
 #include "ui/screens/SettingsTab.h"
 #include "ui/screens/MarketplaceExtensionTab.h"
+#include "ui/screens/CodeMapTab.h"
 #include <dwrite_1.h>
 #include "ui/panels/ggwave/GGWavePanel.h"
 #include "utils/logger/Logger.h"
 #include "orion/caret/Caret.h"
 #include "ui/layout/ExplorerLayoutState.h"
 #include "lsp/LspManager.h"
+#include "lsp/ClangdClient.h"
 #include "core/window/OpenFileRequest.h"
 #include "utils/update/UpdateService.h"
 #include "ui/theme/Theme.h"
@@ -608,6 +610,12 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
         ShowNewProjectOverlay();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return 0;
+    }
+    case WM_OPEN_CODE_MAP:
+    {
+        OpenCodeMapTab();
         InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
     }
@@ -1578,6 +1586,33 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
+        if (IsCodeMapTabIndex(tabBar_.GetActiveTabIndex()) && codeMapTab_ && codeMapTab_->IsPointInView(pt))
+        {
+            if (GetPanelManager().IsPanelActive(PanelId::Search))
+            {
+                SearchPanel *searchPanel = GetPanelManager().GetPanelAs<SearchPanel>(PanelId::Search);
+                if (searchPanel && searchPanel->IsInputFocused())
+                    searchPanel->UnfocusInput();
+            }
+            if (GetPanelManager().IsPanelActive(PanelId::Git))
+            {
+                GitPanel *gitPanel = GetPanelManager().GetPanelAs<GitPanel>(PanelId::Git);
+                if (gitPanel && gitPanel->IsInputFocused())
+                    gitPanel->UnfocusInputs();
+            }
+            if (GetPanelManager().IsPanelActive(PanelId::Marketplace))
+            {
+                MarketplacePanel *marketplacePanel = GetPanelManager().GetPanelAs<MarketplacePanel>(PanelId::Marketplace);
+                if (marketplacePanel && marketplacePanel->IsSearchInputFocused())
+                    marketplacePanel->UnfocusSearchInput();
+            }
+
+            GetTerminalPanel().Unfocus();
+            codeMapTab_->OnLeftButtonDown(hwnd_, pt);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+
         Orion::Editor *editor = GetEditor();
         if (editor && editor->IsPointInEditorBounds(pt))
         {
@@ -1845,6 +1880,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
+        if (IsCodeMapTabIndex(tabBar_.GetActiveTabIndex()) && codeMapTab_ && codeMapTab_->IsPointInView(pt))
+        {
+            int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            codeMapTab_->OnMouseWheel(hwnd_, delta);
+            return 0;
+        }
+
         // Route wheel to editor when not over panel (pass Ctrl state for zoom)
         {
             int delta = GET_WHEEL_DELTA_WPARAM(wParam);
@@ -2078,6 +2120,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 marketplaceTab_->OnMouseMove(hwnd_, pt);
                 return 0;
             }
+            if (IsCodeMapTabIndex(tabBar_.GetActiveTabIndex()) && codeMapTab_)
+            {
+                codeMapTab_->OnMouseMove(hwnd_, pt);
+                return 0;
+            }
             Orion::Editor* editor = GetEditor();
             if (editor && (GetCapture() == hwnd_ || editor->IsPointInEditorBounds(pt)))
             {
@@ -2257,6 +2304,10 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                     {
                         marketplaceTab_->OnMouseMove(hwnd_, pt);
                     }
+                    else if (IsCodeMapTabIndex(tabBar_.GetActiveTabIndex()) && codeMapTab_)
+                    {
+                        codeMapTab_->OnMouseMove(hwnd_, pt);
+                    }
                     else
                     {
                         Orion::Editor* editor = GetEditor();
@@ -2355,6 +2406,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 return 0;
             }
 
+            if (IsCodeMapTabIndex(tabBar_.GetActiveTabIndex()) && codeMapTab_)
+            {
+                codeMapTab_->OnLeftButtonUp(hwnd_);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+
             Orion::Editor *editor = GetEditor();
             if (editor)
             {
@@ -2395,6 +2453,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         {
             POINT off = {-1, -1};
             settingsTab_->OnMouseMove(hwnd_, off);
+        }
+        if (codeMapTab_)
+        {
+            POINT off = {-1, -1};
+            codeMapTab_->OnMouseMove(hwnd_, off);
         }
 
         return 0;
@@ -3158,6 +3221,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     {
         // Ensure background threads/PTY sessions are stopped before exit.
         CloseActivePopupWindow();
+        Lsp::ClangdClient::Instance().Stop();
         GetTerminalPanel().CloseAll();
         GetGGWavePanel().Shutdown();
         DestroyWindow(hwnd_);
@@ -3165,6 +3229,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     }
     case WM_DESTROY:
         CloseActivePopupWindow();
+        Lsp::ClangdClient::Instance().Stop();
         GetTerminalPanel().CloseAll();
         GetGGWavePanel().Shutdown();
         DragAcceptFiles(hwnd_, FALSE);
@@ -3187,6 +3252,7 @@ Window::Window(HINSTANCE hInstance)
     untitledCounter_ = 1;
     settingsTab_ = std::make_unique<SettingsTabView>();
     marketplaceTab_ = std::make_unique<MarketplaceExtensionTabView>();
+    codeMapTab_ = std::make_unique<CodeMapTabView>();
     LoadRecentProjects();
 }
 

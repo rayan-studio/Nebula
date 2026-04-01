@@ -7,6 +7,7 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 
 // Scrollbar (toujours dispo si besoin ailleurs)
 #include "ui/components/scrollbar/Scrollbar.h"
@@ -18,6 +19,13 @@ class TerminalSession;
 class TerminalPanel
 {
 public:
+    struct BuildFileProgress
+    {
+        bool inProgress = false;
+        bool completed = false;
+        DWORD durationMs = 0;
+    };
+
     struct ProblemItem
     {
         std::wstring fileName;
@@ -99,6 +107,12 @@ public:
     void ShowOutput(bool v);
     bool IsOutputVisible() const { return showOutput_; }
     size_t GetOutputLineCount() const { return outputLines_.size(); }
+    int GetBuildIssueSeverity(const std::wstring& filePath);
+    BuildFileProgress GetBuildFileProgress(const std::wstring& filePath);
+    void BeginBuildTracking();
+    void MarkBuildFinished(bool success);
+    bool DidLastBuildSucceed();
+    bool IsBuildInProgress();
 
     // Run a command in the active terminal session (Nebula Dev Shell).
     bool SendCommandToActive(HWND hwnd, const std::wstring& startDir, const std::wstring& command);
@@ -133,6 +147,9 @@ private:
 
     void SyncTabBar();
     void UpdateHoveredOutputLink(POINT pt);
+    void ProcessBuildTrackingLineLocked(const std::wstring& line);
+    void FinalizeActiveBuildFileLocked(DWORD endTick);
+    bool ResolveCompileUnitPathLocked(const std::wstring& token, std::wstring& resolvedPath);
 
     // Active session helpers
     TerminalSession* ActiveSession();
@@ -193,6 +210,15 @@ private:
     std::vector<std::wstring> outputLines_;
     std::wstring outputBuffer_;
     std::mutex outputMutex_;
+    std::unordered_map<std::wstring, int> buildIssueSeverityByFile_;
+    std::unordered_map<std::wstring, BuildFileProgress> buildFileProgressByFile_;
+    std::unordered_map<std::wstring, std::wstring> buildPathResolveCache_;
+    std::wstring activeBuildFileKey_;
+    std::wstring activeBuildFilePath_;
+    DWORD activeBuildFileStartTick_ = 0;
+    bool buildResultKnown_ = false;
+    bool lastBuildSucceeded_ = false;
+    bool buildInProgress_ = false;
 
     Scrollbar outputScrollbar_;
     bool outputAutoFollow_ = true;

@@ -15,6 +15,7 @@ namespace Lsp {
 class ClangdClient {
 public:
     static ClangdClient& Instance();
+    ~ClangdClient();
 
     using DiagCallback = std::function<void(const std::wstring& filePath, int tabIndex, HWND hwnd, const std::vector<Diagnostic>&)>;
 

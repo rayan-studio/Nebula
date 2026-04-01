@@ -16,6 +16,7 @@
 #include "ui/screens/Welcome.h"
 #include "ui/screens/SettingsTab.h"
 #include "ui/screens/MarketplaceExtensionTab.h"
+#include "ui/screens/CodeMapTab.h"
 #include "ui/theme/Theme.h"
 #include "utils/logger/Logger.h"
 #include "ui/layout/ExplorerLayoutState.h"
@@ -254,6 +255,15 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
                     marketplaceView->SetLibraryName(Window::MarketplaceLibraryNameFromTabPath(activeTab->filePath));
                     marketplaceView->UpdateLayout(hwnd, editorLeft, editorTop, editorRight, editorBottom);
                     marketplaceView->Draw(pRenderTarget_, pDWriteFactory_, hwnd);
+                }
+            }
+            else if (window->IsCodeMapTabIndex(activeTabIndex))
+            {
+                CodeMapTabView *codeMapView = window->GetCodeMapTabView();
+                if (codeMapView)
+                {
+                    codeMapView->UpdateLayout(hwnd, editorLeft, editorTop, editorRight, editorBottom);
+                    codeMapView->Draw(pRenderTarget_, pDWriteFactory_, hwnd);
                 }
             }
             else

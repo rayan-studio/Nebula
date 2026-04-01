@@ -54,6 +54,73 @@ static std::wstring TrimCopy(const std::wstring &value)
     return value.substr(start, end - start);
 }
 
+static std::wstring NormalizeProblemPathKey(std::wstring value)
+{
+    for (wchar_t &ch : value)
+    {
+        if (ch == L'/')
+            ch = L'\\';
+        ch = (wchar_t)std::towlower(ch);
+    }
+    return value;
+}
+
+static int BuildIssueSeverityFromLine(const std::wstring &line)
+{
+    std::wstring lower = line;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](wchar_t ch) {
+        return (wchar_t)std::towlower(ch);
+    });
+    if (lower.find(L" error") != std::wstring::npos || lower.find(L": error") != std::wstring::npos)
+        return 2;
+    if (lower.find(L" warning") != std::wstring::npos || lower.find(L": warning") != std::wstring::npos)
+        return 1;
+    return 0;
+}
+
+static std::wstring StripWrappers(std::wstring value);
+
+static bool ExtractCompileUnitToken(const std::wstring &line, std::wstring &token)
+{
+    std::wstring trimmed = TrimCopy(line);
+    if (trimmed.empty())
+        return false;
+
+    std::wstring lower = trimmed;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](wchar_t ch) {
+        return (wchar_t)std::towlower(ch);
+    });
+
+    if (lower.find(L" error") != std::wstring::npos ||
+        lower.find(L" warning") != std::wstring::npos ||
+        lower.find(L"link") != std::wstring::npos ||
+        lower.find(L"generating code") != std::wstring::npos)
+        return false;
+
+    static const std::wstring exts[] = {L".cpp", L".cxx", L".cc", L".c"};
+    for (const std::wstring &ext : exts)
+    {
+        size_t pos = lower.find(ext);
+        if (pos == std::wstring::npos)
+            continue;
+
+        size_t begin = pos;
+        while (begin > 0)
+        {
+            wchar_t ch = trimmed[begin - 1];
+            if (std::iswspace(ch) || ch == L'"' || ch == L'\'' || ch == L'(' || ch == L'[')
+                break;
+            --begin;
+        }
+
+        token = StripWrappers(trimmed.substr(begin, pos + ext.size() - begin));
+        if (!token.empty())
+            return true;
+    }
+
+    return false;
+}
+
 static std::wstring StripWrappers(std::wstring value)
 {
     value = TrimCopy(value);
@@ -265,6 +332,183 @@ static bool TryParseOutputLocation(const std::wstring &line, std::wstring &resol
     return false;
 }
 } // namespace
+
+int TerminalPanel::GetBuildIssueSeverity(const std::wstring& filePath)
+{
+    std::lock_guard<std::mutex> lock(outputMutex_);
+    auto it = buildIssueSeverityByFile_.find(NormalizeProblemPathKey(filePath));
+    if (it == buildIssueSeverityByFile_.end())
+        return 0;
+    return it->second;
+}
+
+TerminalPanel::BuildFileProgress TerminalPanel::GetBuildFileProgress(const std::wstring& filePath)
+{
+    std::lock_guard<std::mutex> lock(outputMutex_);
+    auto it = buildFileProgressByFile_.find(NormalizeProblemPathKey(filePath));
+    if (it == buildFileProgressByFile_.end())
+        return {};
+    return it->second;
+}
+
+void TerminalPanel::BeginBuildTracking()
+{
+    std::lock_guard<std::mutex> lock(outputMutex_);
+    buildIssueSeverityByFile_.clear();
+    buildFileProgressByFile_.clear();
+    buildPathResolveCache_.clear();
+    activeBuildFileKey_.clear();
+    activeBuildFilePath_.clear();
+    activeBuildFileStartTick_ = 0;
+    buildResultKnown_ = false;
+    lastBuildSucceeded_ = false;
+    buildInProgress_ = true;
+}
+
+void TerminalPanel::MarkBuildFinished(bool success)
+{
+    std::lock_guard<std::mutex> lock(outputMutex_);
+    if (buildInProgress_)
+        FinalizeActiveBuildFileLocked(GetTickCount());
+    buildResultKnown_ = true;
+    lastBuildSucceeded_ = success;
+    buildInProgress_ = false;
+}
+
+bool TerminalPanel::DidLastBuildSucceed()
+{
+    std::lock_guard<std::mutex> lock(outputMutex_);
+    return buildResultKnown_ && lastBuildSucceeded_;
+}
+
+bool TerminalPanel::IsBuildInProgress()
+{
+    std::lock_guard<std::mutex> lock(outputMutex_);
+    return buildInProgress_;
+}
+
+bool TerminalPanel::ResolveCompileUnitPathLocked(const std::wstring& token, std::wstring& resolvedPath)
+{
+    std::wstring cleaned = StripWrappers(token);
+    if (cleaned.empty())
+        return false;
+
+    const std::wstring cacheKey = NormalizeProblemPathKey(cleaned);
+    auto cacheIt = buildPathResolveCache_.find(cacheKey);
+    if (cacheIt != buildPathResolveCache_.end())
+    {
+        resolvedPath = cacheIt->second;
+        return !resolvedPath.empty();
+    }
+
+    if (ResolvePathCandidate(cleaned, resolvedPath))
+    {
+        buildPathResolveCache_[cacheKey] = resolvedPath;
+        return true;
+    }
+
+    std::filesystem::path cleanedPath(cleaned);
+    std::wstring fileName = cleanedPath.filename().wstring();
+    std::wstring fileNameKey = NormalizeProblemPathKey(fileName);
+    auto fileNameCacheIt = buildPathResolveCache_.find(fileNameKey);
+    if (fileNameCacheIt != buildPathResolveCache_.end())
+    {
+        resolvedPath = fileNameCacheIt->second;
+        return !resolvedPath.empty();
+    }
+
+    const std::wstring rootPath = GetExplorerManager().GetState().rootPath;
+    if (rootPath.empty())
+    {
+        buildPathResolveCache_[cacheKey] = L"";
+        return false;
+    }
+
+    std::error_code ec;
+    std::filesystem::path root(rootPath);
+    std::filesystem::path match;
+    for (std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec), end;
+         it != end; it.increment(ec))
+    {
+        if (ec)
+            continue;
+        if (!it->is_regular_file(ec))
+            continue;
+
+        std::wstring candidateName = NormalizeProblemPathKey(it->path().filename().wstring());
+        if (candidateName != fileNameKey)
+            continue;
+
+        if (!match.empty())
+        {
+            buildPathResolveCache_[cacheKey] = L"";
+            buildPathResolveCache_[fileNameKey] = L"";
+            return false;
+        }
+
+        match = it->path();
+    }
+
+    if (match.empty())
+    {
+        buildPathResolveCache_[cacheKey] = L"";
+        buildPathResolveCache_[fileNameKey] = L"";
+        return false;
+    }
+
+    resolvedPath = match.wstring();
+    buildPathResolveCache_[cacheKey] = resolvedPath;
+    buildPathResolveCache_[fileNameKey] = resolvedPath;
+    return true;
+}
+
+void TerminalPanel::FinalizeActiveBuildFileLocked(DWORD endTick)
+{
+    if (activeBuildFileKey_.empty() || activeBuildFileStartTick_ == 0)
+        return;
+
+    BuildFileProgress &progress = buildFileProgressByFile_[activeBuildFileKey_];
+    progress.inProgress = false;
+    progress.completed = true;
+    progress.durationMs = (endTick >= activeBuildFileStartTick_) ? (endTick - activeBuildFileStartTick_) : 0;
+
+    activeBuildFileKey_.clear();
+    activeBuildFilePath_.clear();
+    activeBuildFileStartTick_ = 0;
+}
+
+void TerminalPanel::ProcessBuildTrackingLineLocked(const std::wstring& line)
+{
+    if (!buildInProgress_)
+        return;
+
+    std::wstring token;
+    if (!ExtractCompileUnitToken(line, token))
+        return;
+
+    std::wstring resolvedPath;
+    if (!ResolveCompileUnitPathLocked(token, resolvedPath))
+        return;
+
+    std::wstring key = NormalizeProblemPathKey(resolvedPath);
+    if (key.empty())
+        return;
+
+    DWORD now = GetTickCount();
+    if (activeBuildFileKey_ == key)
+        return;
+
+    FinalizeActiveBuildFileLocked(now);
+
+    BuildFileProgress &progress = buildFileProgressByFile_[key];
+    progress.inProgress = true;
+    progress.completed = false;
+    progress.durationMs = 0;
+
+    activeBuildFileKey_ = key;
+    activeBuildFilePath_ = resolvedPath;
+    activeBuildFileStartTick_ = now;
+}
 
 bool TerminalPanel::IsInitialized() const
 {
@@ -1913,6 +2157,9 @@ void TerminalPanel::ClearOutput()
     std::lock_guard<std::mutex> lock(outputMutex_);
     outputLines_.clear();
     outputBuffer_.clear();
+    buildIssueSeverityByFile_.clear();
+    buildResultKnown_ = false;
+    lastBuildSucceeded_ = false;
     outputScrollbar_.SetScrollOffset(0.0f);
     outputAutoFollow_ = true;
     outputPendingScrollToBottom_ = true;
@@ -1955,6 +2202,20 @@ void TerminalPanel::AppendOutputChunk(const std::wstring& text)
             line.pop_back();
 
         outputLines_.push_back(line);
+        ProcessBuildTrackingLineLocked(line);
+        std::wstring resolvedPath;
+        int lineNo = -1;
+        int colNo = -1;
+        if (TryParseOutputLocation(line, resolvedPath, lineNo, colNo))
+        {
+            int severity = BuildIssueSeverityFromLine(line);
+            if (severity > 0)
+            {
+                std::wstring key = NormalizeProblemPathKey(resolvedPath);
+                int &slot = buildIssueSeverityByFile_[key];
+                slot = (std::max)(slot, severity);
+            }
+        }
         pos = nl + 1;
     }
 
@@ -1979,6 +2240,20 @@ void TerminalPanel::FlushOutputBuffer()
     if (!line.empty() && line.back() == L'\r')
         line.pop_back();
     outputLines_.push_back(line);
+    ProcessBuildTrackingLineLocked(line);
+    std::wstring resolvedPath;
+    int lineNo = -1;
+    int colNo = -1;
+    if (TryParseOutputLocation(line, resolvedPath, lineNo, colNo))
+    {
+        int severity = BuildIssueSeverityFromLine(line);
+        if (severity > 0)
+        {
+            std::wstring key = NormalizeProblemPathKey(resolvedPath);
+            int &slot = buildIssueSeverityByFile_[key];
+            slot = (std::max)(slot, severity);
+        }
+    }
     outputBuffer_.clear();
 
     const size_t kMaxLines = 2000;

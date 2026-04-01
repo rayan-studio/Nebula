@@ -14,6 +14,7 @@ enum class PanelId {
     Explorer,
     Search,
     Git,
+    CodeMap,
     Settings,
     Marketplace,
     Count

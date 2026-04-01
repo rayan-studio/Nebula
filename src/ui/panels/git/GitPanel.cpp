@@ -308,12 +308,8 @@ void GitPanel::ApplyInputTheme(TextInput &input, const std::wstring &placeholder
 
 void GitPanel::SyncRepoPathFromExplorer()
 {
-    if (!Trim(repoRoot_).empty())
-        return;
-
     const std::wstring root = Trim(GetExplorerManager().GetState().rootPath);
-    if (!root.empty())
-        repoRoot_ = root;
+    repoRoot_ = root;
 }
 
 void GitPanel::UpdateLayout(HWND hwnd)
@@ -334,6 +330,7 @@ void GitPanel::UpdateLayout(HWND hwnd)
     bool becameVisible = !wasVisibleLastLayout_;
     bool periodicRefresh = hasAutoRefreshed_ && !commitMessageInput_.IsFocused() &&
                            (now - lastAutoRefreshTick_ >= 1200);
+    SyncRepoPathFromExplorer();
     if (becameVisible || !hasAutoRefreshed_ || periodicRefresh)
     {
         RefreshStatus();
@@ -341,8 +338,6 @@ void GitPanel::UpdateLayout(HWND hwnd)
         lastAutoRefreshTick_ = now;
     }
     wasVisibleLastLayout_ = true;
-
-    SyncRepoPathFromExplorer();
 
     float x0 = state_.leftEdge + state_.leftPadding;
     float x1 = state_.rightEdge - state_.leftPadding;
@@ -1389,9 +1384,8 @@ void GitPanel::RefreshStatus()
         return;
     }
 
-    std::wstring candidate = Trim(repoRoot_);
-    if (candidate.empty())
-        candidate = Trim(GetExplorerManager().GetState().rootPath);
+    const std::wstring explorerRoot = Trim(GetExplorerManager().GetState().rootPath);
+    std::wstring candidate = explorerRoot.empty() ? Trim(repoRoot_) : explorerRoot;
 
     if (candidate.empty())
     {

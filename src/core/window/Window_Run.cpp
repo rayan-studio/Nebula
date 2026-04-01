@@ -1697,18 +1697,23 @@ void Window::RunActiveProject()
         if (!RunCommandAndCapture(configureCmd, rootPath, exitCode, &envBlock, hwnd, &lastLine))
         {
             Logger::Instance().Log(L"Run: CMake configure failed.");
+            GetTerminalPanel().MarkBuildFinished(false);
             ShowRunErrorPopup(hwnd, L"Configuration CMake echouee", lastLine);
             return;
         }
 
         terminal.AppendOutputChunk(L"$ " + buildCmd + L"\n");
+        terminal.BeginBuildTracking();
         lastLine.clear();
         if (!RunCommandAndCapture(buildCmd, rootPath, exitCode, &envBlock, hwnd, &lastLine))
         {
             Logger::Instance().Log(L"Run: Build failed.");
+            GetTerminalPanel().MarkBuildFinished(false);
             ShowRunErrorPopup(hwnd, L"Compilation echouee", lastLine);
             return;
         }
+
+        GetTerminalPanel().MarkBuildFinished(true);
 
         std::filesystem::path exe = FindNewestExecutable(buildDir / "Release");
         if (exe.empty())
@@ -1828,17 +1833,22 @@ void Window::RunActiveProjectDebug()
         std::wstring lastLine;
         if (!RunCommandAndCapture(configureCmd, rootPath, exitCode, &envBlock, hwnd, &lastLine))
         {
+            GetTerminalPanel().MarkBuildFinished(false);
             ShowRunErrorPopup(hwnd, L"Configuration CMake echouee", lastLine);
             return;
         }
 
         terminal.AppendOutputChunk(L"$ " + buildCmd + L"\n");
+        terminal.BeginBuildTracking();
         lastLine.clear();
         if (!RunCommandAndCapture(buildCmd, rootPath, exitCode, &envBlock, hwnd, &lastLine))
         {
+            GetTerminalPanel().MarkBuildFinished(false);
             ShowRunErrorPopup(hwnd, L"Compilation echouee", lastLine);
             return;
         }
+
+        GetTerminalPanel().MarkBuildFinished(true);
 
         std::filesystem::path exe = FindNewestExecutable(buildDir / "Debug");
         if (exe.empty())

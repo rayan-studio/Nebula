@@ -191,7 +191,7 @@ def parse_build_output(line: str):
         m = re.search(r"(\w[\w\-]*)\.vcxproj -> .*[/\\]([\w.\-]+)$", line)
         if m:
             name = m.group(1)
-            return f"  {C.D}{name:<24}{C.R} {C.G}built{C.R}"
+            return f"  {C.D}{name:<24}{C.R} {C.G}checked{C.R}"
 
     if re.match(r"^\s+\w+\.(cpp|c|cc|cxx)$", line):
         return None  # suppress individual file lines

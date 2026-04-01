@@ -13,6 +13,26 @@ namespace
 {
 using Orion::MarkdownViewMode;
 
+bool IsVirtualTabPath(const std::wstring &filePath)
+{
+    return !filePath.empty() && filePath.rfind(L"__", 0) == 0;
+}
+
+void SyncExplorerActivePathFromTabs(const std::vector<Tab> &tabs, int activeTabIndex)
+{
+    if (activeTabIndex >= 0 && activeTabIndex < (int)tabs.size())
+    {
+        const std::wstring &fp = tabs[(size_t)activeTabIndex].filePath;
+        if (!fp.empty() && !IsVirtualTabPath(fp))
+        {
+            GetExplorerManager().SetActivePath(fp);
+            return;
+        }
+    }
+
+    GetExplorerManager().SetActivePath(L"");
+}
+
 D2D1_COLOR_F BlendTabColor(D2D1_COLOR_F a, D2D1_COLOR_F b, float t)
 {
     t = (std::max)(0.0f, (std::min)(1.0f, t));
@@ -93,6 +113,7 @@ void TabBar::CloseTab(int index)
     if (tabs_.empty())
     {
         activeTabIndex_ = -1;
+        GetExplorerManager().SetActivePath(L"");
         return;
     }
 
@@ -119,6 +140,8 @@ void TabBar::CloseTab(int index)
     {
         activeTabIndex_--;
     }
+
+    SyncExplorerActivePathFromTabs(tabs_, activeTabIndex_);
 }
 
 void TabBar::SetActiveTab(int index)
@@ -139,7 +162,7 @@ void TabBar::SetActiveTab(int index)
     mruHistory_.erase(std::remove(mruHistory_.begin(), mruHistory_.end(), fp), mruHistory_.end());
     mruHistory_.insert(mruHistory_.begin(), fp);
 
-    if (!fp.empty())
+    if (!fp.empty() && !IsVirtualTabPath(fp))
         GetExplorerManager().SetActivePath(fp);
 }
 
