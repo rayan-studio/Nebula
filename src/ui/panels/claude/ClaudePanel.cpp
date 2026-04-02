@@ -112,10 +112,8 @@ ClaudePanel::ClaudePanel()
     state_.minWidth = 280;
     state_.maxWidth = 720;
 
-    bridge_.onAuthStatus = [this](ClaudeCliBridge::AuthState state, const std::wstring &detail) {
+    bridge_.onAuthStatus = [this](ClaudeCliBridge::AuthState /*state*/, const std::wstring &detail) {
         authDetail_ = detail;
-        if (state == ClaudeCliBridge::AuthState::Ready && messages_.empty())
-            QueueSystemMessage(L"Claude CLI connected. You can start a conversation from this panel.");
         InvalidatePanel();
     };
 
@@ -584,16 +582,13 @@ void ClaudePanel::UpdateLayout(HWND hwnd)
     const float right = state_.rightEdge - state_.leftPadding;
     float y = state_.topEdge + state_.titleHeight + 10.0f;
 
-    headerRect_ = D2D1::RectF(left, y, right, y + 32.0f);
-    const float buttonGap = 8.0f;
-    const float actionWidth = 78.0f;
-    const float pathWidth = 56.0f;
-    pathButtonRect_ = D2D1::RectF(right - pathWidth, y, right, y + 28.0f);
-    loginButtonRect_ = D2D1::RectF(pathButtonRect_.left - buttonGap - actionWidth, y,
-                                   pathButtonRect_.left - buttonGap, y + 28.0f);
-    detectButtonRect_ = D2D1::RectF(loginButtonRect_.left - buttonGap - actionWidth, y,
-                                    loginButtonRect_.left - buttonGap, y + 28.0f);
-    y = headerRect_.bottom + 8.0f;
+    headerRect_ = D2D1::RectF(0, 0, 0, 0);
+    detectButtonRect_ = D2D1::RectF(0, 0, 0, 0);
+    loginButtonRect_ = D2D1::RectF(0, 0, 0, 0);
+    pathButtonRect_ = D2D1::RectF(0, 0, 0, 0);
+    detectButtonHovered_ = false;
+    loginButtonHovered_ = false;
+    pathButtonHovered_ = false;
 
     if (ShouldShowExecutableInput())
     {
@@ -649,7 +644,6 @@ void ClaudePanel::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd
     DrawBackground(ctx);
     DrawTitle(ctx, dwrite);
 
-    DrawHeader(ctx, dwrite);
     if (ShouldShowExecutableInput())
         executableInput_.Draw(ctx, dwrite);
 
@@ -950,19 +944,12 @@ void ClaudePanel::OnMouseMove(HWND hwnd, POINT clientPoint)
         changed = true;
     if (messagesScrollbar_.OnMouseMove(clientPoint))
         changed = true;
-    auto updateHover = [&](bool &value, const D2D1_RECT_F &rect) {
-        bool next = IsPointInRect(rect, clientPoint);
-        if (next != value)
-        {
-            value = next;
-            changed = true;
-        }
-    };
-
-    updateHover(detectButtonHovered_, detectButtonRect_);
-    updateHover(loginButtonHovered_, loginButtonRect_);
-    updateHover(pathButtonHovered_, pathButtonRect_);
-    updateHover(sendButtonHovered_, sendButtonRect_);
+    bool sendHovered = IsPointInRect(sendButtonRect_, clientPoint);
+    if (sendHovered != sendButtonHovered_)
+    {
+        sendButtonHovered_ = sendHovered;
+        changed = true;
+    }
 
     if (changed)
         InvalidateRect(hwnd, nullptr, FALSE);
@@ -1007,42 +994,6 @@ void ClaudePanel::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
 
     executableInput_.SetFocused(false);
     promptInput_.SetFocused(false);
-
-    if (IsPointInRect(detectButtonRect_, clientPoint))
-    {
-        const bool hasExe = !Trim(executableInput_.GetText()).empty();
-        const ClaudeCliBridge::AuthState authState = bridge_.GetAuthState();
-        if (!hasExe)
-            ResolveExecutablePath(false);
-
-        configuredExecutablePath_ = Trim(executableInput_.GetText());
-        SaveConfiguredExecutable();
-
-        if (!hasExe || authState == ClaudeCliBridge::AuthState::NotConfigured || authState == ClaudeCliBridge::AuthState::Error || authState == ClaudeCliBridge::AuthState::Checking || authState == ClaudeCliBridge::AuthState::Ready)
-            RefreshAuthStatus();
-        else if (authState == ClaudeCliBridge::AuthState::NeedsLogin)
-            StartLoginFlow();
-        InvalidateRect(hwnd, nullptr, FALSE);
-        return;
-    }
-
-    if (IsPointInRect(loginButtonRect_, clientPoint))
-    {
-        showExecutableInput_ = true;
-        executableInput_.SetFocused(true);
-        InvalidateRect(hwnd, nullptr, FALSE);
-        return;
-    }
-
-    if (IsPointInRect(pathButtonRect_, clientPoint))
-    {
-        showExecutableInput_ = !showExecutableInput_;
-        if (!showExecutableInput_)
-            executableInput_.SetFocused(false);
-        InvalidateRect(hwnd, nullptr, FALSE);
-        return;
-    }
-
 }
 
 void ClaudePanel::OnLeftButtonUp(HWND hwnd)

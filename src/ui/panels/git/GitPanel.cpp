@@ -24,6 +24,40 @@ namespace
 std::mutex g_libgit2Mutex;
 int g_libgit2RefCount = 0;
 
+void DrawTrimmedText(ID2D1RenderTarget *ctx,
+                     IDWriteFactory *dwrite,
+                     const std::wstring &text,
+                     IDWriteTextFormat *format,
+                     const D2D1_RECT_F &rect,
+                     ID2D1Brush *brush)
+{
+    if (!ctx || !dwrite || !format || !brush || text.empty())
+        return;
+
+    const float width = rect.right - rect.left;
+    const float height = rect.bottom - rect.top;
+    if (width <= 1.0f || height <= 1.0f)
+        return;
+
+    IDWriteTextLayout *layout = nullptr;
+    if (FAILED(dwrite->CreateTextLayout(text.c_str(), (UINT32)text.size(), format, width, height, &layout)) || !layout)
+        return;
+
+    DWRITE_TRIMMING trimming = {};
+    trimming.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
+
+    IDWriteInlineObject *ellipsis = nullptr;
+    if (SUCCEEDED(dwrite->CreateEllipsisTrimmingSign(format, &ellipsis)) && ellipsis)
+    {
+        layout->SetTrimming(&trimming, ellipsis);
+        ellipsis->Release();
+    }
+
+    ctx->DrawTextLayout(D2D1::Point2F(rect.left, rect.top), layout, brush,
+                        D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    layout->Release();
+}
+
 char StatusCharIndex(git_status_t status)
 {
     if (status & GIT_STATUS_CONFLICTED)
@@ -994,33 +1028,34 @@ void GitPanel::DrawChanges(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
             // Filename (just the filename, bold)
             float nameRight = badgeRect.left - 6.0f;
             std::wstring filename = relPath.filename().wstring();
-            if (rowFmt && pathBrush && !filename.empty())
+            std::wstring parentDir = relPath.parent_path().wstring();
+            const float contentWidth = nameRight - textX;
+            if (contentWidth <= 1.0f)
+                continue;
+
+            const float labelGap = 6.0f;
+            const float minPathWidth = 72.0f;
+            const float minNameWidth = 96.0f;
+            float nameWidth = contentWidth;
+
+            if (!parentDir.empty() && contentWidth > (minNameWidth + minPathWidth + labelGap))
             {
-                D2D1_RECT_F nameRect = D2D1::RectF(textX, rowTop, nameRight, rowBottom);
-                ctx->DrawTextW(filename.c_str(), (UINT32)filename.size(), rowFmt, nameRect, pathBrush);
+                nameWidth = (std::min)(contentWidth * 0.58f, contentWidth - minPathWidth - labelGap);
+                nameWidth = (std::max)(minNameWidth, nameWidth);
+                nameWidth = (std::min)(nameWidth, contentWidth - minPathWidth - labelGap);
             }
 
-            // Parent directory dimmed (if space allows)
-            std::wstring parentDir = relPath.parent_path().wstring();
+            if (rowFmt && pathBrush && !filename.empty())
+            {
+                D2D1_RECT_F nameRect = D2D1::RectF(textX, rowTop, textX + nameWidth, rowBottom);
+                DrawTrimmedText(ctx, dwrite, filename, rowFmt, nameRect, pathBrush);
+            }
+
             if (!parentDir.empty() && dimFmt && dimBrush)
             {
-                // Measure filename width to position parent dir after it
-                IDWriteTextLayout *nameLayout = nullptr;
-                dwrite->CreateTextLayout(filename.c_str(), (UINT32)filename.size(), rowFmt,
-                                        10000.0f, changeRowHeight_, &nameLayout);
-                if (nameLayout)
-                {
-                    DWRITE_TEXT_METRICS m;
-                    nameLayout->GetMetrics(&m);
-                    float afterName = textX + m.width + 5.0f;
-                    nameLayout->Release();
-
-                    if (afterName + 20.0f < nameRight)
-                    {
-                        D2D1_RECT_F dirRect = D2D1::RectF(afterName, rowTop, nameRight, rowBottom);
-                        ctx->DrawTextW(parentDir.c_str(), (UINT32)parentDir.size(), dimFmt, dirRect, dimBrush);
-                    }
-                }
+                float dirLeft = textX + nameWidth + labelGap;
+                D2D1_RECT_F dirRect = D2D1::RectF(dirLeft, rowTop, nameRight, rowBottom);
+                DrawTrimmedText(ctx, dwrite, parentDir, dimFmt, dirRect, dimBrush);
             }
         }
     }
