@@ -133,6 +133,28 @@ namespace
         return negative ? -value : value;
     }
 
+    bool ExtractJsonBoolValue(const std::string &json, const std::string &key, bool fallback = false)
+    {
+        const std::string needle = "\"" + key + "\"";
+        size_t pos = json.find(needle);
+        if (pos == std::string::npos)
+            return fallback;
+
+        pos = json.find(':', pos + needle.size());
+        if (pos == std::string::npos)
+            return fallback;
+
+        ++pos;
+        while (pos < json.size() && isspace((unsigned char)json[pos]))
+            ++pos;
+
+        if (json.compare(pos, 4, "true") == 0)
+            return true;
+        if (json.compare(pos, 5, "false") == 0)
+            return false;
+        return fallback;
+    }
+
     std::wstring ExtractPreferredPath(const std::string &inputJson)
     {
         for (const char *key : {"file_path", "path", "directory_path", "cwd"})
@@ -558,6 +580,8 @@ void ClaudeCliBridge::CheckAuthStatusAsync(const std::wstring &executablePath, c
     const std::wstring trimmedExe = Trim(executablePath);
     if (trimmedExe.empty())
     {
+        if (onAuthInfo)
+            onAuthInfo(AuthInfo{});
         authState_.store(AuthState::NotConfigured);
         if (onAuthStatus)
             onAuthStatus(AuthState::NotConfigured, L"Claude CLI not configured.");
@@ -576,7 +600,7 @@ void ClaudeCliBridge::CheckAuthStatusAsync(const std::wstring &executablePath, c
         std::wstring applicationName;
         bool usesCmdWrapper = false;
         std::wstring commandLine = BuildCommandLine(trimmedExe,
-            {L"auth", L"status", L"--text"},
+            {L"auth", L"status"},
             applicationName,
             usesCmdWrapper);
 
@@ -585,37 +609,51 @@ void ClaudeCliBridge::CheckAuthStatusAsync(const std::wstring &executablePath, c
         if (!RunProcessCapture(applicationName, std::move(commandLine), workingDirectory, nullptr, exitCode, stdoutText, {}, nullptr, nullptr))
         {
             authRunning_.store(false);
+            if (onAuthInfo)
+                onAuthInfo(AuthInfo{});
             authState_.store(AuthState::Error);
             if (onAuthStatus)
                 onAuthStatus(AuthState::Error, L"Unable to run Claude CLI. Check the configured path.");
             return;
         }
 
-        const std::wstring detail = Trim(Utf8ToWide(stdoutText));
+        AuthInfo authInfo;
+        authInfo.available = true;
+        authInfo.loggedIn = ExtractJsonBoolValue(stdoutText, "loggedIn", exitCode == 0);
+        authInfo.authMethod = Trim(Utf8ToWide(ExtractJsonStringValue(stdoutText, "authMethod")));
+        authInfo.email = Trim(Utf8ToWide(ExtractJsonStringValue(stdoutText, "email")));
+        authInfo.orgId = Trim(Utf8ToWide(ExtractJsonStringValue(stdoutText, "orgId")));
+        authInfo.orgName = Trim(Utf8ToWide(ExtractJsonStringValue(stdoutText, "orgName")));
+        authInfo.subscriptionType = Trim(Utf8ToWide(ExtractJsonStringValue(stdoutText, "subscriptionType")));
+
         AuthState nextState = AuthState::Error;
-        std::wstring message = detail;
+        std::wstring message;
 
         if (exitCode == 0)
         {
             nextState = AuthState::Ready;
-            if (message.empty())
+            if (!authInfo.email.empty() && !authInfo.subscriptionType.empty())
+                message = authInfo.email + L"  " + authInfo.subscriptionType;
+            else if (!authInfo.email.empty())
+                message = authInfo.email;
+            else
                 message = L"Claude CLI is ready.";
         }
         else if (exitCode == 1)
         {
             nextState = AuthState::NeedsLogin;
-            if (message.empty())
-                message = L"Claude CLI is installed, but no Claude account is connected yet.";
+            message = L"Claude CLI is installed, but no Claude account is connected yet.";
         }
         else
         {
             nextState = AuthState::Error;
-            if (message.empty())
-                message = L"Claude CLI returned an unexpected authentication status.";
+            message = L"Claude CLI returned an unexpected authentication status.";
         }
 
         authState_.store(nextState);
         authRunning_.store(false);
+        if (onAuthInfo)
+            onAuthInfo(authInfo);
         if (onAuthStatus)
             onAuthStatus(nextState, message);
     });

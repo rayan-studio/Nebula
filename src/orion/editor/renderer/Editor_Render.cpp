@@ -502,6 +502,7 @@ namespace Orion
 
         ctx->PushAxisAlignedClip(editorClip, D2D1_ANTIALIAS_MODE_ALIASED);
 
+        if (!(isPreview_ && embeddedPreviewMode_))
         {
             ID2D1SolidColorBrush *bg = nullptr;
             ctx->CreateSolidColorBrush(theme_.background, &bg);

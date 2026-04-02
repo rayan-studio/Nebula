@@ -398,6 +398,8 @@ namespace Orion
         void SetMarkdownPreviewEnabled(bool enabled);
         bool IsMarkdownPreviewEnabled() const;
         float MeasureMarkdownPreviewHeight(IDWriteFactory *dwrite, float width);
+        void SetEmbeddedPreviewMode(bool enabled) { embeddedPreviewMode_ = enabled; }
+        bool IsEmbeddedPreviewMode() const { return embeddedPreviewMode_; }
         bool IsMarkdownSplitViewEnabled() const { return markdownViewMode_ == MarkdownViewMode::Split; }
         void SetGitSplitDiffView(const std::vector<GitSplitDiffRow> &rows);
         void ClearGitSplitDiffView();
@@ -595,6 +597,7 @@ namespace Orion
         std::unordered_map<std::wstring, ID2D1Bitmap *> previewImageCache_;
         std::unordered_map<std::wstring, std::vector<MarkdownSvgText>> previewSvgTextCache_;
         std::unordered_map<std::wstring, D2D1_SIZE_F> previewSvgSizeCache_;
+        bool embeddedPreviewMode_ = false;
 
         std::wstring diagHoverText_;
         bool diagHoverVisible_ = false;

@@ -11,6 +11,17 @@
 class ClaudeCliBridge
 {
 public:
+    struct AuthInfo
+    {
+        bool available = false;
+        bool loggedIn = false;
+        std::wstring authMethod;
+        std::wstring email;
+        std::wstring orgId;
+        std::wstring orgName;
+        std::wstring subscriptionType;
+    };
+
     struct ToolEvent
     {
         std::wstring toolId;
@@ -49,6 +60,7 @@ public:
     static std::wstring QuoteArg(const std::wstring &value);
 
     std::function<void(AuthState, const std::wstring &)> onAuthStatus;
+    std::function<void(const AuthInfo &)> onAuthInfo;
     std::function<void()> onRequestStarted;
     std::function<void(const std::wstring &)> onTextDelta;
     std::function<void(const ToolEvent &)> onToolEvent;

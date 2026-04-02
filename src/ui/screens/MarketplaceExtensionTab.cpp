@@ -212,6 +212,7 @@ void MarketplaceExtensionTabView::SetLibraryName(const std::wstring &name)
     currentPreviewText_.clear();
     readmeMode_ = ReadmeMode::Preview;
     readmePreviewEditor_.CreateEmpty();
+    readmePreviewEditor_.SetEmbeddedPreviewMode(true);
     readmePreviewEditor_.SetTextContent(L"Loading README...", false);
     ApplyReadmeEditorMode();
 
@@ -608,6 +609,7 @@ void MarketplaceExtensionTabView::Draw(ID2D1RenderTarget *ctx,
     if (displayText != currentPreviewText_) {
         currentPreviewText_ = displayText;
         readmePreviewEditor_.CreateEmpty();
+        readmePreviewEditor_.SetEmbeddedPreviewMode(true);
         readmePreviewEditor_.SetTextContent(currentPreviewText_, false);
         ApplyReadmeEditorMode();
     } else {

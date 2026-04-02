@@ -65,9 +65,32 @@ private:
         float measuredHeight = 0.0f;
     };
 
+    struct ConversationUsageStats
+    {
+        int userMessages = 0;
+        int assistantMessages = 0;
+        int toolCalls = 0;
+        int inputTokens = 0;
+        int outputTokens = 0;
+        std::wstring lastUpdated;
+    };
+
+    struct ConversationHistoryEntry
+    {
+        std::wstring sessionId;
+        std::wstring title;
+        std::wstring subtitle;
+        std::wstring jsonlPath;
+        std::wstring sortTimestamp;
+        ConversationUsageStats usage;
+    };
+
     void ApplyInputTheme(TextInput &input, const std::wstring &placeholder, bool multiline);
     void DrawHeader(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
+    void DrawToolbar(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
     void DrawMessages(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
+    void DrawHistoryList(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
+    void DrawUsageOverlay(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
     void DrawComposer(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
     void DrawButton(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite,
                     const D2D1_RECT_F &rect, const std::wstring &label,
@@ -75,6 +98,8 @@ private:
     float EstimateMessageHeight(const std::wstring &text, float width) const;
     float MeasureWidthForRole(MessageRole role) const;
     float ComputeMessagesContentHeight() const;
+    float ComputeHistoryContentHeight() const;
+    float ComputeScrollContentHeight() const;
     void RecomputeMessageHeights();
     void ScrollMessagesToBottom();
     void InvalidatePanel() const;
@@ -85,6 +110,11 @@ private:
     std::wstring GetDisplayMessageText(size_t index) const;
     bool ShouldUseMarkdownPreview(const ChatMessage &message, const std::wstring &displayText) const;
     void RefreshMarkdownPreviews(IDWriteFactory *dwrite);
+    void RefreshConversationHistory(bool force);
+    bool LoadConversationFromHistoryIndex(size_t index);
+    void SyncCurrentHistorySelection();
+    std::wstring ResolveClaudeProjectHistoryDirectory() const;
+    std::wstring CurrentConversationTitle() const;
     void SaveConfiguredExecutable();
     void LoadConfiguredExecutable();
     void ResolveExecutablePath(bool preferSavedPath);
@@ -120,16 +150,33 @@ private:
     D2D1_RECT_F detectButtonRect_ = D2D1::RectF(0, 0, 0, 0);
     D2D1_RECT_F loginButtonRect_ = D2D1::RectF(0, 0, 0, 0);
     D2D1_RECT_F pathButtonRect_ = D2D1::RectF(0, 0, 0, 0);
+    D2D1_RECT_F toolbarRect_ = D2D1::RectF(0, 0, 0, 0);
+    D2D1_RECT_F historyButtonRect_ = D2D1::RectF(0, 0, 0, 0);
+    D2D1_RECT_F usageButtonRect_ = D2D1::RectF(0, 0, 0, 0);
+    D2D1_RECT_F usageLinkRect_ = D2D1::RectF(0, 0, 0, 0);
     D2D1_RECT_F sendButtonRect_ = D2D1::RectF(0, 0, 0, 0);
     D2D1_RECT_F messagesRect_ = D2D1::RectF(0, 0, 0, 0);
 
     bool detectButtonHovered_ = false;
     bool loginButtonHovered_ = false;
     bool pathButtonHovered_ = false;
+    bool historyButtonHovered_ = false;
+    bool usageButtonHovered_ = false;
+    bool usageLinkHovered_ = false;
     bool sendButtonHovered_ = false;
     bool initialAuthRefreshPending_ = true;
     bool requestInFlight_ = false;
     bool showExecutableInput_ = false;
+    bool showHistory_ = false;
+    bool showUsageOverlay_ = false;
     int streamingMessageIndex_ = -1;
+    int hoveredHistoryIndex_ = -1;
+    int selectedHistoryIndex_ = -1;
     DWORD requestAnimationTick_ = 0;
+
+    ClaudeCliBridge::AuthInfo accountInfo_;
+    ConversationUsageStats currentConversationUsage_;
+    std::vector<ConversationHistoryEntry> historyEntries_;
+    std::vector<D2D1_RECT_F> historyRowRects_;
+    std::wstring historyProjectDirectory_;
 };

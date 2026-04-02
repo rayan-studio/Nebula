@@ -22,6 +22,17 @@
 // Ont déclare la class
 namespace
 {
+    std::wstring TrimWideLocal(const std::wstring &text)
+    {
+        size_t start = 0;
+        while (start < text.size() && iswspace(text[start]))
+            ++start;
+        size_t end = text.size();
+        while (end > start && iswspace(text[end - 1]))
+            --end;
+        return text.substr(start, end - start);
+    }
+
     // Fonction utilitaire pour résoudre le chemin des exe de claude.
     std::wstring ExpandEnvPath(const wchar_t *envName, const wchar_t *suffix)
     {
@@ -96,6 +107,167 @@ namespace
         label.append((size_t)dotCount, L'.');
         return label;
     }
+
+    std::wstring Utf8ToWideLocal(const std::string &text)
+    {
+        if (text.empty())
+            return {};
+
+        int len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), (int)text.size(), nullptr, 0);
+        if (len <= 0)
+            len = MultiByteToWideChar(CP_UTF8, 0, text.data(), (int)text.size(), nullptr, 0);
+        if (len <= 0)
+            return {};
+
+        std::wstring out((size_t)len, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, text.data(), (int)text.size(), out.data(), len);
+        return out;
+    }
+
+    std::string ExtractJsonStringField(const std::string &json, const std::string &key)
+    {
+        const std::string needle = "\"" + key + "\"";
+        size_t pos = json.find(needle);
+        if (pos == std::string::npos)
+            return {};
+
+        pos = json.find(':', pos + needle.size());
+        if (pos == std::string::npos)
+            return {};
+
+        pos = json.find('"', pos + 1);
+        if (pos == std::string::npos)
+            return {};
+
+        std::string out;
+        bool escape = false;
+        for (size_t i = pos + 1; i < json.size(); ++i)
+        {
+            char ch = json[i];
+            if (escape)
+            {
+                switch (ch)
+                {
+                case '"':
+                case '\\':
+                case '/':
+                    out.push_back(ch);
+                    break;
+                case 'n':
+                    out.push_back('\n');
+                    break;
+                case 'r':
+                    out.push_back('\r');
+                    break;
+                case 't':
+                    out.push_back('\t');
+                    break;
+                default:
+                    out.push_back(ch);
+                    break;
+                }
+                escape = false;
+                continue;
+            }
+
+            if (ch == '\\')
+            {
+                escape = true;
+                continue;
+            }
+
+            if (ch == '"')
+                break;
+
+            out.push_back(ch);
+        }
+        return out;
+    }
+
+    int ExtractJsonIntField(const std::string &json, const std::string &key, int fallback = 0)
+    {
+        const std::string needle = "\"" + key + "\"";
+        size_t pos = json.find(needle);
+        if (pos == std::string::npos)
+            return fallback;
+
+        pos = json.find(':', pos + needle.size());
+        if (pos == std::string::npos)
+            return fallback;
+
+        ++pos;
+        while (pos < json.size() && isspace((unsigned char)json[pos]))
+            ++pos;
+
+        size_t start = pos;
+        while (pos < json.size() && isdigit((unsigned char)json[pos]))
+            ++pos;
+        if (start == pos)
+            return fallback;
+
+        return atoi(json.substr(start, pos - start).c_str());
+    }
+
+    std::wstring TruncateText(const std::wstring &text, size_t maxChars)
+    {
+        if (text.size() <= maxChars)
+            return text;
+        if (maxChars < 4)
+            return text.substr(0, maxChars);
+        return text.substr(0, maxChars - 3) + L"...";
+    }
+
+    std::wstring FormatIsoTimestampShort(const std::string &timestamp)
+    {
+        std::wstring wide = Utf8ToWideLocal(timestamp);
+        if (wide.empty())
+            return {};
+
+        std::replace(wide.begin(), wide.end(), L'T', L' ');
+        if (!wide.empty() && wide.back() == L'Z')
+            wide.pop_back();
+        if (wide.size() >= 16)
+            return wide.substr(0, 16);
+        return wide;
+    }
+
+    std::wstring ExtractUserFacingPrompt(const std::wstring &text)
+    {
+        const std::wstring marker = L"User request:\n";
+        size_t markerPos = text.rfind(marker);
+        std::wstring cleaned = markerPos == std::wstring::npos ? text : text.substr(markerPos + marker.size());
+        cleaned = TrimWideLocal(cleaned);
+
+        const std::wstring ideMarkerOpen = L"<ide_opened_file>";
+        if (cleaned.rfind(ideMarkerOpen, 0) == 0)
+        {
+            size_t close = cleaned.find(L"</ide_opened_file>");
+            if (close != std::wstring::npos)
+                cleaned = TrimWideLocal(cleaned.substr(close + 18));
+        }
+
+        return cleaned;
+    }
+
+    std::wstring SanitizeClaudeProjectName(const std::wstring &root)
+    {
+        std::wstring out;
+        out.reserve(root.size());
+        for (wchar_t ch : root)
+        {
+            if ((ch >= L'a' && ch <= L'z') ||
+                (ch >= L'A' && ch <= L'Z') ||
+                (ch >= L'0' && ch <= L'9'))
+            {
+                out.push_back((wchar_t)towlower(ch));
+            }
+            else
+            {
+                out.push_back(L'-');
+            }
+        }
+        return out;
+    }
 }
 
 ClaudePanel::ClaudePanel()
@@ -115,6 +287,11 @@ ClaudePanel::ClaudePanel()
 
     bridge_.onAuthStatus = [this](ClaudeCliBridge::AuthState /*state*/, const std::wstring &detail) {
         authDetail_ = detail;
+        InvalidatePanel();
+    };
+
+    bridge_.onAuthInfo = [this](const ClaudeCliBridge::AuthInfo &info) {
+        accountInfo_ = info;
         InvalidatePanel();
     };
 
@@ -164,6 +341,8 @@ ClaudePanel::ClaudePanel()
         }
 
         streamingMessageIndex_ = -1;
+        RefreshConversationHistory(true);
+        SyncCurrentHistorySelection();
         ScrollMessagesToBottom();
         InvalidatePanel();
     };
@@ -206,6 +385,7 @@ void ClaudePanel::Initialize()
 
     LoadConfiguredExecutable();
     ResolveExecutablePath(true);
+    RefreshConversationHistory(true);
 }
 
 void ClaudePanel::ApplyInputTheme(TextInput &input, const std::wstring &placeholder, bool multiline)
@@ -550,11 +730,15 @@ void ClaudePanel::RefreshMarkdownPreviews(IDWriteFactory *dwrite)
 
         MarkdownPreviewCacheEntry &entry = markdownPreviewCache_[i];
         if (!entry.editor)
+        {
             entry.editor = std::make_unique<Orion::Editor>();
+            entry.editor->SetEmbeddedPreviewMode(true);
+        }
 
         if (entry.cachedText != displayText || std::fabs(entry.cachedWidth - width) > 1.0f)
         {
             entry.editor->CreateEmpty();
+            entry.editor->SetEmbeddedPreviewMode(true);
             entry.editor->SetTextContent(displayText, false);
             entry.editor->SetMarkdownViewMode(Orion::MarkdownViewMode::Preview);
             entry.cachedText = displayText;
@@ -564,6 +748,229 @@ void ClaudePanel::RefreshMarkdownPreviews(IDWriteFactory *dwrite)
 
         message.estimatedHeight = (std::max)(54.0f, entry.measuredHeight);
     }
+}
+
+std::wstring ClaudePanel::ResolveClaudeProjectHistoryDirectory() const
+{
+    const std::wstring root = Trim(ResolveWorkingDirectory());
+    if (root.empty())
+        return {};
+
+    const std::wstring userProfile = ExpandEnvPath(L"USERPROFILE", L".claude\\projects");
+    if (userProfile.empty())
+        return {};
+
+    std::filesystem::path projectsRoot(userProfile);
+    std::filesystem::path exact = projectsRoot / SanitizeClaudeProjectName(root);
+    std::error_code ec;
+    if (std::filesystem::exists(exact, ec) && !ec)
+        return exact.wstring();
+
+    std::wstring normalized = SanitizeClaudeProjectName(root);
+    for (const auto &entry : std::filesystem::directory_iterator(projectsRoot, ec))
+    {
+        if (ec || !entry.is_directory())
+            continue;
+        std::wstring name = entry.path().filename().wstring();
+        std::wstring lowered = name;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), towlower);
+        if (lowered == normalized)
+            return entry.path().wstring();
+    }
+
+    return {};
+}
+
+void ClaudePanel::RefreshConversationHistory(bool force)
+{
+    const std::wstring projectDir = ResolveClaudeProjectHistoryDirectory();
+    if (!force && projectDir == historyProjectDirectory_)
+        return;
+
+    historyProjectDirectory_ = projectDir;
+    historyEntries_.clear();
+    historyRowRects_.clear();
+    hoveredHistoryIndex_ = -1;
+
+    if (projectDir.empty())
+    {
+        selectedHistoryIndex_ = -1;
+        currentConversationUsage_ = {};
+        return;
+    }
+
+    std::error_code ec;
+    for (const auto &entry : std::filesystem::directory_iterator(projectDir, ec))
+    {
+        if (ec || !entry.is_regular_file())
+            continue;
+        if (entry.path().extension() != L".jsonl")
+            continue;
+
+        ConversationHistoryEntry historyEntry;
+        historyEntry.sessionId = entry.path().stem().wstring();
+        historyEntry.jsonlPath = entry.path().wstring();
+
+        std::ifstream in(entry.path(), std::ios::binary);
+        if (!in.is_open())
+            continue;
+
+        std::string line;
+        std::wstring firstPrompt;
+        std::string latestTimestamp;
+        while (std::getline(in, line))
+        {
+            if (line.find("\"timestamp\":\"") != std::string::npos)
+            {
+                std::string timestamp = ExtractJsonStringField(line, "timestamp");
+                if (!timestamp.empty() && timestamp > latestTimestamp)
+                    latestTimestamp = timestamp;
+            }
+
+            if (line.find("\"type\":\"ai-title\"") != std::string::npos)
+            {
+                std::wstring title = Trim(Utf8ToWideLocal(ExtractJsonStringField(line, "aiTitle")));
+                if (!title.empty())
+                    historyEntry.title = title;
+            }
+
+            if (line.find("\"type\":\"user\"") != std::string::npos &&
+                line.find("\"tool_result\"") == std::string::npos &&
+                firstPrompt.empty())
+            {
+                std::wstring prompt = ExtractUserFacingPrompt(Utf8ToWideLocal(ExtractJsonStringField(line, "content")));
+                if (prompt.empty() || prompt == L"type")
+                    prompt = ExtractUserFacingPrompt(Utf8ToWideLocal(ExtractJsonStringField(line, "text")));
+                if (!prompt.empty())
+                    firstPrompt = prompt;
+            }
+
+            if (line.find("\"type\":\"assistant\"") != std::string::npos)
+            {
+                historyEntry.usage.inputTokens += ExtractJsonIntField(line, "input_tokens", 0);
+                historyEntry.usage.outputTokens += ExtractJsonIntField(line, "output_tokens", 0);
+                if (line.find("\"stop_reason\":\"end_turn\"") != std::string::npos)
+                    ++historyEntry.usage.assistantMessages;
+                if (line.find("\"type\":\"tool_use\"") != std::string::npos)
+                    ++historyEntry.usage.toolCalls;
+            }
+
+            if (line.find("\"type\":\"user\"") != std::string::npos &&
+                line.find("\"tool_result\"") == std::string::npos)
+            {
+                ++historyEntry.usage.userMessages;
+            }
+        }
+
+        historyEntry.sortTimestamp = Utf8ToWideLocal(latestTimestamp);
+        historyEntry.usage.lastUpdated = FormatIsoTimestampShort(latestTimestamp);
+
+        if (historyEntry.title.empty())
+            historyEntry.title = !firstPrompt.empty() ? TruncateText(firstPrompt, 56) : historyEntry.sessionId;
+
+        if (!firstPrompt.empty() && firstPrompt != historyEntry.title)
+            historyEntry.subtitle = TruncateText(firstPrompt, 88);
+        else if (!historyEntry.usage.lastUpdated.empty())
+            historyEntry.subtitle = historyEntry.usage.lastUpdated;
+        else
+            historyEntry.subtitle = historyEntry.sessionId;
+
+        historyEntries_.push_back(std::move(historyEntry));
+    }
+
+    std::sort(historyEntries_.begin(), historyEntries_.end(),
+              [](const ConversationHistoryEntry &a, const ConversationHistoryEntry &b) {
+                  return a.sortTimestamp > b.sortTimestamp;
+              });
+
+    SyncCurrentHistorySelection();
+}
+
+void ClaudePanel::SyncCurrentHistorySelection()
+{
+    selectedHistoryIndex_ = -1;
+    currentConversationUsage_ = {};
+
+    for (size_t i = 0; i < historyEntries_.size(); ++i)
+    {
+        if (historyEntries_[i].sessionId == sessionId_)
+        {
+            selectedHistoryIndex_ = (int)i;
+            currentConversationUsage_ = historyEntries_[i].usage;
+            return;
+        }
+    }
+
+    if (selectedHistoryIndex_ < 0 && !historyEntries_.empty() && sessionId_.empty())
+        currentConversationUsage_ = historyEntries_.front().usage;
+}
+
+bool ClaudePanel::LoadConversationFromHistoryIndex(size_t index)
+{
+    if (index >= historyEntries_.size())
+        return false;
+
+    const ConversationHistoryEntry &entry = historyEntries_[index];
+    std::ifstream in(std::filesystem::path(entry.jsonlPath), std::ios::binary);
+    if (!in.is_open())
+        return false;
+
+    std::vector<ChatMessage> loadedMessages;
+    std::string line;
+    while (std::getline(in, line))
+    {
+        if (line.find("\"type\":\"user\"") != std::string::npos &&
+            line.find("\"tool_result\"") == std::string::npos)
+        {
+            std::wstring prompt = ExtractUserFacingPrompt(Utf8ToWideLocal(ExtractJsonStringField(line, "content")));
+            if (prompt.empty() || prompt == L"type")
+                prompt = ExtractUserFacingPrompt(Utf8ToWideLocal(ExtractJsonStringField(line, "text")));
+            if (prompt.empty())
+                continue;
+
+            ChatMessage message;
+            message.role = MessageRole::User;
+            message.kind = MessageKind::Text;
+            message.content = prompt;
+            loadedMessages.push_back(std::move(message));
+            continue;
+        }
+
+        if (line.find("\"type\":\"assistant\"") != std::string::npos &&
+            line.find("\"stop_reason\":\"end_turn\"") != std::string::npos)
+        {
+            std::wstring response = Trim(Utf8ToWideLocal(ExtractJsonStringField(line, "text")));
+            if (response.empty())
+                continue;
+
+            ChatMessage message;
+            message.role = MessageRole::Assistant;
+            message.kind = MessageKind::Text;
+            message.content = response;
+            loadedMessages.push_back(std::move(message));
+        }
+    }
+
+    messages_ = std::move(loadedMessages);
+    markdownPreviewCache_.clear();
+    sessionId_ = entry.sessionId;
+    selectedHistoryIndex_ = (int)index;
+    currentConversationUsage_ = entry.usage;
+    showHistory_ = false;
+    hoveredHistoryIndex_ = -1;
+    RecomputeMessageHeights();
+    ScrollMessagesToBottom();
+    InvalidatePanel();
+    return true;
+}
+
+std::wstring ClaudePanel::CurrentConversationTitle() const
+{
+    if (selectedHistoryIndex_ >= 0 && selectedHistoryIndex_ < (int)historyEntries_.size())
+        return historyEntries_[(size_t)selectedHistoryIndex_].title;
+    if (!historyEntries_.empty())
+        return historyEntries_.front().title;
+    return sessionId_.empty() ? L"New conversation" : sessionId_;
 }
 
 float ClaudePanel::EstimateWrappedTextHeight(const std::wstring &text, float width, float charsPerLineDivisor, float lineHeight)
@@ -614,6 +1021,18 @@ float ClaudePanel::ComputeMessagesContentHeight() const
     for (const ChatMessage &message : messages_)
         total += message.estimatedHeight + 12.0f;
     return total + 16.0f;
+}
+
+float ClaudePanel::ComputeHistoryContentHeight() const
+{
+    if (historyEntries_.empty())
+        return 108.0f;
+    return 16.0f + (float)historyEntries_.size() * 72.0f;
+}
+
+float ClaudePanel::ComputeScrollContentHeight() const
+{
+    return showHistory_ ? ComputeHistoryContentHeight() : ComputeMessagesContentHeight();
 }
 
 void ClaudePanel::RecomputeMessageHeights()
@@ -754,6 +1173,14 @@ void ClaudePanel::UpdateLayout(HWND hwnd)
         executableInput_.SetFocused(false);
     }
 
+    const float toolbarHeight = 30.0f;
+    const float toolbarButtonSize = 28.0f;
+    toolbarRect_ = D2D1::RectF(left, y, right, y + toolbarHeight);
+    usageButtonRect_ = D2D1::RectF(right - toolbarButtonSize, y + 1.0f, right, y + 1.0f + toolbarButtonSize);
+    historyButtonRect_ = D2D1::RectF(usageButtonRect_.left - 6.0f - toolbarButtonSize, y + 1.0f,
+                                     usageButtonRect_.left - 6.0f, y + 1.0f + toolbarButtonSize);
+    y += toolbarHeight + 10.0f;
+
     const float composerHeight = 94.0f;
     const float composerBottom = state_.bottomEdge - 10.0f;
     const float composerTop = composerBottom - composerHeight;
@@ -769,12 +1196,14 @@ void ClaudePanel::UpdateLayout(HWND hwnd)
                                   right - sendInset,
                                   composerBottom - sendInset);
     messagesRect_ = D2D1::RectF(left, y, right, composerTop - 10.0f);
+    historyRowRects_.assign(historyEntries_.size(), D2D1::RectF(0, 0, 0, 0));
+    usageLinkRect_ = D2D1::RectF(0, 0, 0, 0);
 
     RecomputeMessageHeights();
     messagesScrollbar_.UpdateLayout(messagesRect_.left, messagesRect_.top,
                                     messagesRect_.right - messagesRect_.left,
                                     (std::max)(0.0f, messagesRect_.bottom - messagesRect_.top),
-                                    ComputeMessagesContentHeight());
+                                    ComputeScrollContentHeight());
 }
 
 void ClaudePanel::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
@@ -785,6 +1214,7 @@ void ClaudePanel::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd
 
     ApplyInputTheme(executableInput_, L"Auto-detect claude.cmd or claude.exe", false);
     ApplyInputTheme(promptInput_, L"Ask Claude about the current file, selection, or project...", true);
+    RefreshConversationHistory(false);
     if (sendButtonRect_.right > sendButtonRect_.left)
     {
         auto &promptStyle = promptInput_.GetStyle();
@@ -795,7 +1225,7 @@ void ClaudePanel::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd
     messagesScrollbar_.UpdateLayout(messagesRect_.left, messagesRect_.top,
                                     messagesRect_.right - messagesRect_.left,
                                     (std::max)(0.0f, messagesRect_.bottom - messagesRect_.top),
-                                    ComputeMessagesContentHeight());
+                                    ComputeScrollContentHeight());
 
     D2D1_RECT_F clipRect = D2D1::RectF(state_.leftEdge, state_.topEdge, state_.rightEdge, state_.bottomEdge);
     ctx->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -806,6 +1236,7 @@ void ClaudePanel::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd
     if (ShouldShowExecutableInput())
         executableInput_.Draw(ctx, dwrite);
 
+    DrawToolbar(ctx, dwrite);
     DrawMessages(ctx, dwrite);
     DrawComposer(ctx, dwrite);
 
@@ -912,8 +1343,304 @@ void ClaudePanel::DrawHeader(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
         lineBrush->Release();
 }
 
+void ClaudePanel::DrawToolbar(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
+{
+    if (toolbarRect_.right <= toolbarRect_.left)
+        return;
+
+    ID2D1SolidColorBrush *mutedBrush = nullptr;
+    ID2D1SolidColorBrush *textBrush = nullptr;
+    ID2D1SolidColorBrush *lineBrush = nullptr;
+    ctx->CreateSolidColorBrush(UI::Theme::MutedText(), &mutedBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &textBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &lineBrush);
+
+    IDWriteTextFormat *titleFormat = nullptr;
+    IDWriteTextFormat *metaFormat = nullptr;
+    dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                             11.5f, L"en-us", &titleFormat);
+    dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                             10.5f, L"en-us", &metaFormat);
+
+    std::wstring title = TruncateText(CurrentConversationTitle(), 40);
+    std::wstring meta = sessionId_.empty()
+                            ? L"No saved session selected"
+                            : currentConversationUsage_.lastUpdated.empty()
+                                  ? sessionId_
+                                  : currentConversationUsage_.lastUpdated + L"  " + sessionId_;
+
+    if (titleFormat && textBrush)
+        ctx->DrawTextW(title.c_str(), (UINT32)title.size(), titleFormat,
+                       D2D1::RectF(toolbarRect_.left, toolbarRect_.top + 1.0f,
+                                   historyButtonRect_.left - 12.0f, toolbarRect_.top + 16.0f),
+                       textBrush);
+    if (metaFormat && mutedBrush)
+        ctx->DrawTextW(meta.c_str(), (UINT32)meta.size(), metaFormat,
+                       D2D1::RectF(toolbarRect_.left, toolbarRect_.top + 14.0f,
+                                   historyButtonRect_.left - 12.0f, toolbarRect_.bottom),
+                       mutedBrush);
+    if (lineBrush)
+        ctx->DrawLine(D2D1::Point2F(toolbarRect_.left, toolbarRect_.bottom + 4.0f),
+                      D2D1::Point2F(toolbarRect_.right, toolbarRect_.bottom + 4.0f),
+                      lineBrush, 0.8f);
+
+    DrawButton(ctx, dwrite, historyButtonRect_, L"\uE81C", historyButtonHovered_, showHistory_, true);
+    DrawButton(ctx, dwrite, usageButtonRect_, L"\uE9D2", usageButtonHovered_, showUsageOverlay_, true);
+
+    if (metaFormat)
+        metaFormat->Release();
+    if (titleFormat)
+        titleFormat->Release();
+    if (lineBrush)
+        lineBrush->Release();
+    if (textBrush)
+        textBrush->Release();
+    if (mutedBrush)
+        mutedBrush->Release();
+}
+
+void ClaudePanel::DrawHistoryList(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
+{
+    ID2D1SolidColorBrush *cardBrush = nullptr;
+    ID2D1SolidColorBrush *borderBrush = nullptr;
+    ID2D1SolidColorBrush *textBrush = nullptr;
+    ID2D1SolidColorBrush *mutedBrush = nullptr;
+    ID2D1SolidColorBrush *accentBrush = nullptr;
+    const auto &palette = UI::Theme::GetPalette();
+    ctx->CreateSolidColorBrush(palette.inputBackground, &cardBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &borderBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &textBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::MutedText(), &mutedBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::Accent(), &accentBrush);
+
+    IDWriteTextFormat *titleFormat = nullptr;
+    IDWriteTextFormat *metaFormat = nullptr;
+    IDWriteTextFormat *emptyFormat = nullptr;
+    dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                             12.0f, L"en-us", &titleFormat);
+    dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                             10.5f, L"en-us", &metaFormat);
+    dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                             11.0f, L"en-us", &emptyFormat);
+    for (IDWriteTextFormat *format : {titleFormat, metaFormat, emptyFormat})
+    {
+        if (!format)
+            continue;
+        format->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+        format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+    }
+
+    historyRowRects_.assign(historyEntries_.size(), D2D1::RectF(0, 0, 0, 0));
+
+    ctx->PushAxisAlignedClip(messagesRect_, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    float y = messagesRect_.top + 8.0f - messagesScrollbar_.GetScrollOffset();
+
+    if (historyEntries_.empty())
+    {
+        if (emptyFormat && mutedBrush)
+            ctx->DrawTextW(L"No conversation history found for this project.", 45, emptyFormat,
+                           D2D1::RectF(messagesRect_.left + 4.0f, y + 12.0f, messagesRect_.right - 8.0f, y + 72.0f),
+                           mutedBrush);
+        ctx->PopAxisAlignedClip();
+    }
+    else
+    {
+        for (size_t i = 0; i < historyEntries_.size(); ++i)
+        {
+            const ConversationHistoryEntry &entry = historyEntries_[i];
+            D2D1_RECT_F rowRect = D2D1::RectF(messagesRect_.left + 2.0f, y, messagesRect_.right - 16.0f, y + 60.0f);
+            historyRowRects_[i] = rowRect;
+
+            if (rowRect.bottom >= messagesRect_.top && rowRect.top <= messagesRect_.bottom)
+            {
+                D2D1_COLOR_F fillColor = palette.inputBackground;
+                if ((int)i == selectedHistoryIndex_)
+                    fillColor = palette.explorerRowActive;
+                else if ((int)i == hoveredHistoryIndex_)
+                    fillColor = palette.explorerRowHover;
+
+                ID2D1SolidColorBrush *rowBrush = nullptr;
+                ctx->CreateSolidColorBrush(fillColor, &rowBrush);
+                if (rowBrush)
+                {
+                    ctx->FillRoundedRectangle(D2D1::RoundedRect(rowRect, 8.0f, 8.0f), rowBrush);
+                    rowBrush->Release();
+                }
+                if (borderBrush)
+                    ctx->DrawRoundedRectangle(D2D1::RoundedRect(rowRect, 8.0f, 8.0f), borderBrush, 1.0f);
+
+                std::wstring rightMeta = entry.usage.lastUpdated.empty() ? entry.sessionId : entry.usage.lastUpdated;
+                std::wstring stats = std::to_wstring(entry.usage.userMessages) + L" msg  " +
+                                     std::to_wstring(entry.usage.toolCalls) + L" tools";
+
+                if (titleFormat && textBrush)
+                    ctx->DrawTextW(entry.title.c_str(), (UINT32)entry.title.size(), titleFormat,
+                                   D2D1::RectF(rowRect.left + 12.0f, rowRect.top + 8.0f, rowRect.right - 110.0f, rowRect.top + 24.0f),
+                                   textBrush);
+                if (metaFormat && mutedBrush)
+                    ctx->DrawTextW(entry.subtitle.c_str(), (UINT32)entry.subtitle.size(), metaFormat,
+                                   D2D1::RectF(rowRect.left + 12.0f, rowRect.top + 28.0f, rowRect.right - 12.0f, rowRect.bottom - 8.0f),
+                                   mutedBrush);
+                if (metaFormat && accentBrush)
+                    ctx->DrawTextW(rightMeta.c_str(), (UINT32)rightMeta.size(), metaFormat,
+                                   D2D1::RectF(rowRect.right - 98.0f, rowRect.top + 8.0f, rowRect.right - 12.0f, rowRect.top + 24.0f),
+                                   accentBrush);
+                if (metaFormat && mutedBrush)
+                    ctx->DrawTextW(stats.c_str(), (UINT32)stats.size(), metaFormat,
+                                   D2D1::RectF(rowRect.right - 98.0f, rowRect.top + 28.0f, rowRect.right - 12.0f, rowRect.bottom - 8.0f),
+                                   mutedBrush);
+            }
+
+            y += 72.0f;
+        }
+        ctx->PopAxisAlignedClip();
+    }
+
+    messagesScrollbar_.Draw(ctx);
+
+    if (emptyFormat)
+        emptyFormat->Release();
+    if (metaFormat)
+        metaFormat->Release();
+    if (titleFormat)
+        titleFormat->Release();
+    if (accentBrush)
+        accentBrush->Release();
+    if (mutedBrush)
+        mutedBrush->Release();
+    if (textBrush)
+        textBrush->Release();
+    if (borderBrush)
+        borderBrush->Release();
+    if (cardBrush)
+        cardBrush->Release();
+}
+
+void ClaudePanel::DrawUsageOverlay(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
+{
+    const float cardWidth = (std::min)(messagesRect_.right - messagesRect_.left - 12.0f, 420.0f);
+    const D2D1_RECT_F cardRect = D2D1::RectF(
+        messagesRect_.left + 6.0f,
+        messagesRect_.top + 12.0f,
+        messagesRect_.left + 6.0f + cardWidth,
+        messagesRect_.top + 260.0f);
+
+    ID2D1SolidColorBrush *bgBrush = nullptr;
+    ID2D1SolidColorBrush *borderBrush = nullptr;
+    ID2D1SolidColorBrush *titleBrush = nullptr;
+    ID2D1SolidColorBrush *mutedBrush = nullptr;
+    ID2D1SolidColorBrush *accentBrush = nullptr;
+    ID2D1SolidColorBrush *barBgBrush = nullptr;
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.07f, 0.09f, 0.12f, 0.98f), &bgBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::Accent(), &borderBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &titleBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::MutedText(), &mutedBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::Accent(), &accentBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, 0.18f), &barBgBrush);
+
+    IDWriteTextFormat *titleFormat = nullptr;
+    IDWriteTextFormat *labelFormat = nullptr;
+    IDWriteTextFormat *valueFormat = nullptr;
+    dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                             12.5f, L"en-us", &titleFormat);
+    dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                             10.5f, L"en-us", &labelFormat);
+    dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                             11.0f, L"en-us", &valueFormat);
+
+    if (bgBrush)
+        ctx->FillRoundedRectangle(D2D1::RoundedRect(cardRect, 10.0f, 10.0f), bgBrush);
+    if (borderBrush)
+        ctx->DrawRoundedRectangle(D2D1::RoundedRect(cardRect, 10.0f, 10.0f), borderBrush, 1.0f);
+
+    const float left = cardRect.left + 14.0f;
+    const float right = cardRect.right - 14.0f;
+    float y = cardRect.top + 14.0f;
+    if (titleFormat && titleBrush)
+        ctx->DrawTextW(L"Account & Usage", 15, titleFormat,
+                       D2D1::RectF(left, y, right, y + 18.0f), titleBrush);
+    y += 26.0f;
+
+    auto drawRow = [&](const wchar_t *label, const std::wstring &value) {
+        if (labelFormat && mutedBrush)
+            ctx->DrawTextW(label, (UINT32)wcslen(label), labelFormat,
+                           D2D1::RectF(left, y, left + 132.0f, y + 16.0f), mutedBrush);
+        if (valueFormat && titleBrush)
+            ctx->DrawTextW(value.c_str(), (UINT32)value.size(), valueFormat,
+                           D2D1::RectF(left + 132.0f, y, right, y + 16.0f), titleBrush);
+        y += 24.0f;
+    };
+
+    if (labelFormat && mutedBrush)
+        ctx->DrawTextW(L"ACCOUNT", 7, labelFormat, D2D1::RectF(left, y, right, y + 16.0f), mutedBrush);
+    y += 22.0f;
+    drawRow(L"Auth method", accountInfo_.authMethod.empty() ? L"Unavailable" : accountInfo_.authMethod);
+    drawRow(L"Email", accountInfo_.email.empty() ? L"Unavailable" : accountInfo_.email);
+    drawRow(L"Organization", accountInfo_.orgName.empty() ? L"Unavailable" : accountInfo_.orgName);
+    drawRow(L"Plan", accountInfo_.subscriptionType.empty() ? L"Unavailable" : accountInfo_.subscriptionType);
+
+    y += 4.0f;
+    if (labelFormat && mutedBrush)
+        ctx->DrawTextW(L"SESSION", 7, labelFormat, D2D1::RectF(left, y, right, y + 16.0f), mutedBrush);
+    y += 22.0f;
+
+    const int totalTokens = currentConversationUsage_.inputTokens + currentConversationUsage_.outputTokens;
+    drawRow(L"Conversation", CurrentConversationTitle());
+    drawRow(L"Messages", std::to_wstring(currentConversationUsage_.userMessages + currentConversationUsage_.assistantMessages));
+    drawRow(L"Tool calls", std::to_wstring(currentConversationUsage_.toolCalls));
+    drawRow(L"Tokens", std::to_wstring(totalTokens));
+
+    const float barWidth = right - left;
+    const float fillWidth = totalTokens <= 0 ? 0.0f : (std::min)(barWidth, barWidth * (float)(std::min)(totalTokens, 20000) / 20000.0f);
+    const D2D1_RECT_F barRect = D2D1::RectF(left, cardRect.bottom - 42.0f, right, cardRect.bottom - 36.0f);
+    if (barBgBrush)
+        ctx->FillRoundedRectangle(D2D1::RoundedRect(barRect, 3.0f, 3.0f), barBgBrush);
+    if (accentBrush && fillWidth > 0.0f)
+        ctx->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(barRect.left, barRect.top, barRect.left + fillWidth, barRect.bottom), 3.0f, 3.0f), accentBrush);
+
+    usageLinkRect_ = D2D1::RectF(left, cardRect.bottom - 24.0f, left + 170.0f, cardRect.bottom - 8.0f);
+    if (valueFormat && (usageLinkHovered_ ? accentBrush : mutedBrush))
+        ctx->DrawTextW(L"Manage usage on claude.ai", 25, valueFormat, usageLinkRect_,
+                       usageLinkHovered_ ? accentBrush : mutedBrush);
+
+    if (valueFormat)
+        valueFormat->Release();
+    if (labelFormat)
+        labelFormat->Release();
+    if (titleFormat)
+        titleFormat->Release();
+    if (barBgBrush)
+        barBgBrush->Release();
+    if (accentBrush)
+        accentBrush->Release();
+    if (mutedBrush)
+        mutedBrush->Release();
+    if (titleBrush)
+        titleBrush->Release();
+    if (borderBrush)
+        borderBrush->Release();
+    if (bgBrush)
+        bgBrush->Release();
+}
+
 void ClaudePanel::DrawMessages(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
 {
+    if (showHistory_)
+    {
+        DrawHistoryList(ctx, dwrite);
+        if (showUsageOverlay_)
+            DrawUsageOverlay(ctx, dwrite);
+        return;
+    }
+
     IDWriteTextFormat *bodyFormat = nullptr;
     dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
@@ -1066,6 +1793,8 @@ void ClaudePanel::DrawMessages(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
 
     ctx->PopAxisAlignedClip();
     messagesScrollbar_.Draw(ctx);
+    if (showUsageOverlay_)
+        DrawUsageOverlay(ctx, dwrite);
 
     if (mutedBrush)
         mutedBrush->Release();
@@ -1124,7 +1853,7 @@ void ClaudePanel::DrawButton(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite,
     ctx->CreateSolidColorBrush(labelColor, &textBrush);
 
     IDWriteTextFormat *format = nullptr;
-    const bool iconOnly = accent && label.size() == 1;
+    const bool iconOnly = label.size() == 1;
     const bool fluentIcon = iconOnly && !label.empty() && label[0] >= 0xE700 && label[0] <= 0xF8FF;
     dwrite->CreateTextFormat(fluentIcon ? L"Segoe Fluent Icons" : iconOnly ? L"Segoe UI Symbol" : L"Segoe UI", nullptr,
                              iconOnly ? DWRITE_FONT_WEIGHT_BOLD : DWRITE_FONT_WEIGHT_SEMI_BOLD,
@@ -1162,6 +1891,41 @@ void ClaudePanel::OnMouseMove(HWND hwnd, POINT clientPoint)
         changed = true;
     if (messagesScrollbar_.OnMouseMove(clientPoint))
         changed = true;
+    bool historyHovered = IsPointInRect(historyButtonRect_, clientPoint);
+    if (historyHovered != historyButtonHovered_)
+    {
+        historyButtonHovered_ = historyHovered;
+        changed = true;
+    }
+    bool usageHovered = IsPointInRect(usageButtonRect_, clientPoint);
+    if (usageHovered != usageButtonHovered_)
+    {
+        usageButtonHovered_ = usageHovered;
+        changed = true;
+    }
+    bool usageLinkHovered = showUsageOverlay_ && IsPointInRect(usageLinkRect_, clientPoint);
+    if (usageLinkHovered != usageLinkHovered_)
+    {
+        usageLinkHovered_ = usageLinkHovered;
+        changed = true;
+    }
+    int hoveredHistory = -1;
+    if (showHistory_)
+    {
+        for (size_t i = 0; i < historyRowRects_.size(); ++i)
+        {
+            if (IsPointInRect(historyRowRects_[i], clientPoint))
+            {
+                hoveredHistory = (int)i;
+                break;
+            }
+        }
+    }
+    if (hoveredHistory != hoveredHistoryIndex_)
+    {
+        hoveredHistoryIndex_ = hoveredHistory;
+        changed = true;
+    }
     bool sendHovered = IsPointInRect(sendButtonRect_, clientPoint);
     if (sendHovered != sendButtonHovered_)
     {
@@ -1181,6 +1945,47 @@ void ClaudePanel::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
     if (messagesScrollbar_.OnLeftButtonDown(clientPoint))
     {
         SetCapture(hwnd);
+        return;
+    }
+
+    if (IsPointInRect(historyButtonRect_, clientPoint))
+    {
+        showHistory_ = !showHistory_;
+        showUsageOverlay_ = false;
+        hoveredHistoryIndex_ = -1;
+        if (showHistory_)
+            messagesScrollbar_.SetScrollOffset(0.0f);
+        messagesScrollbar_.UpdateLayout(messagesRect_.left, messagesRect_.top,
+                                        messagesRect_.right - messagesRect_.left,
+                                        (std::max)(0.0f, messagesRect_.bottom - messagesRect_.top),
+                                        ComputeScrollContentHeight());
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
+    }
+
+    if (IsPointInRect(usageButtonRect_, clientPoint))
+    {
+        showUsageOverlay_ = !showUsageOverlay_;
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
+    }
+
+    if (showUsageOverlay_ && IsPointInRect(usageLinkRect_, clientPoint))
+    {
+        ShellExecuteW(hwnd, L"open", L"https://claude.ai/settings", nullptr, nullptr, SW_SHOWNORMAL);
+        return;
+    }
+
+    if (showHistory_ && hoveredHistoryIndex_ >= 0)
+    {
+        if (requestInFlight_ || bridge_.IsBusy())
+            return;
+        LoadConversationFromHistoryIndex((size_t)hoveredHistoryIndex_);
+        messagesScrollbar_.UpdateLayout(messagesRect_.left, messagesRect_.top,
+                                        messagesRect_.right - messagesRect_.left,
+                                        (std::max)(0.0f, messagesRect_.bottom - messagesRect_.top),
+                                        ComputeScrollContentHeight());
+        InvalidateRect(hwnd, nullptr, FALSE);
         return;
     }
 
@@ -1252,6 +2057,17 @@ void ClaudePanel::OnChar(wchar_t ch)
 void ClaudePanel::OnKeyDown(WPARAM key)
 {
     const bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+
+    if (key == VK_ESCAPE)
+    {
+        if (showUsageOverlay_ || showHistory_)
+        {
+            showUsageOverlay_ = false;
+            showHistory_ = false;
+            InvalidatePanel();
+            return;
+        }
+    }
 
     if (key == VK_TAB)
     {

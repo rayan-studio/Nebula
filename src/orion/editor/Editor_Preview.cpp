@@ -3846,7 +3846,7 @@ namespace Orion
                 codeButtonTextBrush->Release();
             if (codeButtonFormat)
                 codeButtonFormat->Release();
-            if (markdownViewMode_ != MarkdownViewMode::Split)
+            if (markdownViewMode_ != MarkdownViewMode::Split && !embeddedPreviewMode_)
                 scrollbar_.Draw(ctx);
             return;
         }
