@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 // Ensure Windows min/max macros don't interfere with std::min/std::max
 #ifdef max
@@ -17,6 +18,41 @@
 
 namespace Orion
 {
+    namespace
+    {
+        bool CopyPreviewTextToClipboard(const std::wstring &text)
+        {
+            if (text.empty())
+                return false;
+
+            if (!OpenClipboard(nullptr))
+                return false;
+
+            EmptyClipboard();
+            const SIZE_T bytes = (text.size() + 1) * sizeof(wchar_t);
+            HGLOBAL handle = GlobalAlloc(GMEM_MOVEABLE, bytes);
+            if (!handle)
+            {
+                CloseClipboard();
+                return false;
+            }
+
+            void *data = GlobalLock(handle);
+            if (!data)
+            {
+                GlobalFree(handle);
+                CloseClipboard();
+                return false;
+            }
+
+            memcpy(data, text.c_str(), bytes);
+            GlobalUnlock(handle);
+            SetClipboardData(CF_UNICODETEXT, handle);
+            CloseClipboard();
+            return true;
+        }
+    }
+
     bool Editor::GetWordAtColumn(const std::wstring &line, int column, std::wstring &outWord, int &startCol, int &endCol) const
     {
         outWord.clear();
@@ -407,6 +443,36 @@ namespace Orion
         {
             if (previewMode_ == PreviewMode::Markdown)
             {
+                auto hitRect = [&](const D2D1_RECT_F &rect) -> bool
+                {
+                    return (float)pt.x >= rect.left && (float)pt.x <= rect.right &&
+                           (float)pt.y >= rect.top && (float)pt.y <= rect.bottom;
+                };
+                for (size_t i = 0; i < previewMarkdownCodeBlocks_.size(); ++i)
+                {
+                    const auto &ui = previewMarkdownCodeBlocks_[i];
+                    if (hitRect(ui.copyButtonRect))
+                    {
+                        const bool copied = CopyPreviewTextToClipboard(ui.text);
+                        const DWORD now = GetTickCount();
+                        previewHoveredCodeBlockIndex_ = (int)i;
+                        previewPressedCodeBlockIndex_ = (int)i;
+                        previewPressedCodeBlockUntil_ = now + 140;
+                        if (copied)
+                        {
+                            previewCopiedCodeBlockIndex_ = (int)i;
+                            previewCopiedCodeBlockUntil_ = now + 900;
+                        }
+                        else
+                        {
+                            previewCopiedCodeBlockIndex_ = -1;
+                            previewCopiedCodeBlockUntil_ = 0;
+                        }
+                        if (hwnd)
+                            InvalidateRect(hwnd, nullptr, FALSE);
+                        return;
+                    }
+                }
                 if (scrollbar_.OnLeftButtonDown(pt))
                     SetCapture(hwnd);
             }
@@ -841,6 +907,27 @@ namespace Orion
         {
             if (previewMode_ == PreviewMode::Markdown)
             {
+                int hoveredCodeBlock = -1;
+                auto hitRect = [&](const D2D1_RECT_F &rect) -> bool
+                {
+                    return (float)pt.x >= rect.left && (float)pt.x <= rect.right &&
+                           (float)pt.y >= rect.top && (float)pt.y <= rect.bottom;
+                };
+                for (size_t i = 0; i < previewMarkdownCodeBlocks_.size(); ++i)
+                {
+                    if (hitRect(previewMarkdownCodeBlocks_[i].copyButtonRect))
+                    {
+                        hoveredCodeBlock = (int)i;
+                        break;
+                    }
+                }
+                if (hoveredCodeBlock != previewHoveredCodeBlockIndex_)
+                {
+                    previewHoveredCodeBlockIndex_ = hoveredCodeBlock;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                if (hoveredCodeBlock >= 0)
+                    SetCursor(LoadCursorW(nullptr, IDC_HAND));
                 if (scrollbar_.OnMouseMove(pt))
                 {
                     state_.scrollOffsetY = scrollbar_.GetScrollOffset();

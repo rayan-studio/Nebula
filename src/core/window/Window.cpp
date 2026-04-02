@@ -1334,8 +1334,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         // Global Input overlay removed; clicks always propagate to Explorer/editor.
 
         // Prioritize panel resize zone over explorer hit (prevents dead resize area)
-        Panel *activePanelClick = GetPanelManager().GetActivePanel();
-        if (activePanelClick && activePanelClick->IsVisible() && activePanelClick->IsPointInResizeZone(pt))
+        Panel *panelClick = GetPanelManager().GetPanelAtPoint(pt);
+        if (panelClick && panelClick->IsPointInResizeZone(pt))
         {
             GetPanelManager().OnLeftButtonDown(hwnd_, pt);
             return 0;
@@ -1490,11 +1490,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         // terminal handled above (before explorer)
 
         // Check if click is in active panel area
-        Panel *activePanel = GetPanelManager().GetActivePanel();
+        Panel *activePanel = GetPanelManager().GetPanelAtPoint(pt);
         bool inPanel = false;
         bool inResizeZone = false;
 
-        if (activePanel && activePanel->IsVisible())
+        if (activePanel)
         {
             inPanel = activePanel->IsPointInPanel(pt);
             inResizeZone = activePanel->IsPointInResizeZone(pt);
@@ -1671,26 +1671,17 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         int sidebarWidth = win32_dpi_scale(50, dpi);
 
         // Get panel width from active panel
-        Panel *panelDblClick = GetPanelManager().GetActivePanel();
+        Panel *panelDblClick = GetPanelManager().GetPanelAtPoint(pt);
         int panelLeftWidth = 0;
         int panelRightWidth = 0;
-        if (panelDblClick && panelDblClick->IsVisible())
-        {
-            int activeWidth = panelDblClick->GetPhysicalWidth();
-            if (panelDblClick->GetId() == PanelId::Explorer &&
-                GetExplorerLayoutState().placement == ExplorerPlacement::Right)
-            {
-                panelRightWidth = activeWidth;
-            }
-            else
-            {
-                panelLeftWidth = activeWidth;
-            }
-        }
+        if (Panel *leftPanel = GetPanelManager().GetVisiblePanel(false))
+            panelLeftWidth = leftPanel->GetPhysicalWidth();
+        if (Panel *rightPanel = GetPanelManager().GetVisiblePanel(true))
+            panelRightWidth = rightPanel->GetPhysicalWidth();
         int editorLeftX = sidebarWidth + panelLeftWidth;
         int editorRightX = clientRect.right - panelRightWidth;
 
-        bool inPanelDbl = panelDblClick && panelDblClick->IsVisible() &&
+        bool inPanelDbl = panelDblClick &&
                           (panelDblClick->IsPointInPanel(pt) || panelDblClick->IsPointInResizeZone(pt));
 
         if (tabBar_.GetActiveTabIndex() < 0 &&
@@ -1817,6 +1808,14 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                 return 0;
             }
         }
+        if (IsMarketplaceTabIndex(tabBar_.GetActiveTabIndex()) && marketplaceTab_)
+        {
+            if (marketplaceTab_->OnKeyDown(wParam))
+            {
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return 0;
+            }
+        }
         if (keyboard_.OnKeyDown(wParam))
             return 0;
 
@@ -1841,11 +1840,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
 
         // Check if wheel is over active panel
-        Panel *panelWheel = GetPanelManager().GetActivePanel();
-        if (panelWheel && panelWheel->IsVisible() && panelWheel->IsPointInPanel(pt))
+        Panel *panelWheel = GetPanelManager().GetPanelAtPoint(pt, false);
+        if (panelWheel && panelWheel->IsPointInPanel(pt))
         {
             int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-            GetPanelManager().OnMouseWheel(hwnd_, delta);
+            panelWheel->OnMouseWheel(hwnd_, delta);
             return 0;
         }
 
@@ -2005,7 +2004,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         bool pointInExplorer = GetExplorerManager().IsVisible() && GetExplorerManager().IsPointInExplorer(pt);
 
         // Check if active panel is resizing
-        Panel* activePanel = GetPanelManager().GetActivePanel();
+        Panel* activePanel = GetPanelManager().GetResizingPanel();
         bool panelResizing = activePanel && activePanel->IsResizing();
         if (panelResizing)
         {
@@ -2093,13 +2092,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         // Marketplace panel hover must win over explorer fallback routing,
         // otherwise row hover can be swallowed by other hit-tests.
         {
-            Panel* activePanelNow = GetPanelManager().GetActivePanel();
-            if (activePanelNow && activePanelNow->IsVisible() &&
-                activePanelNow->GetId() == PanelId::Marketplace)
+            Panel* marketplacePanel = GetPanelManager().GetPanel(PanelId::Marketplace);
+            if (marketplacePanel && marketplacePanel->IsVisible() &&
+                marketplacePanel->GetId() == PanelId::Marketplace)
             {
-                if (activePanelNow->IsResizing() ||
-                    activePanelNow->IsPointInResizeZone(pt) ||
-                    activePanelNow->IsPointInPanel(pt))
+                if (marketplacePanel->IsResizing() ||
+                    marketplacePanel->IsPointInResizeZone(pt) ||
+                    marketplacePanel->IsPointInPanel(pt))
                 {
                     GetPanelManager().OnMouseMove(hwnd_, pt);
                     return 0;
@@ -2249,11 +2248,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
         else
         {
-            Panel* activePnl = GetPanelManager().GetActivePanel();
+            Panel* activePnl = GetPanelManager().GetPanelAtPoint(pt);
             bool inPanelArea = false;
             bool inPanelResize = false;
 
-            if (activePnl && activePnl->IsVisible())
+            if (activePnl)
             {
                 inPanelArea = activePnl->IsPointInPanel(pt);
                 inPanelResize = activePnl->IsPointInResizeZone(pt);
@@ -2342,7 +2341,7 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         }
 
         // Check if any panel is resizing
-        Panel *activePanelUp = GetPanelManager().GetActivePanel();
+        Panel *activePanelUp = GetPanelManager().GetResizingPanel();
         bool panelWasResizing = activePanelUp && activePanelUp->IsResizing();
 
         if (panelWasResizing)
@@ -2467,7 +2466,16 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         if (wParam == CARET_TIMER_ID)
         {
             Orion::Editor *editor = GetEditor();
-            if (editor && editor->UpdateCaretBlink())
+            const bool needsEditorFrame = editor &&
+                                          (editor->UpdateCaretBlink() || editor->UpdatePreviewUiAnimation());
+            const bool needsMarketplaceFrame = IsMarketplaceTabIndex(tabBar_.GetActiveTabIndex()) &&
+                                               marketplaceTab_ &&
+                                               marketplaceTab_->UpdateUiAnimation();
+            ClaudePanel *claudePanel = GetPanelManager().GetPanelAs<ClaudePanel>(PanelId::Claude);
+            const bool needsClaudeFrame = claudePanel &&
+                                          claudePanel->IsVisible() &&
+                                          claudePanel->UpdateUiAnimation();
+            if (needsEditorFrame || needsMarketplaceFrame || needsClaudeFrame)
             {
                 InvalidateRect(hwnd_, nullptr, FALSE);
             }
@@ -3043,8 +3051,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
         POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
 
         // Check if right-click is in active panel
-        Panel *panelRClick = GetPanelManager().GetActivePanel();
-        if (panelRClick && panelRClick->IsVisible() && panelRClick->IsPointInPanel(pt))
+        Panel *panelRClick = GetPanelManager().GetPanelAtPoint(pt, false);
+        if (panelRClick && panelRClick->IsPointInPanel(pt))
         {
             GetPanelManager().OnRightButtonUp(hwnd_, pt);
             return 0;
@@ -3142,8 +3150,8 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             }
 
             // Check active panel for cursor
-            Panel *panelCursor = GetPanelManager().GetActivePanel();
-            if (panelCursor && panelCursor->IsVisible())
+            Panel *panelCursor = GetPanelManager().GetPanelAtPoint(pt);
+            if (panelCursor)
             {
                 // Zone de redimensionnement du panel
                 if (panelCursor->IsPointInResizeZone(pt))
@@ -3164,6 +3172,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
             if (GetExplorerManager().IsVisible() && GetExplorerManager().IsPointInExplorer(pt))
             {
                 SetCursor(LoadCursor(NULL, IDC_ARROW));
+                return TRUE;
+            }
+
+            if (IsMarketplaceTabIndex(tabBar_.GetActiveTabIndex()) && marketplaceTab_ &&
+                marketplaceTab_->IsPointInView(pt))
+            {
+                SetCursor(LoadCursorW(nullptr, marketplaceTab_->CursorForPoint(pt)));
                 return TRUE;
             }
 
@@ -3199,6 +3214,11 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
                     if (editor->IsPointOnGitSplitDivider(pt))
                     {
                         SetCursor(LoadCursor(NULL, IDC_SIZEWE));
+                        return TRUE;
+                    }
+                    if (editor->IsPointOnPreviewMarkdownCopyButton(pt))
+                    {
+                        SetCursor(LoadCursor(NULL, IDC_HAND));
                         return TRUE;
                     }
                     if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0 && editor->IsDefinitionHoverActive())
@@ -3469,20 +3489,10 @@ RECT Window::GetTabBarRectClient() const
     int panelLeftWidth = 0;
     int panelRightWidth = 0;
 
-    Panel *activePanel = GetPanelManager().GetActivePanel();
-    if (activePanel && activePanel->IsVisible())
-    {
-        int activeWidth = activePanel->GetPhysicalWidth();
-        if (activePanel->GetId() == PanelId::Explorer &&
-            GetExplorerLayoutState().placement == ExplorerPlacement::Right)
-        {
-            panelRightWidth = activeWidth;
-        }
-        else
-        {
-            panelLeftWidth = activeWidth;
-        }
-    }
+    if (Panel *leftPanel = GetPanelManager().GetVisiblePanel(false))
+        panelLeftWidth = leftPanel->GetPhysicalWidth();
+    if (Panel *rightPanel = GetPanelManager().GetVisiblePanel(true))
+        panelRightWidth = rightPanel->GetPhysicalWidth();
 
     r.left = sidebarWidth + panelLeftWidth;
     r.right = client.right - panelRightWidth;

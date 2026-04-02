@@ -455,12 +455,22 @@ void MarketplacePanel::DrawLibraryCard(ID2D1RenderTarget* ctx, IDWriteFactory* d
         if (dBr)  dBr->Release();
     }
 
-    // Category pill badge
-    DrawCardCategory(ctx, dwrite, card.library.category, catColor,
-                     textL, T + 57.0f);
+    if (card.library.installState != LibraryInfo::InstallState::Idle || !card.library.installMessage.empty())
+    {
+        DrawCardStatus(ctx, dwrite, card.library, textL, T + 57.0f, textR - textL);
+    }
+    else
+    {
+        DrawCardCategory(ctx, dwrite, card.library.category, catColor,
+                         textL, T + 57.0f);
+    }
 
     // ── Install / Uninstall button ──────────────────────────────────────────
-    if (card.library.isInstalled)
+    if (card.library.installState == LibraryInfo::InstallState::Installing)
+    {
+        DrawInstallButton(ctx, dwrite, card.installButtonBounds, false, L"Installing", false);
+    }
+    else if (card.library.isInstalled)
         DrawInstalledButton(ctx, dwrite, card.uninstallButtonBounds,
                             card.isHoveringUninstallBtn);
     else
@@ -509,13 +519,55 @@ void MarketplacePanel::DrawCardCategory(ID2D1RenderTarget* ctx, IDWriteFactory* 
     if (txtBr) txtBr->Release();
 }
 
+void MarketplacePanel::DrawCardStatus(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
+                                      const LibraryInfo& lib, float x, float y, float width)
+{
+    std::wstring status = lib.installMessage;
+    if (status.empty())
+    {
+        if (lib.installState == LibraryInfo::InstallState::Installing)
+            status = L"Installing...";
+        else if (lib.installState == LibraryInfo::InstallState::Error)
+            status = L"Install failed.";
+    }
+
+    if (status.empty())
+        return;
+
+    IDWriteTextFormat* fmt = nullptr;
+    dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+        DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 10.5f, L"en-us", &fmt);
+
+    D2D1_COLOR_F color = UI::Theme::MutedText();
+    if (lib.installState == LibraryInfo::InstallState::Installing)
+        color = UI::Theme::Accent();
+    else if (lib.installState == LibraryInfo::InstallState::Error)
+        color = D2D1::ColorF(0.90f, 0.38f, 0.35f, 1.0f);
+
+    ID2D1SolidColorBrush* brush = nullptr;
+    ctx->CreateSolidColorBrush(color, &brush);
+    if (fmt && brush)
+    {
+        fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+        fmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        D2D1_RECT_F rect = D2D1::RectF(x, y, x + width, y + 14.0f);
+        ctx->DrawTextW(status.c_str(), (UINT32)status.size(), fmt, rect, brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+    if (fmt) fmt->Release();
+    if (brush) brush->Release();
+}
+
 // ---------------------------------------------------------------------------
 // DrawInstallButton — accent blue, white text
 // ---------------------------------------------------------------------------
 void MarketplacePanel::DrawInstallButton(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
-                                          const D2D1_RECT_F& bounds, bool hover)
+                                          const D2D1_RECT_F& bounds, bool hover,
+                                          const std::wstring& label, bool enabled)
 {
     D2D1_COLOR_F bg = hover ? UI::Theme::AccentStrong() : UI::Theme::Accent();
+    if (!enabled)
+        bg.a *= 0.55f;
 
     ID2D1SolidColorBrush* bgBr = nullptr;
     ctx->CreateSolidColorBrush(bg, &bgBr);
@@ -534,11 +586,11 @@ void MarketplacePanel::DrawInstallButton(ID2D1RenderTarget* ctx, IDWriteFactory*
             11.5f, L"en-us", &fmt);
 
     ID2D1SolidColorBrush* txtBr = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1), &txtBr);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, enabled ? 1.0f : 0.78f), &txtBr);
     if (fmt && txtBr) {
         fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
         fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        ctx->DrawTextW(L"Install", 7, fmt, bounds, txtBr);
+        ctx->DrawTextW(label.c_str(), (UINT32)label.size(), fmt, bounds, txtBr);
     }
     if (fmt)   fmt->Release();
     if (txtBr) txtBr->Release();
@@ -812,18 +864,30 @@ void MarketplacePanel::OnMouseWheel(HWND hwnd, int delta)
 void MarketplacePanel::HandleInstallLibrary(HWND hwnd, LibraryCard* card)
 {
     if (!card || card->library.name.empty()) return;
+    if (card->library.installState == LibraryInfo::InstallState::Installing) return;
+
+    LibraryDatabase::Instance().SetInstallStatus(card->library.name, LibraryInfo::InstallState::Installing, L"Installing...");
+    card->library.installState = LibraryInfo::InstallState::Installing;
+    card->library.installMessage = L"Installing...";
+    UpdateCardLayout();
+    InvalidateRect(hwnd, nullptr, FALSE);
 
     std::wstring installError;
+    std::wstring installDetails;
     bool ok = GetExplorerManager().InstallLibraryFromGitUrl(
         hwnd,
         card->library.gitUrl,
         card->library.name,
-        &installError);
+        &installError,
+        &installDetails);
 
     if (ok)
     {
         card->library.isInstalled = true;
         LibraryDatabase::Instance().SetInstalled(card->library.name, true);
+        LibraryDatabase::Instance().SetInstallStatus(card->library.name, LibraryInfo::InstallState::Idle, installDetails);
+        card->library.installState = LibraryInfo::InstallState::Idle;
+        card->library.installMessage = installDetails;
         Logger::Instance().Log(L"Installing library: " + card->library.name);
         UpdateCardLayout();
     }
@@ -833,6 +897,9 @@ void MarketplacePanel::HandleInstallLibrary(HWND hwnd, LibraryCard* card)
         LibraryDatabase::Instance().SetInstalled(card->library.name, false);
         if (installError.empty())
             installError = L"Failed to install library.";
+        LibraryDatabase::Instance().SetInstallStatus(card->library.name, LibraryInfo::InstallState::Error, installError);
+        card->library.installState = LibraryInfo::InstallState::Error;
+        card->library.installMessage = installError;
         MessageBoxW(hwnd, installError.c_str(), L"Marketplace Install", MB_OK | MB_ICONERROR);
         Logger::Instance().Log(L"Install failed for " + card->library.name + L": " + installError);
     }
@@ -852,6 +919,9 @@ void MarketplacePanel::HandleUninstallLibrary(HWND hwnd, LibraryCard* card)
     if (ok)
     {
         card->library.isInstalled = false;
+        card->library.installState = LibraryInfo::InstallState::Idle;
+        card->library.installMessage.clear();
+        LibraryDatabase::Instance().SetInstallStatus(card->library.name, LibraryInfo::InstallState::Idle, L"");
         LibraryDatabase::Instance().RefreshInstallationStatus(GetExplorerManager().GetState().rootPath);
         Logger::Instance().Log(L"Uninstalled library: " + card->library.name);
         UpdateCardLayout();

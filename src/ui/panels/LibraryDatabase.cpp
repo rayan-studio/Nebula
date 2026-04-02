@@ -839,6 +839,28 @@ void LibraryDatabase::SetInstalled(const std::wstring& name, bool installed)
     if (it != libraries_.end() && it->isInstalled != installed)
     {
         it->isInstalled = installed;
+        if (installed && it->installState == LibraryInfo::InstallState::Installing)
+            it->installState = LibraryInfo::InstallState::Idle;
+        BumpRevision();
+    }
+}
+
+void LibraryDatabase::SetInstallStatus(const std::wstring& name,
+                                       LibraryInfo::InstallState state,
+                                       const std::wstring& message)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = std::find_if(libraries_.begin(), libraries_.end(), [&name](const LibraryInfo& library) {
+        return _wcsicmp(library.name.c_str(), name.c_str()) == 0;
+    });
+
+    if (it == libraries_.end())
+        return;
+
+    if (it->installState != state || it->installMessage != message)
+    {
+        it->installState = state;
+        it->installMessage = message;
         BumpRevision();
     }
 }
@@ -1011,7 +1033,26 @@ void LibraryDatabase::RequestLibrariesAsync(const std::wstring& searchQuery, HWN
             }
             else
             {
+                std::map<std::wstring, std::pair<LibraryInfo::InstallState, std::wstring>> installStateByName;
+                for (const LibraryInfo &existing : libraries_)
+                {
+                    std::wstring lowered = existing.name;
+                    std::transform(lowered.begin(), lowered.end(), lowered.begin(), ::towlower);
+                    installStateByName[lowered] = std::make_pair(existing.installState, existing.installMessage);
+                }
+
                 libraries_ = std::move(fetched);
+                for (LibraryInfo &library : libraries_)
+                {
+                    std::wstring lowered = library.name;
+                    std::transform(lowered.begin(), lowered.end(), lowered.begin(), ::towlower);
+                    auto it = installStateByName.find(lowered);
+                    if (it != installStateByName.end())
+                    {
+                        library.installState = it->second.first;
+                        library.installMessage = it->second.second;
+                    }
+                }
                 lastError_.clear();
                 hasLoadedOnce_ = true;
                 BumpRevision();

@@ -203,11 +203,17 @@ void MarketplaceExtensionTabView::SetLibraryName(const std::wstring &name)
 {
     if (currentLibraryName_ == name) return;
     currentLibraryName_ = name;
+    actionButtonHovered_ = false;
+    readmePreviewTabHovered_ = false;
+    readmeMarkdownTabHovered_ = false;
+    repositoryLinkHovered_ = false;
+    readmePreviewEditor_.CancelInteraction();
 
     currentPreviewText_.clear();
+    readmeMode_ = ReadmeMode::Preview;
     readmePreviewEditor_.CreateEmpty();
-    readmePreviewEditor_.SetMarkdownViewMode(Orion::MarkdownViewMode::Preview);
     readmePreviewEditor_.SetTextContent(L"Loading README...", false);
+    ApplyReadmeEditorMode();
 
     if (!name.empty()) {
         LibraryInfo lib;
@@ -246,9 +252,23 @@ void MarketplaceExtensionTabView::UpdateLayout(HWND hwnd, float left, float top,
         bounds_.right,
         bounds_.bottom - statsH);
 
-    // The preview editor uses the same markdown renderer as normal editor tabs.
-    const float previewLabelH = 16.0f * scale;
-    const float previewTop = readmeClipRect_.top + 14.0f * scale + previewLabelH;
+    const float toggleTop = readmeClipRect_.top + 14.0f * scale;
+    const float toggleH = 26.0f * scale;
+    const float previewToggleW = 82.0f * scale;
+    const float markdownToggleW = 96.0f * scale;
+
+    readmePreviewTabRect_ = D2D1::RectF(
+        bounds_.left + pad + 66.0f * scale,
+        toggleTop,
+        bounds_.left + pad + 66.0f * scale + previewToggleW,
+        toggleTop + toggleH);
+    readmeMarkdownTabRect_ = D2D1::RectF(
+        readmePreviewTabRect_.right + 8.0f * scale,
+        toggleTop,
+        readmePreviewTabRect_.right + 8.0f * scale + markdownToggleW,
+        toggleTop + toggleH);
+
+    const float previewTop = toggleTop + toggleH + 12.0f * scale;
     readmePreviewEditor_.UpdateLayout(
         hwnd,
         bounds_.left + pad,
@@ -263,6 +283,14 @@ bool MarketplaceExtensionTabView::IsPointInRect(POINT pt, const D2D1_RECT_F &rec
 {
     return pt.x >= rect.left && pt.x <= rect.right &&
            pt.y >= rect.top  && pt.y <= rect.bottom;
+}
+
+void MarketplaceExtensionTabView::ApplyReadmeEditorMode()
+{
+    readmePreviewEditor_.SetMarkdownViewMode(
+        readmeMode_ == ReadmeMode::Preview
+            ? Orion::MarkdownViewMode::Preview
+            : Orion::MarkdownViewMode::Code);
 }
 
 // ---------------------------------------------------------------------------
@@ -501,8 +529,57 @@ void MarketplaceExtensionTabView::Draw(ID2D1RenderTarget *ctx,
     if (readmeText.empty() && !fetching)
         FetchReadmeAsync(hwnd, currentLibraryName_, lib->gitUrl);
 
-    // "DESCRIPTION" label
+    const std::wstring displayText = readmeText.empty()
+        ? (fetching ? L"Loading README..." : lib->description)
+        : readmeText;
+
+    // README label + controls
     {
+        auto drawPill = [&](const D2D1_RECT_F& rect,
+                            const wchar_t* label,
+                            bool active,
+                            bool hovered,
+                            bool enabled,
+                            float alphaScale = 1.0f) {
+            ID2D1SolidColorBrush* bgBr = nullptr;
+            ID2D1SolidColorBrush* borderBr = nullptr;
+            ID2D1SolidColorBrush* txtBr = nullptr;
+            IDWriteTextFormat* fmt = nullptr;
+
+            const D2D1_COLOR_F accent = UI::Theme::Accent();
+            const D2D1_COLOR_F bg = active
+                ? D2D1::ColorF(accent.r, accent.g, accent.b, enabled ? 0.20f * alphaScale : 0.10f * alphaScale)
+                : D2D1::ColorF(1.0f, 1.0f, 1.0f, hovered && enabled ? 0.08f * alphaScale : 0.04f * alphaScale);
+            const D2D1_COLOR_F border = active
+                ? D2D1::ColorF(accent.r, accent.g, accent.b, enabled ? 0.55f * alphaScale : 0.28f * alphaScale)
+                : D2D1::ColorF(1.0f, 1.0f, 1.0f, hovered && enabled ? 0.18f * alphaScale : 0.10f * alphaScale);
+            const D2D1_COLOR_F text = active
+                ? D2D1::ColorF(accent.r, accent.g, accent.b, enabled ? 1.0f * alphaScale : 0.55f * alphaScale)
+                : D2D1::ColorF(1.0f, 1.0f, 1.0f, enabled ? 0.88f * alphaScale : 0.45f * alphaScale);
+
+            ctx->CreateSolidColorBrush(bg, &bgBr);
+            ctx->CreateSolidColorBrush(border, &borderBr);
+            ctx->CreateSolidColorBrush(text, &txtBr);
+            dwrite->CreateTextFormat(L"Segoe UI Variable Text", nullptr,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL, 11.0f * scale, L"en-us", &fmt);
+
+            if (bgBr)
+                ctx->FillRoundedRectangle(D2D1::RoundedRect(rect, 7.0f * scale, 7.0f * scale), bgBr);
+            if (borderBr)
+                ctx->DrawRoundedRectangle(D2D1::RoundedRect(rect, 7.0f * scale, 7.0f * scale), borderBr, 1.0f);
+            if (fmt && txtBr) {
+                fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                ctx->DrawTextW(label, (UINT32)wcslen(label), fmt, rect, txtBr);
+            }
+
+            if (bgBr) bgBr->Release();
+            if (borderBr) borderBr->Release();
+            if (txtBr) txtBr->Release();
+            if (fmt) fmt->Release();
+        };
+
         IDWriteTextFormat *lFmt = nullptr;
         dwrite->CreateTextFormat(L"Segoe UI Variable Text", nullptr,
             DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
@@ -515,21 +592,26 @@ void MarketplaceExtensionTabView::Draw(ID2D1RenderTarget *ctx,
             lFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
             const wchar_t *lbl = L"README";
             ctx->DrawTextW(lbl, (UINT32)wcslen(lbl), lFmt,
-                D2D1::RectF(x, readmeTop, xEnd, readmeTop + 14.0f * scale), mBr);
+                D2D1::RectF(x, readmeTop + 6.0f * scale, x + 56.0f * scale, readmeTop + 20.0f * scale), mBr);
         }
         if (lFmt) lFmt->Release();
         if (mBr)  mBr->Release();
-        readmeTop += 16.0f * scale;
+
+        drawPill(readmePreviewTabRect_, L"Preview",
+                 readmeMode_ == ReadmeMode::Preview,
+                 readmePreviewTabHovered_, true);
+        drawPill(readmeMarkdownTabRect_, L"Markdown",
+                 readmeMode_ == ReadmeMode::Markdown,
+                 readmeMarkdownTabHovered_, true);
     }
 
-    const std::wstring displayText = readmeText.empty()
-        ? (fetching ? L"Loading README..." : lib->description)
-        : readmeText;
     if (displayText != currentPreviewText_) {
         currentPreviewText_ = displayText;
         readmePreviewEditor_.CreateEmpty();
         readmePreviewEditor_.SetTextContent(currentPreviewText_, false);
-        readmePreviewEditor_.SetMarkdownViewMode(Orion::MarkdownViewMode::Preview);
+        ApplyReadmeEditorMode();
+    } else {
+        ApplyReadmeEditorMode();
     }
 
     readmePreviewEditor_.Draw(ctx, dwrite);
@@ -683,14 +765,24 @@ void MarketplaceExtensionTabView::Draw(ID2D1RenderTarget *ctx,
 void MarketplaceExtensionTabView::OnMouseMove(HWND hwnd, POINT clientPoint)
 {
     const bool wasHover = actionButtonHovered_;
+    const bool wasPreviewHover = readmePreviewTabHovered_;
+    const bool wasMarkdownHover = readmeMarkdownTabHovered_;
     const bool wasRepoHover = repositoryLinkHovered_;
     actionButtonHovered_ = IsPointInRect(clientPoint, actionButtonRect_);
+    readmePreviewTabHovered_ = IsPointInRect(clientPoint, readmePreviewTabRect_);
+    readmeMarkdownTabHovered_ = IsPointInRect(clientPoint, readmeMarkdownTabRect_);
     repositoryLinkHovered_ = IsPointInRect(clientPoint, repositoryLinkRect_);
 
-    if (repositoryLinkHovered_)
-        SetCursor(LoadCursorW(nullptr, IDC_HAND));
+    if (readmePreviewEditor_.IsPointInEditorBounds(clientPoint) || readmePreviewEditor_.IsDragSelecting())
+        readmePreviewEditor_.OnMouseMove(hwnd, clientPoint);
 
-    if (wasHover != actionButtonHovered_ || wasRepoHover != repositoryLinkHovered_)
+    if (IsPointInView(clientPoint))
+        SetCursor(LoadCursorW(nullptr, CursorForPoint(clientPoint)));
+
+    if (wasHover != actionButtonHovered_ ||
+        wasPreviewHover != readmePreviewTabHovered_ ||
+        wasMarkdownHover != readmeMarkdownTabHovered_ ||
+        wasRepoHover != repositoryLinkHovered_)
         InvalidateRect(hwnd, nullptr, FALSE);
 }
 
@@ -709,6 +801,22 @@ void MarketplaceExtensionTabView::OnMouseWheel(HWND hwnd, int delta)
 
 void MarketplaceExtensionTabView::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
 {
+    if (IsPointInRect(clientPoint, readmePreviewTabRect_))
+    {
+        readmeMode_ = ReadmeMode::Preview;
+        ApplyReadmeEditorMode();
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
+    }
+
+    if (IsPointInRect(clientPoint, readmeMarkdownTabRect_))
+    {
+        readmeMode_ = ReadmeMode::Markdown;
+        ApplyReadmeEditorMode();
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
+    }
+
     if (IsPointInRect(clientPoint, repositoryLinkRect_))
     {
         if (!currentLibraryName_.empty())
@@ -780,11 +888,70 @@ void MarketplaceExtensionTabView::OnLeftButtonUp(HWND /*hwnd*/)
     GetCursorPos(&cursor);
     if (hwnd_) {
         ScreenToClient(hwnd_, &cursor);
-        readmePreviewEditor_.OnLeftButtonUp(hwnd_, cursor);
+        if (readmePreviewEditor_.IsDragSelecting() ||
+            readmePreviewEditor_.IsPointInEditorBounds(cursor))
+        {
+            readmePreviewEditor_.OnLeftButtonUp(hwnd_, cursor);
+        }
     }
 }
 
 bool MarketplaceExtensionTabView::IsPointInView(POINT clientPoint) const
 {
     return IsPointInRect(clientPoint, bounds_);
+}
+
+bool MarketplaceExtensionTabView::WantsHandCursor(POINT clientPoint) const
+{
+    return CursorForPoint(clientPoint) == IDC_HAND;
+}
+
+LPCWSTR MarketplaceExtensionTabView::CursorForPoint(POINT clientPoint) const
+{
+    if (!IsPointInView(clientPoint))
+        return IDC_ARROW;
+
+    if (IsPointInRect(clientPoint, actionButtonRect_) ||
+        IsPointInRect(clientPoint, repositoryLinkRect_) ||
+        IsPointInRect(clientPoint, readmePreviewTabRect_) ||
+        IsPointInRect(clientPoint, readmeMarkdownTabRect_))
+    {
+        return IDC_HAND;
+    }
+
+    if (readmePreviewEditor_.IsPointInEditorBounds(clientPoint))
+    {
+        if (readmePreviewEditor_.IsPointOnPreviewMarkdownCopyButton(clientPoint))
+            return IDC_HAND;
+        if (readmeMode_ == ReadmeMode::Markdown)
+            return IDC_IBEAM;
+    }
+
+    return IDC_ARROW;
+}
+
+bool MarketplaceExtensionTabView::UpdateUiAnimation()
+{
+    return readmePreviewEditor_.UpdatePreviewUiAnimation();
+}
+
+bool MarketplaceExtensionTabView::OnKeyDown(WPARAM key)
+{
+    const bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    if (!ctrl)
+        return false;
+
+    if (key == 'C' || key == 'c')
+    {
+        readmePreviewEditor_.CopySelectionToClipboard();
+        return true;
+    }
+
+    if (key == 'A' || key == 'a')
+    {
+        readmePreviewEditor_.SelectAll();
+        return true;
+    }
+
+    return false;
 }

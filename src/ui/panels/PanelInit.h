@@ -3,6 +3,7 @@
 #include "PanelManager.h"
 #include "explorer/ExplorerPanel.h"
 #include "git/GitPanel.h"
+#include "claude/ClaudePanel.h"
 #include "codemap/CodeMapPanel.h"
 #include "search/SearchPanel.h"
 #include "settings/SettingsPanel.h"
@@ -28,6 +29,10 @@ void InitializePanelSystem()
     // Register Git panel
     auto gitPanel = std::make_unique<GitPanel>();
     manager.RegisterPanel(std::move(gitPanel));
+
+    // Register Claude panel
+    auto claudePanel = std::make_unique<ClaudePanel>();
+    manager.RegisterPanel(std::move(claudePanel));
 
     // Register Code Map panel
     auto codeMapPanel = std::make_unique<CodeMapPanel>();

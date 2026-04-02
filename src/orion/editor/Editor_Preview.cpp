@@ -21,6 +21,16 @@
 
 namespace
 {
+    D2D1_COLOR_F LerpColor(const D2D1_COLOR_F &a, const D2D1_COLOR_F &b, float t)
+    {
+        t = (std::clamp)(t, 0.0f, 1.0f);
+        return D2D1::ColorF(
+            a.r + (b.r - a.r) * t,
+            a.g + (b.g - a.g) * t,
+            a.b + (b.b - a.b) * t,
+            a.a + (b.a - a.a) * t);
+    }
+
     std::wstring ToLower(std::wstring value)
     {
         std::transform(value.begin(), value.end(), value.begin(),
@@ -42,6 +52,38 @@ namespace
         if (!out.empty() && out.back() == '\0')
             out.pop_back();
         return out;
+    }
+
+    bool CopyWideTextToClipboard(const std::wstring &text)
+    {
+        if (text.empty())
+            return false;
+
+        if (!OpenClipboard(nullptr))
+            return false;
+
+        EmptyClipboard();
+        const SIZE_T bytes = (text.size() + 1) * sizeof(wchar_t);
+        HGLOBAL handle = GlobalAlloc(GMEM_MOVEABLE, bytes);
+        if (!handle)
+        {
+            CloseClipboard();
+            return false;
+        }
+
+        void *data = GlobalLock(handle);
+        if (!data)
+        {
+            GlobalFree(handle);
+            CloseClipboard();
+            return false;
+        }
+
+        memcpy(data, text.c_str(), bytes);
+        GlobalUnlock(handle);
+        SetClipboardData(CF_UNICODETEXT, handle);
+        CloseClipboard();
+        return true;
     }
 
     bool IsImageExtension(const std::wstring &extLower)
@@ -1747,7 +1789,19 @@ namespace
 
             if (trimmed.rfind(L"```", 0) == 0)
             {
-                inCodeBlock = !inCodeBlock;
+                if (inCodeBlock)
+                {
+                    flushText();
+                    inCodeBlock = false;
+                }
+                else
+                {
+                    flushText();
+                    inCodeBlock = true;
+                    current = MarkdownBlock();
+                    current.type = MarkdownBlock::Type::Text;
+                    current.isCodeBlock = true;
+                }
                 continue;
             }
 
@@ -2033,6 +2087,12 @@ namespace Orion
         previewMarkdownText_.clear();
         previewMarkdownSpans_.clear();
         previewMarkdownBlocks_.clear();
+        previewMarkdownCodeBlocks_.clear();
+        previewHoveredCodeBlockIndex_ = -1;
+        previewPressedCodeBlockIndex_ = -1;
+        previewPressedCodeBlockUntil_ = 0;
+        previewCopiedCodeBlockIndex_ = -1;
+        previewCopiedCodeBlockUntil_ = 0;
         previewMarkdownLayoutWidth_ = 0.0f;
         previewMarkdownLayoutHeight_ = 0.0f;
     }
@@ -2170,6 +2230,61 @@ namespace Orion
         return markdownViewMode_ == MarkdownViewMode::Preview;
     }
 
+    bool Editor::IsPointOnPreviewMarkdownCopyButton(POINT pt) const
+    {
+        if (previewMode_ != PreviewMode::Markdown)
+            return false;
+
+        for (const auto &ui : previewMarkdownCodeBlocks_)
+        {
+            const D2D1_RECT_F &rect = ui.copyButtonRect;
+            if ((float)pt.x >= rect.left && (float)pt.x <= rect.right &&
+                (float)pt.y >= rect.top && (float)pt.y <= rect.bottom)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool Editor::UpdatePreviewUiAnimation()
+    {
+        auto clearState = [](int &index, DWORD &until)
+        {
+            index = -1;
+            until = 0;
+        };
+
+        if (previewMode_ != PreviewMode::Markdown)
+        {
+            const bool hadTransientState = previewPressedCodeBlockIndex_ >= 0 || previewCopiedCodeBlockIndex_ >= 0;
+            clearState(previewPressedCodeBlockIndex_, previewPressedCodeBlockUntil_);
+            clearState(previewCopiedCodeBlockIndex_, previewCopiedCodeBlockUntil_);
+            return hadTransientState;
+        }
+
+        const DWORD now = GetTickCount();
+        bool needsFrame = false;
+
+        if (previewPressedCodeBlockIndex_ >= 0)
+        {
+            if (now >= previewPressedCodeBlockUntil_)
+                clearState(previewPressedCodeBlockIndex_, previewPressedCodeBlockUntil_);
+            else
+                needsFrame = true;
+        }
+
+        if (previewCopiedCodeBlockIndex_ >= 0)
+        {
+            if (now >= previewCopiedCodeBlockUntil_)
+                clearState(previewCopiedCodeBlockIndex_, previewCopiedCodeBlockUntil_);
+            else
+                needsFrame = true;
+        }
+
+        return needsFrame;
+    }
+
     void Editor::DrawPreview(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
     {
         if (!ctx || !dwrite)
@@ -2203,8 +2318,13 @@ namespace Orion
             const float kTableGap = 16.0f;
             const float kQuotePaddingY = 8.0f;
             const float kHeadingRuleExtra = 8.0f;
+            const float kCodePaddingX = 16.0f;
+            const float kCodePaddingY = 12.0f;
+            const float kCodeHeaderH = 28.0f;
             auto TextBlockGap = [](const MarkdownBlock &blk) -> float
             {
+                if (blk.isCodeBlock)
+                    return 16.0f;
                 if (blk.isQuote)
                     return 16.0f;
                 if (blk.headingLevel == 1)
@@ -2361,6 +2481,8 @@ namespace Orion
                 if (blk.type == MarkdownBlock::Type::Text)
                 {
                     float h = previewMarkdownMetrics_[i].height;
+                    if (blk.isCodeBlock)
+                        h += kCodeHeaderH + kCodePaddingY * 2.0f;
                     if (!blk.inlineImages.empty())
                     {
                         float maxImgH = 0.0f;
@@ -2559,12 +2681,47 @@ namespace Orion
             ID2D1SolidColorBrush *headingBrush = nullptr;
             ID2D1SolidColorBrush *ruleBrush = nullptr;
             ID2D1SolidColorBrush *accentBrush = nullptr;
+            ID2D1SolidColorBrush *codeBgBrush = nullptr;
+            ID2D1SolidColorBrush *codeBorderBrush = nullptr;
+            ID2D1SolidColorBrush *codeHeaderBrush = nullptr;
+            ID2D1SolidColorBrush *codeButtonBrush = nullptr;
+            ID2D1SolidColorBrush *codeButtonBorderBrush = nullptr;
+            ID2D1SolidColorBrush *codeButtonTextBrush = nullptr;
             ctx->CreateSolidColorBrush(bodyColor, &textBrush);
             ctx->CreateSolidColorBrush(headingColor, &headingBrush);
             ctx->CreateSolidColorBrush(ruleColor, &ruleBrush);
             ctx->CreateSolidColorBrush(accentColor, &accentBrush);
+            {
+                D2D1_COLOR_F codeBg = previewPalette.inputBackground;
+                codeBg.a = previewLight ? 0.98f : 0.94f;
+                D2D1_COLOR_F codeBorder = UI::Theme::ChromeBorder();
+                codeBorder.a = previewLight ? 0.85f : 0.60f;
+                D2D1_COLOR_F codeHeader = previewPalette.inputBackground;
+                codeHeader.a = previewLight ? 0.90f : 0.88f;
+                D2D1_COLOR_F codeButton = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.04f);
+                D2D1_COLOR_F codeButtonBorder = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f);
+                D2D1_COLOR_F codeButtonText = UI::Theme::MutedText();
+                codeButtonText.a = 0.92f;
+
+                ctx->CreateSolidColorBrush(codeBg, &codeBgBrush);
+                ctx->CreateSolidColorBrush(codeBorder, &codeBorderBrush);
+                ctx->CreateSolidColorBrush(codeHeader, &codeHeaderBrush);
+                ctx->CreateSolidColorBrush(codeButton, &codeButtonBrush);
+                ctx->CreateSolidColorBrush(codeButtonBorder, &codeButtonBorderBrush);
+                ctx->CreateSolidColorBrush(codeButtonText, &codeButtonTextBrush);
+            }
             if (!textBrush)
                 return;
+
+            IDWriteTextFormat *codeButtonFormat = nullptr;
+            dwrite->CreateTextFormat(L"Segoe UI Variable Text", nullptr,
+                                     DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+                                     DWRITE_FONT_STRETCH_NORMAL, 10.0f, L"", &codeButtonFormat);
+            if (codeButtonFormat)
+            {
+                codeButtonFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                codeButtonFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            }
 
             ctx->PushAxisAlignedClip(contentRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
             float y = contentRect.top - state_.scrollOffsetY;
@@ -2572,6 +2729,7 @@ namespace Orion
             float pendingFloatWidth = 0.0f;
             float pendingFloatHeight = 0.0f;
             MarkdownImageAlign pendingFloatAlign = MarkdownImageAlign::Right;
+            previewMarkdownCodeBlocks_.assign(previewMarkdownBlocks_.size(), PreviewMarkdownCodeBlockUi{});
             auto drawSvgTextOverlays = [&](const std::wstring &imagePath, float drawX, float drawY, float drawW, float drawH)
             {
                 if (drawW <= 0.0f || drawH <= 0.0f)
@@ -2781,13 +2939,117 @@ namespace Orion
                         else
                         {
                             ID2D1SolidColorBrush *blockBrush = (blk.headingLevel > 0 && headingBrush) ? headingBrush : textBrush;
-                            ctx->DrawTextLayout(D2D1::Point2F(localLeft, y), previewMarkdownLayouts_[i], blockBrush);
+                            float textX = localLeft;
+                            float textY = y;
                             float blockH = previewMarkdownMetrics_[i].height;
+                            if (blk.isCodeBlock)
+                            {
+                                const DWORD now = GetTickCount();
+                                const bool hoveredCopy = previewHoveredCodeBlockIndex_ == (int)i;
+                                const bool pressedCopy = previewPressedCodeBlockIndex_ == (int)i &&
+                                                         now < previewPressedCodeBlockUntil_;
+                                const bool copiedCopy = previewCopiedCodeBlockIndex_ == (int)i &&
+                                                        now < previewCopiedCodeBlockUntil_;
+                                const float copiedT = copiedCopy
+                                                          ? (float)(previewCopiedCodeBlockUntil_ - now) / 900.0f
+                                                          : 0.0f;
+                                const float pressT = pressedCopy
+                                                         ? (float)(previewPressedCodeBlockUntil_ - now) / 140.0f
+                                                         : 0.0f;
+                                const float copyAnim = (std::clamp)(copiedT, 0.0f, 1.0f);
+                                const float pressAnim = (std::clamp)(pressT, 0.0f, 1.0f);
+                                const float radius = 12.0f;
+                                blockH = previewMarkdownMetrics_[i].height + kCodeHeaderH + kCodePaddingY * 2.0f;
+                                D2D1_RECT_F codeRect = D2D1::RectF(localLeft, y, localRight, y + blockH);
+                                D2D1_RECT_F headerRect = D2D1::RectF(codeRect.left, codeRect.top, codeRect.right, codeRect.top + kCodeHeaderH);
+                                const float buttonW = 60.0f;
+                                D2D1_RECT_F copyRect = D2D1::RectF(
+                                    headerRect.right - buttonW - 12.0f,
+                                    headerRect.top + 4.0f,
+                                    headerRect.right - 12.0f,
+                                    headerRect.bottom - 4.0f);
+                                D2D1_RECT_F copyVisualRect = copyRect;
+                                if (pressedCopy)
+                                {
+                                    copyVisualRect.left += 0.5f;
+                                    copyVisualRect.top += 1.0f;
+                                    copyVisualRect.right -= 0.5f;
+                                    copyVisualRect.bottom -= 0.5f;
+                                }
+
+                                if (codeBgBrush)
+                                    ctx->FillRoundedRectangle(D2D1::RoundedRect(codeRect, radius, radius), codeBgBrush);
+                                if (codeHeaderBrush)
+                                {
+                                    ctx->FillRoundedRectangle(D2D1::RoundedRect(headerRect, radius, radius), codeHeaderBrush);
+                                    D2D1_RECT_F flatHeader = D2D1::RectF(headerRect.left, headerRect.top + radius, headerRect.right, headerRect.bottom);
+                                    ctx->FillRectangle(flatHeader, codeHeaderBrush);
+                                }
+                                if (codeBorderBrush)
+                                    ctx->DrawRoundedRectangle(D2D1::RoundedRect(codeRect, radius, radius), codeBorderBrush, 1.0f);
+                                D2D1_COLOR_F buttonFill = D2D1::ColorF(1.0f, 1.0f, 1.0f,
+                                                                        hoveredCopy ? 0.10f : 0.05f);
+                                D2D1_COLOR_F buttonBorder = D2D1::ColorF(1.0f, 1.0f, 1.0f,
+                                                                          hoveredCopy ? 0.26f : 0.15f);
+                                D2D1_COLOR_F buttonText = UI::Theme::MutedText();
+                                buttonText.a = hoveredCopy ? 1.0f : 0.88f;
+
+                                if (pressAnim > 0.0f)
+                                {
+                                    buttonFill.a += 0.10f * pressAnim;
+                                    buttonBorder.a += 0.20f * pressAnim;
+                                }
+                                if (copyAnim > 0.0f)
+                                {
+                                    D2D1_COLOR_F accent = UI::Theme::Accent();
+                                    D2D1_COLOR_F accentStrong = UI::Theme::AccentStrong();
+                                    D2D1_COLOR_F accentFill = accent;
+                                    accentFill.a = 0.14f + 0.18f * copyAnim;
+                                    D2D1_COLOR_F accentBorder = accentStrong;
+                                    accentBorder.a = 0.34f + 0.30f * copyAnim;
+                                    D2D1_COLOR_F accentText = UI::Theme::PrimaryText();
+                                    accentText.a = 0.94f + 0.06f * copyAnim;
+                                    buttonFill = LerpColor(buttonFill, accentFill, 0.72f);
+                                    buttonBorder = LerpColor(buttonBorder, accentBorder, 0.84f);
+                                    buttonText = LerpColor(buttonText, accentText, 0.88f);
+                                }
+                                if (codeButtonBrush)
+                                    codeButtonBrush->SetColor(buttonFill);
+                                if (codeButtonBorderBrush)
+                                    codeButtonBorderBrush->SetColor(buttonBorder);
+                                if (codeButtonTextBrush)
+                                    codeButtonTextBrush->SetColor(buttonText);
+
+                                if (codeButtonBrush)
+                                    ctx->FillRoundedRectangle(D2D1::RoundedRect(copyVisualRect, 4.0f, 4.0f), codeButtonBrush);
+                                if (codeButtonBorderBrush)
+                                    ctx->DrawRoundedRectangle(D2D1::RoundedRect(copyVisualRect, 4.0f, 4.0f), codeButtonBorderBrush, 1.0f);
+                                if (codeButtonFormat && codeButtonTextBrush)
+                                {
+                                    const wchar_t *buttonLabel = copiedCopy ? L"Copied" : L"Copy";
+                                    const UINT32 buttonLabelLen = copiedCopy ? 6u : 4u;
+                                    ctx->DrawTextW(buttonLabel, buttonLabelLen, codeButtonFormat, copyVisualRect, codeButtonTextBrush);
+                                }
+
+                                textX = localLeft + kCodePaddingX;
+                                textY = y + kCodeHeaderH + kCodePaddingY;
+                                previewMarkdownCodeBlocks_[i].blockRect = codeRect;
+                                previewMarkdownCodeBlocks_[i].copyButtonRect = copyRect;
+                                previewMarkdownCodeBlocks_[i].text = blk.text;
+                                while (!previewMarkdownCodeBlocks_[i].text.empty() &&
+                                       (previewMarkdownCodeBlocks_[i].text.back() == L'\n' ||
+                                        previewMarkdownCodeBlocks_[i].text.back() == L'\r'))
+                                {
+                                    previewMarkdownCodeBlocks_[i].text.pop_back();
+                                }
+                            }
+
+                            ctx->DrawTextLayout(D2D1::Point2F(textX, textY), previewMarkdownLayouts_[i], blockBrush);
                             if (!blk.inlineImages.empty())
                             {
                                 float maxImgH = 0.0f;
                                 float xRight = localRight;
-                                float xLeft = localLeft;
+                                float xLeft = textX;
                                 bool hasText = !Trim(blk.text).empty();
                                 float inlineCursorX = hasText
                                                           ? (xLeft + previewMarkdownMetrics_[i].widthIncludingTrailingWhitespace + 8.0f)
@@ -2830,12 +3092,12 @@ namespace Orion
                                             ix = xRight - iw;
                                         if (ix < xLeft)
                                             ix = xLeft;
-                                        float iy = y;
+                                        float iy = textY;
                                         if (hasText)
                                         {
                                             float lineH = previewMarkdownMetrics_[i].height;
                                             float offsetY = (lineH > ih) ? (lineH - ih) * 0.5f : 0.0f;
-                                            iy = y + offsetY;
+                                            iy = textY + offsetY;
                                         }
                                         D2D1_RECT_F rect = D2D1::RectF(ix, iy, ix + iw, iy + ih);
                                         ctx->DrawBitmap(bmp, rect, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
@@ -3252,6 +3514,20 @@ namespace Orion
                 ruleBrush->Release();
             if (accentBrush)
                 accentBrush->Release();
+            if (codeBgBrush)
+                codeBgBrush->Release();
+            if (codeBorderBrush)
+                codeBorderBrush->Release();
+            if (codeHeaderBrush)
+                codeHeaderBrush->Release();
+            if (codeButtonBrush)
+                codeButtonBrush->Release();
+            if (codeButtonBorderBrush)
+                codeButtonBorderBrush->Release();
+            if (codeButtonTextBrush)
+                codeButtonTextBrush->Release();
+            if (codeButtonFormat)
+                codeButtonFormat->Release();
             if (markdownViewMode_ != MarkdownViewMode::Split)
                 scrollbar_.Draw(ctx);
             return;

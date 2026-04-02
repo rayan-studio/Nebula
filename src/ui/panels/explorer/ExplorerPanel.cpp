@@ -225,6 +225,11 @@ bool ExplorerPanel::IsResizeHandleOnLeft() const
     return GetExplorerLayoutState().placement == ExplorerPlacement::Right;
 }
 
+bool ExplorerPanel::IsDockedRight() const
+{
+    return GetExplorerLayoutState().placement == ExplorerPlacement::Right;
+}
+
 void ExplorerPanel::ClearResizeHover(HWND hwnd)
 {
     // Clear Panel's resize hover state

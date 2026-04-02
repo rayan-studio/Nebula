@@ -104,6 +104,7 @@ namespace Orion
         bool imageFloat = false;
         int headingLevel = 0;
         bool isQuote = false;
+        bool isCodeBlock = false;
         std::vector<std::vector<std::wstring>> tableRows;
         std::vector<MarkdownInlineImage> inlineImages;
     };
@@ -401,6 +402,7 @@ namespace Orion
         void ClearGitSplitDiffView();
         bool IsGitSplitDiffViewEnabled() const { return isGitSplitDiffView_; }
         bool IsPointOnGitSplitDivider(POINT pt) const;
+        bool UpdatePreviewUiAnimation();
 
         // appel?? UNIQUEMENT sur le thread UI
         void ApplyLoadedFile(std::wstring filePath,
@@ -574,6 +576,18 @@ namespace Orion
         std::vector<MarkdownBlock> previewMarkdownBlocks_;
         std::vector<IDWriteTextLayout *> previewMarkdownLayouts_;
         std::vector<DWRITE_TEXT_METRICS> previewMarkdownMetrics_;
+        struct PreviewMarkdownCodeBlockUi
+        {
+            D2D1_RECT_F blockRect = D2D1::RectF(0, 0, 0, 0);
+            D2D1_RECT_F copyButtonRect = D2D1::RectF(0, 0, 0, 0);
+            std::wstring text;
+        };
+        std::vector<PreviewMarkdownCodeBlockUi> previewMarkdownCodeBlocks_;
+        int previewHoveredCodeBlockIndex_ = -1;
+        int previewPressedCodeBlockIndex_ = -1;
+        DWORD previewPressedCodeBlockUntil_ = 0;
+        int previewCopiedCodeBlockIndex_ = -1;
+        DWORD previewCopiedCodeBlockUntil_ = 0;
         IDWriteTextLayout *previewMarkdownLayout_ = nullptr;
         float previewMarkdownLayoutWidth_ = 0.0f;
         float previewMarkdownLayoutHeight_ = 0.0f;
@@ -600,6 +614,7 @@ namespace Orion
 
     public:
         bool IsDefinitionHoverActive() const { return defHoverActive_; }
+        bool IsPointOnPreviewMarkdownCopyButton(POINT pt) const;
 
     private:
         void UpdateKnownFileWriteTime(const std::wstring &filePath);

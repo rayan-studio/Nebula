@@ -32,6 +32,7 @@ public:
     bool IsPointInPanel(POINT clientPoint) const override;
     bool IsPointInResizeZone(POINT clientPoint) const override;
     void ClearResizeHover(HWND hwnd) override;
+    bool IsDockedRight() const override;
 
 protected:
     bool IsResizeHandleOnLeft() const override;

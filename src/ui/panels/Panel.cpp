@@ -99,7 +99,7 @@ void Panel::DrawRightBorder(ID2D1RenderTarget *ctx)
     if (brush)
     {
         float resizeEdgeX = IsResizeHandleOnLeft() ? state_.leftEdge : state_.rightEdge;
-        float bx = std::round(resizeEdgeX) - 0.5f;
+        float bx = std::round(IsResizeHandleOnLeft() ? (resizeEdgeX + 1.0f) : resizeEdgeX) - 0.5f;
         D2D1_POINT_2F p1 = D2D1::Point2F(bx, state_.topEdge);
         D2D1_POINT_2F p2 = D2D1::Point2F(bx, state_.bottomEdge);
 
@@ -108,6 +108,21 @@ void Panel::DrawRightBorder(ID2D1RenderTarget *ctx)
 
         float thickness = (state_.isHoveringResizeZone || state_.isResizing) ? 2.0f : 1.0f;
         ctx->DrawLine(p1, p2, brush, thickness);
+
+        if (IsResizeHandleOnLeft())
+        {
+            D2D1_COLOR_F glowColor = borderColor;
+            glowColor.a *= (state_.isHoveringResizeZone || state_.isResizing) ? 0.28f : 0.12f;
+
+            ID2D1SolidColorBrush *glowBrush = nullptr;
+            ctx->CreateSolidColorBrush(glowColor, &glowBrush);
+            if (glowBrush)
+            {
+                D2D1_RECT_F handleRect = D2D1::RectF(bx, state_.topEdge, bx + 2.0f, state_.bottomEdge);
+                ctx->FillRectangle(handleRect, glowBrush);
+                glowBrush->Release();
+            }
+        }
 
         ctx->SetAntialiasMode(oldAA);
         brush->Release();

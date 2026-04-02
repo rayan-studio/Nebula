@@ -109,7 +109,8 @@ public:
     bool InstallLibraryFromGitUrl(HWND hwnd,
                                   const std::wstring &gitUrl,
                                   const std::wstring &displayName,
-                                  std::wstring *outError = nullptr);
+                                  std::wstring *outError = nullptr,
+                                  std::wstring *outDetails = nullptr);
     bool UninstallLibraryFromGitUrl(HWND hwnd,
                                     const std::wstring &gitUrl,
                                     const std::wstring &displayName,

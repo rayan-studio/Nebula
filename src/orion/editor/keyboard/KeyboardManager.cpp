@@ -5,6 +5,7 @@
 
 #include "core/explorer/Explorer.h"
 #include "ui/panels/PanelManager.h"
+#include "ui/panels/claude/ClaudePanel.h"
 #include "ui/panels/git/GitPanel.h"
 #include "ui/panels/MarketplacePanel.h"
 #include "ui/panels/search/SearchPanel.h"
@@ -781,6 +782,18 @@ bool KeyboardManager::RouteKeyDownToFocused(WPARAM wParam)
         }
     }
 
+    // Claude panel focused input
+    if (GetPanelManager().IsPanelActive(PanelId::Claude))
+    {
+        ClaudePanel *claudePanel = GetPanelManager().GetPanelAs<ClaudePanel>(PanelId::Claude);
+        if (claudePanel && claudePanel->IsVisible() && claudePanel->IsInputFocused())
+        {
+            claudePanel->OnKeyDown(wParam);
+            InvalidateRect(window_->GetHwnd(), nullptr, FALSE);
+            return true;
+        }
+    }
+
     // Terminal focused
     {
         TerminalPanel &terminal = GetTerminalPanel();
@@ -853,6 +866,18 @@ bool KeyboardManager::RouteCharToFocused(WPARAM wParam)
         if (gitPanel && gitPanel->IsVisible() && gitPanel->IsInputFocused())
         {
             gitPanel->OnChar((wchar_t)wParam);
+            InvalidateRect(window_->GetHwnd(), nullptr, FALSE);
+            return true;
+        }
+    }
+
+    // Claude panel focused input
+    if (GetPanelManager().IsPanelActive(PanelId::Claude))
+    {
+        ClaudePanel *claudePanel = GetPanelManager().GetPanelAs<ClaudePanel>(PanelId::Claude);
+        if (claudePanel && claudePanel->IsVisible() && claudePanel->IsInputFocused())
+        {
+            claudePanel->OnChar((wchar_t)wParam);
             InvalidateRect(window_->GetHwnd(), nullptr, FALSE);
             return true;
         }

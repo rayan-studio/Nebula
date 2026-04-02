@@ -58,13 +58,17 @@ private:
                         const D2D1_RECT_F& rect, float rating, int downloads);
     void DrawDescription(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
                         const D2D1_RECT_F& rect, const std::wstring& desc);
+    void DrawCardStatus(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
+                       const LibraryInfo& lib, float x, float y, float width);
     void DrawTags(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
                  const D2D1_RECT_F& rect, const LibraryInfo* lib);
     void DrawCardCategory(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
                          const std::wstring& category, D2D1_COLOR_F color,
                          float x, float y);
     void DrawInstallButton(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
-                          const D2D1_RECT_F& bounds, bool hover);
+                          const D2D1_RECT_F& bounds, bool hover,
+                          const std::wstring& label = L"Install",
+                          bool enabled = true);
     void DrawInstalledButton(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,
                             const D2D1_RECT_F& bounds, bool hover);
     void DrawButton(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite,

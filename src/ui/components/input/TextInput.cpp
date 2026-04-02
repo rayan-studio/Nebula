@@ -111,11 +111,21 @@ void TextInput::DrawStandardStyle(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite
     ctx->DrawRoundedRectangle(D2D1::RoundedRect(strokeRect, strokeRadius, strokeRadius), borderBrush, 1.0f);
 
     float iconWidth = icon_.empty() ? 0.0f : style_.iconPadding;
-    float textLeft = snappedRect.left + style_.padding + iconWidth;
-    float textRight = snappedRect.right - style_.padding;
-    float topInset = style_.multiline ? style_.padding * 0.55f : 0.0f;
-    float bottomInset = style_.multiline ? style_.padding * 0.45f : 0.0f;
-    D2D1_RECT_F textClip = D2D1::RectF(textLeft, snappedRect.top + topInset, textRight, snappedRect.bottom - bottomInset);
+    
+    // Design text layout to fit within the input area, accounting for padding and optional icon
+    float textLeft = snappedRect.left + style_.paddingLeft + iconWidth; //  bord gauche du champ + padding + place de l’icône
+    float textRight = snappedRect.right - style_.paddingRight; // bord droit du champ - padding
+
+
+    const float verticalPadding = style_.padding;
+    float topInset = style_.multiline ? verticalPadding * 0.55f : 0.0f;
+    float bottomInset = style_.multiline ? verticalPadding * 0.45f : 0.0f;
+    
+    D2D1_RECT_F textClip = D2D1::RectF(textLeft
+                                        , snappedRect.top + topInset
+                                        , textRight
+                                        , snappedRect.bottom - bottomInset);
+    
     if (textClip.bottom < textClip.top)
         textClip.bottom = textClip.top;
 
@@ -285,7 +295,7 @@ int TextInput::GetCharIndexAtPosition(IDWriteFactory* dwrite, float x, float y)
     
     IDWriteTextLayout* layout = nullptr;
     float iconWidth = icon_.empty() ? 0.0f : style_.iconPadding;
-    float width = (std::max)(1.0f, (rect_.right - rect_.left) - (style_.padding * 2.0f) - iconWidth);
+    float width = (std::max)(1.0f, (rect_.right - rect_.left) - style_.paddingLeft - style_.paddingRight - iconWidth);
     float height = (std::max)(1.0f, (rect_.bottom - rect_.top) - (style_.multiline ? style_.padding : 0.0f));
     dwrite->CreateTextLayout(text_.c_str(), (UINT32)text_.length(), tf,
                              style_.multiline ? width : 10000.0f,
@@ -317,7 +327,7 @@ bool TextInput::OnMouseMove(HWND hwnd, POINT pt)
         return false;
 
     float iconWidth = icon_.empty() ? 0.0f : style_.iconPadding;
-    float textLeft = rect_.left + style_.padding + iconWidth;
+    float textLeft = rect_.left + style_.paddingLeft + iconWidth;
     float textTop = rect_.top + (style_.multiline ? style_.padding * 0.55f : 0.0f);
     float x = pt.x - textLeft + textOffsetX_;
     float y = pt.y - textTop;
@@ -350,7 +360,7 @@ bool TextInput::OnLeftButtonDown(HWND hwnd, POINT pt)
     cursorVisible_ = true;
     
     float iconWidth = icon_.empty() ? 0.0f : style_.iconPadding;
-    float textLeft = rect_.left + style_.padding + iconWidth;
+    float textLeft = rect_.left + style_.paddingLeft + iconWidth;
     float textTop = rect_.top + (style_.multiline ? style_.padding * 0.55f : 0.0f);
     float clickX = pt.x - textLeft + textOffsetX_;
     float clickY = pt.y - textTop;

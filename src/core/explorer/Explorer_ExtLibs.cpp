@@ -22,6 +22,8 @@ namespace fs = std::filesystem;
 
 static std::string ToUtf8(const std::wstring &value);
 static std::wstring Utf8ToWide(const char *value);
+static std::wstring NormalizeSlashes(std::wstring value);
+static bool IsPathInside(const fs::path &parent, const fs::path &child);
 
 // ---------------------------------------------------------------------------
 // Helper: detect the best include directory for a library.
@@ -37,6 +39,91 @@ static std::wstring DetectIncludeDir(const std::wstring &libAbsPath,
     }
     // No include/ subdir — headers live at the library root (imgui, stb, etc.)
     return libRelPath;
+}
+
+static std::wstring StripCmakeQuotes(std::wstring value)
+{
+    if (value.size() >= 2)
+    {
+        const wchar_t first = value.front();
+        const wchar_t last = value.back();
+        if ((first == L'"' && last == L'"') || (first == L'\'' && last == L'\''))
+            value = value.substr(1, value.size() - 2);
+    }
+    return value;
+}
+
+static bool StartsWithInsensitive(const std::wstring &value, const std::wstring &prefix)
+{
+    if (value.size() < prefix.size())
+        return false;
+    for (size_t i = 0; i < prefix.size(); ++i)
+    {
+        if (towlower(value[i]) != towlower(prefix[i]))
+            return false;
+    }
+    return true;
+}
+
+static std::wstring DetectIncludeDirFromCmakeInfo(const CmakeProjectInfo &libInfo,
+                                                  const std::wstring &libAbsPath,
+                                                  const std::wstring &libRelPath)
+{
+    auto makeRelativeInclude = [&](const std::wstring &suffix) -> std::wstring
+    {
+        std::wstring normalized = NormalizeSlashes(suffix);
+        while (!normalized.empty() && normalized.front() == L'/')
+            normalized.erase(normalized.begin());
+        if (normalized.empty() || normalized == L".")
+            return libRelPath;
+        return libRelPath + L"/" + normalized;
+    };
+
+    for (const std::wstring &rawDir : libInfo.includeDirs)
+    {
+        std::wstring token = NormalizeSlashes(StripCmakeQuotes(rawDir));
+        if (token.empty())
+            continue;
+
+        if (token == L"${CMAKE_CURRENT_SOURCE_DIR}" || token == L"${PROJECT_SOURCE_DIR}" || token == L".")
+            return libRelPath;
+
+        if (StartsWithInsensitive(token, L"${CMAKE_CURRENT_SOURCE_DIR}/"))
+        {
+            std::wstring suffix = token.substr(std::wstring(L"${CMAKE_CURRENT_SOURCE_DIR}/").size());
+            if (fs::is_directory(fs::path(libAbsPath) / fs::path(suffix)))
+                return makeRelativeInclude(suffix);
+            continue;
+        }
+
+        if (StartsWithInsensitive(token, L"${PROJECT_SOURCE_DIR}/"))
+        {
+            std::wstring suffix = token.substr(std::wstring(L"${PROJECT_SOURCE_DIR}/").size());
+            if (fs::is_directory(fs::path(libAbsPath) / fs::path(suffix)))
+                return makeRelativeInclude(suffix);
+            continue;
+        }
+
+        if (token.find(L"${") != std::wstring::npos)
+            continue;
+
+        fs::path candidate(token);
+        std::error_code ec;
+        if (candidate.is_relative())
+        {
+            fs::path absolute = fs::path(libAbsPath) / candidate;
+            if (fs::is_directory(absolute, ec) && !ec)
+                return makeRelativeInclude(candidate.wstring());
+        }
+        else if (IsPathInside(fs::path(libAbsPath), candidate) && fs::is_directory(candidate, ec) && !ec)
+        {
+            fs::path rel = fs::relative(candidate, libAbsPath, ec);
+            if (!ec)
+                return makeRelativeInclude(rel.wstring());
+        }
+    }
+
+    return DetectIncludeDir(libAbsPath, libRelPath);
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +414,33 @@ static bool EnsureLibraryCmakeMinimumVersionRecursively(const std::wstring &libr
     return true;
 }
 
+static bool WaitForProcessResponsive(HANDLE processHandle)
+{
+    if (!processHandle)
+        return false;
+
+    while (true)
+    {
+        DWORD wait = MsgWaitForMultipleObjects(1, &processHandle, FALSE, 50, QS_ALLINPUT);
+        if (wait == WAIT_OBJECT_0)
+            return true;
+
+        if (wait == WAIT_OBJECT_0 + 1)
+        {
+            MSG msg;
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+            {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            continue;
+        }
+
+        if (wait == WAIT_FAILED)
+            return false;
+    }
+}
+
 static bool EnsureGitSubmodulesInitialized(const std::wstring &repoPath,
                                            std::wstring *outError = nullptr)
 {
@@ -360,7 +474,12 @@ static bool EnsureGitSubmodulesInitialized(const std::wstring &repoPath,
         return fail(L"Failed to run git submodule update for " + repoPath);
     }
 
-    WaitForSingleObject(pi.hProcess, INFINITE);
+    if (!WaitForProcessResponsive(pi.hProcess))
+    {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return fail(L"git submodule update wait failed in " + repoPath);
+    }
     DWORD exitCode = 1;
     GetExitCodeProcess(pi.hProcess, &exitCode);
     CloseHandle(pi.hThread);
@@ -828,7 +947,7 @@ void ExplorerManager::AddLibraryDialog(HWND hwnd)
                 } catch (...) { subdirRel = libFolder; }
 
                 // Detect include directory (fallback to lib root if no include/ subdir)
-                std::wstring includeRel = DetectIncludeDir(libFolder, subdirRel);
+                std::wstring includeRel = DetectIncludeDirFromCmakeInfo(libInfo, libFolder, subdirRel);
 
                 // Locate project CMakeLists.txt
                 std::wstring projCmake = state_.rootPath + L"\\CMakeLists.txt";
@@ -889,7 +1008,7 @@ void ExplorerManager::CloneLibraryDialog(HWND hwnd)
     } catch (...) { subdirRel = clonedPath; }
 
     // Detect include directory (fallback to lib root if no include/ subdir)
-    std::wstring includeRel = DetectIncludeDir(clonedPath, subdirRel);
+    std::wstring includeRel = DetectIncludeDirFromCmakeInfo(libInfo, clonedPath, subdirRel);
 
     // Locate project CMakeLists.txt
     std::wstring projCmake = state_.rootPath + L"\\CMakeLists.txt";
@@ -914,8 +1033,12 @@ void ExplorerManager::CloneLibraryDialog(HWND hwnd)
 bool ExplorerManager::InstallLibraryFromGitUrl(HWND hwnd,
                                                const std::wstring &gitUrl,
                                                const std::wstring &displayName,
-                                               std::wstring *outError)
+                                               std::wstring *outError,
+                                               std::wstring *outDetails)
 {
+    if (outDetails)
+        outDetails->clear();
+
     auto fail = [&](const std::wstring &msg) -> bool
     {
         if (outError)
@@ -990,11 +1113,13 @@ bool ExplorerManager::InstallLibraryFromGitUrl(HWND hwnd,
     }
 
     std::wstring fallbackTarget;
+    bool generatedFallbackCmake = false;
     if (!fs::exists(libCmake))
     {
         if (EnsureLibraryCmakeFallback(destPath, repoName, fallbackTarget))
         {
             libCmake = destPath + L"\\CMakeLists.txt";
+            generatedFallbackCmake = true;
             Logger::Instance().Log(L"InstallLibraryFromGitUrl: generated fallback CMakeLists for " + repoName);
         }
     }
@@ -1017,7 +1142,7 @@ bool ExplorerManager::InstallLibraryFromGitUrl(HWND hwnd,
         subdirRel = L"external/" + repoName;
     }
     subdirRel = NormalizeSlashes(subdirRel);
-    std::wstring includeRel = DetectIncludeDir(destPath, subdirRel);
+    std::wstring includeRel = DetectIncludeDirFromCmakeInfo(libInfo, destPath, subdirRel);
 
     ParseExternalLibs();
 
@@ -1048,6 +1173,23 @@ bool ExplorerManager::InstallLibraryFromGitUrl(HWND hwnd,
     TriggerCmakeReconfigure(state_.rootPath);
     ParseExternalLibs();
     InvalidateRect(hwnd, nullptr, FALSE);
+
+    if (outDetails)
+    {
+        if (libTarget.empty())
+        {
+            *outDetails = L"Installed in " + subdirRel + L", but no clear CMake target was detected. Manual integration may still be required.";
+        }
+        else
+        {
+            *outDetails = L"Installed in " + subdirRel + L". Target: " + libTarget + L".";
+            if (!includeRel.empty())
+                *outDetails += L" Include dir: " + includeRel + L".";
+            if (generatedFallbackCmake)
+                *outDetails += L" Nebula generated a fallback CMakeLists.txt for this library.";
+        }
+    }
+
     Logger::Instance().Log(L"InstallLibraryFromGitUrl: installed " + (displayName.empty() ? repoName : displayName));
     return true;
 }

@@ -143,19 +143,13 @@ void Skia::Render(const std::wstring &text, HWND hwnd, int titlebarHoveredButton
         int footerLogicalH = 28;
         int footerH = win32_dpi_scale(footerLogicalH, dpi);
         
-        // Get active panel width from PanelManager
+        // Reserve space for one visible panel per side.
         float panelLeftWidth = 0.0f;
         float panelRightWidth = 0.0f;
-        Panel* activePanel = GetPanelManager().GetActivePanel();
-        if (activePanel && activePanel->IsVisible()) {
-            float activeWidth = static_cast<float>(activePanel->GetState().physicalWidth);
-            if (activePanel->GetId() == PanelId::Explorer &&
-                GetExplorerLayoutState().placement == ExplorerPlacement::Right) {
-                panelRightWidth = activeWidth;
-            } else {
-                panelLeftWidth = activeWidth;
-            }
-        }
+        if (Panel* leftPanel = GetPanelManager().GetVisiblePanel(false))
+            panelLeftWidth = static_cast<float>(leftPanel->GetState().physicalWidth);
+        if (Panel* rightPanel = GetPanelManager().GetVisiblePanel(true))
+            panelRightWidth = static_cast<float>(rightPanel->GetState().physicalWidth);
 
         D2D1_RECT_F centralShellRect = D2D1::RectF(
             sidebarWidth,

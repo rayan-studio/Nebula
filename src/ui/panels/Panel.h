@@ -14,6 +14,7 @@ enum class PanelId {
     Explorer,
     Search,
     Git,
+    Claude,
     CodeMap,
     Settings,
     Marketplace,
@@ -107,6 +108,7 @@ public:
     virtual bool IsVisible() const { return visible_; }
     virtual void SetVisible(bool v) { visible_ = v; }
     virtual void ToggleVisible() { visible_ = !visible_; }
+    virtual bool IsDockedRight() const { return false; }
     
     // Active state
     bool IsActive() const { return active_; }

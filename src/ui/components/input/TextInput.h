@@ -76,7 +76,12 @@ public:
         float cornerRadius = 6.0f;
         float fontSize = 13.5f;
         float iconSize = 14.0f;
+        
+        // Paddin input layout
+        float paddingLeft = 10.0f;
+        float paddingRight = 10.0f;
         float padding = 10.0f;
+
         float iconPadding = 28.0f; // Space for icon on left
         bool multiline = false;
     };

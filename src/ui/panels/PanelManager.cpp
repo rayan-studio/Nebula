@@ -14,6 +14,9 @@ void PanelManager::RegisterPanel(std::unique_ptr<Panel> panel)
     
     PanelId id = panel->GetId();
     Panel* rawPtr = panel.get();
+
+    rawPtr->SetActive(false);
+    rawPtr->SetVisible(false);
     
     panels_[id] = std::move(panel);
     panelList_.push_back(rawPtr);
@@ -61,11 +64,18 @@ void PanelManager::SetActivePanel(PanelId id)
 {
     Panel* panel = GetPanel(id);
     if (!panel) return;
-    
-    if (activePanel_ && activePanel_ != panel)
+
+    const bool dockedRight = panel->IsDockedRight();
+    for (Panel* candidate : panelList_)
     {
-        activePanel_->SetActive(false);
-        activePanel_->SetVisible(false);
+        if (!candidate || candidate == panel)
+            continue;
+
+        if (candidate->IsDockedRight() == dockedRight)
+        {
+            candidate->SetActive(false);
+            candidate->SetVisible(false);
+        }
     }
     
     activePanel_ = panel;
@@ -73,22 +83,85 @@ void PanelManager::SetActivePanel(PanelId id)
     activePanel_->SetVisible(true);
 }
 
+Panel* PanelManager::GetActivePanel()
+{
+    if (activePanel_ && activePanel_->IsVisible())
+        return activePanel_;
+
+    if (Panel* right = GetVisiblePanel(true))
+        return right;
+    if (Panel* left = GetVisiblePanel(false))
+        return left;
+
+    return activePanel_;
+}
+
 PanelId PanelManager::GetActivePanelId() const
 {
-    if (activePanel_)
+    if (activePanel_ && activePanel_->IsVisible())
         return activePanel_->GetId();
+
+    if (Panel* right = GetVisiblePanel(true))
+        return right->GetId();
+    if (Panel* left = GetVisiblePanel(false))
+        return left->GetId();
+
     return PanelId::Explorer;
 }
 
 bool PanelManager::IsPanelActive(PanelId id) const
 {
-    return activePanel_ && activePanel_->GetId() == id;
+    Panel* panel = const_cast<PanelManager*>(this)->GetPanel(id);
+    return panel && panel->IsVisible() && panel->IsActive();
+}
+
+Panel* PanelManager::GetVisiblePanel(bool dockedRight) const
+{
+    for (Panel* panel : panelList_)
+    {
+        if (panel && panel->IsVisible() && panel->IsDockedRight() == dockedRight)
+            return panel;
+    }
+    return nullptr;
+}
+
+Panel* PanelManager::GetPanelAtPoint(POINT clientPoint, bool includeResizeZone) const
+{
+    if (includeResizeZone)
+    {
+        for (Panel* panel : panelList_)
+        {
+            if (panel && panel->IsVisible() && panel->IsPointInResizeZone(clientPoint))
+                return panel;
+        }
+    }
+
+    for (Panel* panel : panelList_)
+    {
+        if (panel && panel->IsVisible() && panel->IsPointInPanel(clientPoint))
+            return panel;
+    }
+
+    return nullptr;
+}
+
+Panel* PanelManager::GetResizingPanel() const
+{
+    for (Panel* panel : panelList_)
+    {
+        if (panel && panel->IsVisible() && panel->IsResizing())
+            return panel;
+    }
+    return nullptr;
 }
 
 void PanelManager::DrawActivePanel(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND hwnd)
 {
-    if (activePanel_ && activePanel_->IsVisible())
-        activePanel_->Draw(ctx, dwrite, hwnd);
+    for (Panel* panel : panelList_)
+    {
+        if (panel && panel->IsVisible())
+            panel->Draw(ctx, dwrite, hwnd);
+    }
 }
 
 void PanelManager::UpdateLayout(HWND hwnd)
@@ -99,55 +172,59 @@ void PanelManager::UpdateLayout(HWND hwnd)
 
 void PanelManager::OnMouseMove(HWND hwnd, POINT clientPoint)
 {
-    if (activePanel_ && activePanel_->IsVisible())
-        activePanel_->OnMouseMove(hwnd, clientPoint);
+    if (Panel* panel = GetResizingPanel())
+    {
+        panel->OnMouseMove(hwnd, clientPoint);
+        return;
+    }
+
+    if (Panel* panel = GetPanelAtPoint(clientPoint))
+    {
+        activePanel_ = panel;
+        panel->OnMouseMove(hwnd, clientPoint);
+        return;
+    }
+
+    if (Panel* panel = GetActivePanel())
+        panel->OnMouseMove(hwnd, clientPoint);
 }
 
 void PanelManager::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
 {
-    if (activePanel_ && activePanel_->IsVisible() &&
-        (activePanel_->IsPointInPanel(clientPoint) || activePanel_->IsPointInResizeZone(clientPoint)))
+    if (Panel* panel = GetPanelAtPoint(clientPoint))
     {
-        activePanel_->OnLeftButtonDown(hwnd, clientPoint);
+        activePanel_ = panel;
+        panel->SetActive(true);
+        panel->OnLeftButtonDown(hwnd, clientPoint);
         return;
-    }
-
-    // Only switch panels if the active one is hidden and another visible panel was clicked
-    for (Panel* p : panelList_)
-    {
-        if (p->IsVisible() && p->IsPointInPanel(clientPoint))
-        {
-            if (activePanel_ && activePanel_ != p)
-            {
-                activePanel_->SetActive(false);
-                activePanel_->SetVisible(false);
-            }
-            activePanel_ = p;
-            activePanel_->SetActive(true);
-            activePanel_->SetVisible(true);
-            InvalidateRect(hwnd, nullptr, FALSE);
-            activePanel_->OnLeftButtonDown(hwnd, clientPoint);
-            return;
-        }
     }
 }
 
 void PanelManager::OnLeftButtonUp(HWND hwnd)
 {
-    if (activePanel_ && activePanel_->IsVisible())
-        activePanel_->OnLeftButtonUp(hwnd);
+    if (Panel* panel = GetResizingPanel())
+    {
+        panel->OnLeftButtonUp(hwnd);
+        return;
+    }
+
+    if (Panel* panel = GetActivePanel())
+        panel->OnLeftButtonUp(hwnd);
 }
 
 void PanelManager::OnRightButtonUp(HWND hwnd, POINT clientPoint)
 {
-    if (activePanel_ && activePanel_->IsVisible())
-        activePanel_->OnRightButtonUp(hwnd, clientPoint);
+    if (Panel* panel = GetPanelAtPoint(clientPoint, false))
+    {
+        activePanel_ = panel;
+        panel->OnRightButtonUp(hwnd, clientPoint);
+    }
 }
 
 void PanelManager::OnMouseWheel(HWND hwnd, int delta)
 {
-    if (activePanel_ && activePanel_->IsVisible())
-        activePanel_->OnMouseWheel(hwnd, delta);
+    if (Panel* panel = GetActivePanel())
+        panel->OnMouseWheel(hwnd, delta);
 }
 
 void PanelManager::OnChar(wchar_t ch)
@@ -174,8 +251,11 @@ bool PanelManager::IsAnyPanelResizing() const
 
 void PanelManager::ClearResizeHover(HWND hwnd)
 {
-    if (activePanel_ && activePanel_->IsVisible())
-        activePanel_->ClearResizeHover(hwnd);
+    for (Panel* panel : panelList_)
+    {
+        if (panel && panel->IsVisible())
+            panel->ClearResizeHover(hwnd);
+    }
 }
 
 std::vector<PanelConfig> PanelManager::GetPanelConfigs() const

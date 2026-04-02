@@ -30,11 +30,14 @@ public:
     
     // Active panel management
     void SetActivePanel(PanelId id);
-    Panel* GetActivePanel() { return activePanel_; }
+    Panel* GetActivePanel();
     PanelId GetActivePanelId() const;
     bool IsPanelActive(PanelId id) const;
+    Panel* GetVisiblePanel(bool dockedRight) const;
+    Panel* GetPanelAtPoint(POINT clientPoint, bool includeResizeZone = true) const;
+    Panel* GetResizingPanel() const;
     
-    // Render the active panel
+    // Render visible panels
     void DrawActivePanel(ID2D1RenderTarget* ctx, IDWriteFactory* dwrite, HWND hwnd);
     
     // Update layout for all panels

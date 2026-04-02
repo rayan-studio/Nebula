@@ -79,7 +79,7 @@ private:
     void ProcessAudioData(const int16_t* samples, int numSamples);
     
     // State
-    bool visible_ = true;
+    bool visible_ = false;
     bool listening_ = false;
     bool buttonHovered_ = false;
     bool buttonPressed_ = false;

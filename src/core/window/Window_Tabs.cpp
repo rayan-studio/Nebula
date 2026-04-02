@@ -3,6 +3,7 @@
 #include "orion/caret/Caret.h"
 #include "lsp/LspManager.h"
 #include "core/explorer/Explorer.h"
+#include "ui/screens/MarketplaceExtensionTab.h"
 #include "ui/panels/git/GitDiffDecorations.h"
 #include <filesystem>
 #include <algorithm>
@@ -164,6 +165,9 @@ void Window::OpenMarketplaceLibraryTab(const std::wstring &libraryName)
 {
     if (libraryName.empty())
         return;
+
+    if (marketplaceTab_)
+        marketplaceTab_->SetLibraryName(libraryName);
 
     const std::wstring tabPath = kMarketplaceTabPrefix + libraryName;
     int existing = tabBar_.FindTabIndexByFilePath(tabPath);

@@ -9,6 +9,13 @@
 
 struct LibraryInfo
 {
+    enum class InstallState
+    {
+        Idle,
+        Installing,
+        Error,
+    };
+
     int id = 0;
     std::wstring name;
     std::wstring description;
@@ -27,6 +34,8 @@ struct LibraryInfo
     int stars = 0;
     std::vector<std::wstring> tags;
     bool isInstalled = false;
+    InstallState installState = InstallState::Idle;
+    std::wstring installMessage;
 };
 
 class LibraryDatabase
@@ -39,6 +48,9 @@ public:
 
     bool IsInstalled(const std::wstring& name) const;
     void SetInstalled(const std::wstring& name, bool installed);
+    void SetInstallStatus(const std::wstring& name,
+                          LibraryInfo::InstallState state,
+                          const std::wstring& message = L"");
     void RefreshInstallationStatus(const std::wstring& projectRoot = L"");
 
     void RequestLibrariesAsync(const std::wstring& searchQuery, HWND hwnd);
