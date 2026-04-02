@@ -11,6 +11,15 @@
 class ClaudeCliBridge
 {
 public:
+    struct ToolEvent
+    {
+        std::wstring toolId;
+        std::wstring toolName;
+        std::wstring title;
+        std::wstring details;
+        bool success = true;
+    };
+
     enum class AuthState
     {
         NotConfigured,
@@ -42,6 +51,7 @@ public:
     std::function<void(AuthState, const std::wstring &)> onAuthStatus;
     std::function<void()> onRequestStarted;
     std::function<void(const std::wstring &)> onTextDelta;
+    std::function<void(const ToolEvent &)> onToolEvent;
     std::function<void(const std::wstring &, const std::wstring &)> onRequestFinished;
     std::function<void(const std::wstring &)> onError;
 

@@ -2230,6 +2230,324 @@ namespace Orion
         return markdownViewMode_ == MarkdownViewMode::Preview;
     }
 
+    float Editor::MeasureMarkdownPreviewHeight(IDWriteFactory *dwrite, float width)
+    {
+        if (!dwrite || previewMode_ != PreviewMode::Markdown)
+            return 0.0f;
+
+        float availableW = (std::max)(0.0f, width - 48.0f);
+        if (availableW < 10.0f)
+            return 54.0f;
+
+        const float maxReadableWidth = 980.0f;
+        if (availableW > maxReadableWidth)
+            availableW = maxReadableWidth;
+
+        const float kFloatGap = 10.0f;
+        const float kImageGap = 16.0f;
+        const float kRuleGap = 18.0f;
+        const float kTableGap = 16.0f;
+        const float kQuotePaddingY = 8.0f;
+        const float kHeadingRuleExtra = 8.0f;
+        const float kCodePaddingY = 12.0f;
+        const float kCodeHeaderH = 28.0f;
+        auto TextBlockGap = [](const MarkdownBlock &blk) -> float
+        {
+            if (blk.isCodeBlock)
+                return 16.0f;
+            if (blk.isQuote)
+                return 16.0f;
+            if (blk.headingLevel == 1)
+                return 18.0f;
+            if (blk.headingLevel == 2)
+                return 14.0f;
+            return 12.0f;
+        };
+
+        if (previewMarkdownBlocks_.empty())
+            BuildMarkdownBlocks(state_.lines, state_.filePath, previewMarkdownBlocks_);
+
+        const bool rebuildLayouts = previewMarkdownLayouts_.size() != previewMarkdownBlocks_.size() ||
+                                    std::fabs(previewMarkdownLayoutWidth_ - availableW) > 1.0f;
+        if (rebuildLayouts)
+        {
+            for (auto *layout : previewMarkdownLayouts_)
+            {
+                if (layout)
+                    layout->Release();
+            }
+            previewMarkdownLayouts_.assign(previewMarkdownBlocks_.size(), nullptr);
+            previewMarkdownMetrics_.assign(previewMarkdownBlocks_.size(), DWRITE_TEXT_METRICS{});
+
+            for (size_t i = 0; i < previewMarkdownBlocks_.size(); ++i)
+            {
+                const auto &blk = previewMarkdownBlocks_[i];
+                if (blk.type != MarkdownBlock::Type::Text)
+                    continue;
+
+                IDWriteTextFormat *format = nullptr;
+                if (SUCCEEDED(dwrite->CreateTextFormat(
+                        L"Segoe UI",
+                        nullptr,
+                        DWRITE_FONT_WEIGHT_NORMAL,
+                        DWRITE_FONT_STYLE_NORMAL,
+                        DWRITE_FONT_STRETCH_NORMAL,
+                        15.0f,
+                        L"en-us",
+                        &format)))
+                {
+                    format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                    format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                    format->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+
+                    IDWriteTextLayout *layout = nullptr;
+                    dwrite->CreateTextLayout(
+                        blk.text.c_str(),
+                        (UINT32)blk.text.size(),
+                        format,
+                        availableW,
+                        100000.0f,
+                        &layout);
+
+                    if (layout)
+                    {
+                        for (const auto &span : blk.spans)
+                        {
+                            DWRITE_TEXT_RANGE range = {span.start, span.length};
+                            layout->SetFontSize(span.fontSize, range);
+                            layout->SetFontWeight(span.weight, range);
+                            layout->SetFontStyle(span.style, range);
+                            if (span.code)
+                                layout->SetFontFamilyName(L"Consolas", range);
+                        }
+                        DWRITE_TEXT_METRICS metrics = {};
+                        layout->GetMetrics(&metrics);
+                        previewMarkdownLayouts_[i] = layout;
+                        previewMarkdownMetrics_[i] = metrics;
+                    }
+
+                    format->Release();
+                }
+            }
+
+            previewMarkdownLayoutWidth_ = availableW;
+            previewMarkdownLayoutHeight_ = 0.0f;
+        }
+
+        auto estimateImageSize = [](const MarkdownBlock &blk, float widthLimit, float &outW, float &outH)
+        {
+            outW = blk.imageWidth > 0.0f ? blk.imageWidth : 240.0f;
+            outH = blk.imageHeight > 0.0f ? blk.imageHeight : 140.0f;
+            if (outW > widthLimit && widthLimit > 0.0f)
+            {
+                float scale = widthLimit / outW;
+                outW *= scale;
+                outH *= scale;
+            }
+        };
+
+        float totalHeight = 0.0f;
+        bool measurePendingFloat = false;
+        float measurePendingFloatWidth = 0.0f;
+        float measurePendingFloatHeight = 0.0f;
+
+        for (size_t i = 0; i < previewMarkdownBlocks_.size(); ++i)
+        {
+            const auto &blk = previewMarkdownBlocks_[i];
+            if (blk.type == MarkdownBlock::Type::Image)
+            {
+                float drawW = 0.0f;
+                float drawH = 0.0f;
+                estimateImageSize(blk, availableW, drawW, drawH);
+
+                if (blk.imageFloat &&
+                    (blk.imageAlign == MarkdownImageAlign::Right || blk.imageAlign == MarkdownImageAlign::Left))
+                {
+                    measurePendingFloat = true;
+                    measurePendingFloatWidth = drawW;
+                    measurePendingFloatHeight = drawH;
+                    continue;
+                }
+
+                if (measurePendingFloat)
+                {
+                    totalHeight += measurePendingFloatHeight + kFloatGap;
+                    measurePendingFloat = false;
+                    measurePendingFloatWidth = 0.0f;
+                    measurePendingFloatHeight = 0.0f;
+                }
+
+                totalHeight += drawH + kImageGap;
+                continue;
+            }
+
+            float blockAvailW = availableW;
+            if (measurePendingFloat)
+                blockAvailW = (std::max)(48.0f, availableW - (measurePendingFloatWidth + 12.0f));
+
+            if (blk.type == MarkdownBlock::Type::Text)
+            {
+                float h = previewMarkdownMetrics_[i].height;
+                if (blk.isCodeBlock)
+                    h += kCodeHeaderH + kCodePaddingY * 2.0f;
+                if (blk.isQuote)
+                    h += kQuotePaddingY * 2.0f;
+                if (blk.headingLevel == 1)
+                    h += kHeadingRuleExtra;
+                if (!blk.inlineImages.empty())
+                {
+                    float maxImgH = 0.0f;
+                    for (const auto &img : blk.inlineImages)
+                    {
+                        float iw = img.width > 0.0f ? img.width : 120.0f;
+                        float ih = img.height > 0.0f ? img.height : 84.0f;
+                        if (iw > blockAvailW)
+                        {
+                            float scale = blockAvailW / iw;
+                            iw *= scale;
+                            ih *= scale;
+                        }
+                        maxImgH = (std::max)(maxImgH, ih);
+                    }
+                    h = (std::max)(h, maxImgH);
+                }
+
+                float advance = h + TextBlockGap(blk);
+                if (measurePendingFloat)
+                {
+                    advance = (std::max)(advance, measurePendingFloatHeight + kFloatGap);
+                    measurePendingFloat = false;
+                    measurePendingFloatWidth = 0.0f;
+                    measurePendingFloatHeight = 0.0f;
+                }
+                totalHeight += advance;
+            }
+            else if (blk.type == MarkdownBlock::Type::Rule)
+            {
+                float advance = kRuleGap;
+                if (measurePendingFloat)
+                {
+                    advance = (std::max)(advance, measurePendingFloatHeight + kFloatGap);
+                    measurePendingFloat = false;
+                    measurePendingFloatWidth = 0.0f;
+                    measurePendingFloatHeight = 0.0f;
+                }
+                totalHeight += advance;
+            }
+            else if (blk.type == MarkdownBlock::Type::Table)
+            {
+                float advance = kTableGap;
+                if (!blk.tableRows.empty())
+                {
+                    size_t colCount = 0;
+                    for (const auto &row : blk.tableRows)
+                        colCount = (std::max)(colCount, row.size());
+
+                    if (colCount > 0)
+                    {
+                        const float paddingX = 8.0f;
+                        const float paddingY = 6.0f;
+                        std::vector<float> colWidths(colCount, 0.0f);
+
+                        for (size_t r = 0; r < blk.tableRows.size(); ++r)
+                        {
+                            const auto &row = blk.tableRows[r];
+                            for (size_t c = 0; c < colCount; ++c)
+                            {
+                                std::wstring cellRaw = (c < row.size()) ? row[c] : L"";
+                                std::wstring cell = NormalizeTableCellText(cellRaw);
+                                IDWriteTextFormat *fmt = nullptr;
+                                DWRITE_FONT_WEIGHT weight = (r == 0) ? DWRITE_FONT_WEIGHT_BOLD : DWRITE_FONT_WEIGHT_NORMAL;
+                                if (SUCCEEDED(dwrite->CreateTextFormat(
+                                        L"Segoe UI",
+                                        nullptr,
+                                        weight,
+                                        DWRITE_FONT_STYLE_NORMAL,
+                                        DWRITE_FONT_STRETCH_NORMAL,
+                                        13.5f,
+                                        L"",
+                                        &fmt)))
+                                {
+                                    IDWriteTextLayout *layout = nullptr;
+                                    if (SUCCEEDED(dwrite->CreateTextLayout(cell.c_str(), (UINT32)cell.size(), fmt, 10000.0f, 10000.0f, &layout)))
+                                    {
+                                        DWRITE_TEXT_METRICS metrics = {};
+                                        layout->GetMetrics(&metrics);
+                                        colWidths[c] = (std::max)(colWidths[c], metrics.width + paddingX * 2.0f);
+                                        layout->Release();
+                                    }
+                                    fmt->Release();
+                                }
+                            }
+                        }
+
+                        float tableWidth = 0.0f;
+                        for (float w : colWidths)
+                            tableWidth += w;
+                        if (tableWidth > blockAvailW && tableWidth > 0.0f)
+                        {
+                            float scale = blockAvailW / tableWidth;
+                            for (float &w : colWidths)
+                                w *= scale;
+                        }
+
+                        float tableHeight = 0.0f;
+                        for (size_t r = 0; r < blk.tableRows.size(); ++r)
+                        {
+                            const auto &row = blk.tableRows[r];
+                            float rowHeight = 22.0f;
+                            for (size_t c = 0; c < colCount; ++c)
+                            {
+                                std::wstring cellRaw = (c < row.size()) ? row[c] : L"";
+                                std::wstring cell = NormalizeTableCellText(cellRaw);
+                                IDWriteTextFormat *fmt = nullptr;
+                                DWRITE_FONT_WEIGHT weight = (r == 0) ? DWRITE_FONT_WEIGHT_BOLD : DWRITE_FONT_WEIGHT_NORMAL;
+                                if (SUCCEEDED(dwrite->CreateTextFormat(
+                                        L"Segoe UI",
+                                        nullptr,
+                                        weight,
+                                        DWRITE_FONT_STYLE_NORMAL,
+                                        DWRITE_FONT_STRETCH_NORMAL,
+                                        13.5f,
+                                        L"",
+                                        &fmt)))
+                                {
+                                    IDWriteTextLayout *layout = nullptr;
+                                    float cellWidth = (std::max)(24.0f, colWidths[c] - paddingX * 2.0f);
+                                    if (SUCCEEDED(dwrite->CreateTextLayout(cell.c_str(), (UINT32)cell.size(), fmt, cellWidth, 10000.0f, &layout)))
+                                    {
+                                        DWRITE_TEXT_METRICS metrics = {};
+                                        layout->GetMetrics(&metrics);
+                                        rowHeight = (std::max)(rowHeight, metrics.height + paddingY * 2.0f);
+                                        layout->Release();
+                                    }
+                                    fmt->Release();
+                                }
+                            }
+                            tableHeight += rowHeight;
+                        }
+
+                        advance = tableHeight + kTableGap;
+                    }
+                }
+
+                if (measurePendingFloat)
+                {
+                    advance = (std::max)(advance, measurePendingFloatHeight + kFloatGap);
+                    measurePendingFloat = false;
+                    measurePendingFloatWidth = 0.0f;
+                    measurePendingFloatHeight = 0.0f;
+                }
+                totalHeight += advance;
+            }
+        }
+
+        if (measurePendingFloat)
+            totalHeight += measurePendingFloatHeight + kFloatGap;
+
+        return (std::max)(54.0f, totalHeight + 36.0f);
+    }
+
     bool Editor::IsPointOnPreviewMarkdownCopyButton(POINT pt) const
     {
         if (previewMode_ != PreviewMode::Markdown)

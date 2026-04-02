@@ -4,7 +4,9 @@
 #include "ui/components/scrollbar/Scrollbar.h"
 #include "ui/panels/Panel.h"
 #include "ClaudeCliBridge.h"
+#include "orion/editor/Editor.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -33,15 +35,34 @@ private:
     {
         User,
         Assistant,
+        Tool,
         System,
         Error,
+    };
+
+    enum class MessageKind
+    {
+        Text,
+        Tool,
     };
 
     struct ChatMessage
     {
         MessageRole role = MessageRole::System;
+        MessageKind kind = MessageKind::Text;
+        std::wstring title;
+        std::wstring subtitle;
         std::wstring content;
         float estimatedHeight = 0.0f;
+        bool success = true;
+    };
+
+    struct MarkdownPreviewCacheEntry
+    {
+        std::unique_ptr<Orion::Editor> editor;
+        std::wstring cachedText;
+        float cachedWidth = 0.0f;
+        float measuredHeight = 0.0f;
     };
 
     void ApplyInputTheme(TextInput &input, const std::wstring &placeholder, bool multiline);
@@ -59,6 +80,11 @@ private:
     void InvalidatePanel() const;
 
     void QueueSystemMessage(const std::wstring &text, MessageRole role = MessageRole::System);
+    void QueueToolMessage(const ClaudeCliBridge::ToolEvent &event);
+    int EnsureStreamingAssistantMessage();
+    std::wstring GetDisplayMessageText(size_t index) const;
+    bool ShouldUseMarkdownPreview(const ChatMessage &message, const std::wstring &displayText) const;
+    void RefreshMarkdownPreviews(IDWriteFactory *dwrite);
     void SaveConfiguredExecutable();
     void LoadConfiguredExecutable();
     void ResolveExecutablePath(bool preferSavedPath);
@@ -72,6 +98,7 @@ private:
     static std::wstring GetSettingsPath();
     static std::wstring JoinLines(const std::vector<std::wstring> &lines, size_t maxChars, bool &outTruncated);
     static std::wstring Trim(const std::wstring &text);
+    static float EstimateWrappedTextHeight(const std::wstring &text, float width, float charsPerLineDivisor, float lineHeight);
 
 protected:
     bool IsResizeHandleOnLeft() const override { return true; }
@@ -83,6 +110,7 @@ private:
     Scrollbar messagesScrollbar_;
 
     std::vector<ChatMessage> messages_;
+    std::vector<MarkdownPreviewCacheEntry> markdownPreviewCache_;
     std::wstring configuredExecutablePath_;
     std::wstring sessionId_;
     std::wstring authDetail_;

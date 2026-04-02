@@ -397,6 +397,7 @@ namespace Orion
         MarkdownViewMode GetMarkdownViewMode() const { return markdownViewMode_; }
         void SetMarkdownPreviewEnabled(bool enabled);
         bool IsMarkdownPreviewEnabled() const;
+        float MeasureMarkdownPreviewHeight(IDWriteFactory *dwrite, float width);
         bool IsMarkdownSplitViewEnabled() const { return markdownViewMode_ == MarkdownViewMode::Split; }
         void SetGitSplitDiffView(const std::vector<GitSplitDiffRow> &rows);
         void ClearGitSplitDiffView();

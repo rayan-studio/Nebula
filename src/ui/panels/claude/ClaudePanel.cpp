@@ -22,17 +22,6 @@
 // Ont déclare la class
 namespace
 {
-    // Fonction utilitaire pour faire une transition entre deux couleurs a b en fonction de t.
-    D2D1_COLOR_F LerpColor(const D2D1_COLOR_F &a, const D2D1_COLOR_F &b, float t)
-    {
-        t = (std::clamp)(t, 0.0f, 1.0f);
-        return D2D1::ColorF(
-            a.r + (b.r - a.r) * t,
-            a.g + (b.g - a.g) * t,
-            a.b + (b.b - a.b) * t,
-            a.a + (b.a - a.a) * t);
-    }
-
     // Fonction utilitaire pour résoudre le chemin des exe de claude.
     std::wstring ExpandEnvPath(const wchar_t *envName, const wchar_t *suffix)
     {
@@ -95,6 +84,18 @@ namespace
         return pt.x >= rect.left && pt.x <= rect.right &&
                pt.y >= rect.top && pt.y <= rect.bottom;
     }
+
+    std::wstring BuildThinkingLabel(DWORD animationTick)
+    {
+        if (animationTick == 0)
+            return L"Thinking...";
+
+        const DWORD elapsed = GetTickCount() - animationTick;
+        const int dotCount = (int)((elapsed / 420) % 4);
+        std::wstring label = L"Thinking";
+        label.append((size_t)dotCount, L'.');
+        return label;
+    }
 }
 
 ClaudePanel::ClaudePanel()
@@ -124,14 +125,20 @@ ClaudePanel::ClaudePanel()
     };
 
     bridge_.onTextDelta = [this](const std::wstring &delta) {
-        if (streamingMessageIndex_ < 0 || streamingMessageIndex_ >= (int)messages_.size())
+        int index = EnsureStreamingAssistantMessage();
+        if (index < 0 || index >= (int)messages_.size())
             return;
 
-        messages_[(size_t)streamingMessageIndex_].content += delta;
-        messages_[(size_t)streamingMessageIndex_].estimatedHeight =
-            EstimateMessageHeight(messages_[(size_t)streamingMessageIndex_].content,
-                                  MeasureWidthForRole(messages_[(size_t)streamingMessageIndex_].role));
+        messages_[(size_t)index].content += delta;
+        messages_[(size_t)index].estimatedHeight =
+            EstimateMessageHeight(messages_[(size_t)index].content,
+                                  MeasureWidthForRole(messages_[(size_t)index].role));
         ScrollMessagesToBottom();
+        InvalidatePanel();
+    };
+
+    bridge_.onToolEvent = [this](const ClaudeCliBridge::ToolEvent &event) {
+        QueueToolMessage(event);
         InvalidatePanel();
     };
 
@@ -141,6 +148,9 @@ ClaudePanel::ClaudePanel()
 
         if (!sessionId.empty())
             sessionId_ = sessionId;
+
+        if (streamingMessageIndex_ < 0 || streamingMessageIndex_ >= (int)messages_.size())
+            EnsureStreamingAssistantMessage();
 
         if (streamingMessageIndex_ >= 0 && streamingMessageIndex_ < (int)messages_.size())
         {
@@ -390,7 +400,8 @@ std::wstring ClaudePanel::BuildPromptWithContext(const std::wstring &userPrompt)
     std::wstringstream prompt;
     prompt << L"You are assisting inside the Nebula code editor.\n";
     prompt << L"Keep the answer concise, concrete, and focused on the current coding task.\n";
-    prompt << L"If you need more repository context, you may use the Read tool only.\n\n";
+    prompt << L"You may use Read, LS, Glob, Grep, Bash, Edit, Write, and MultiEdit when needed.\n";
+    prompt << L"Prefer reading before editing, and use Bash for concrete commands or file execution when useful.\n\n";
 
     const std::wstring root = Trim(GetExplorerManager().GetState().rootPath);
     if (!root.empty())
@@ -431,16 +442,134 @@ void ClaudePanel::QueueSystemMessage(const std::wstring &text, MessageRole role)
 {
     ChatMessage message;
     message.role = role;
+    message.kind = MessageKind::Text;
     message.content = text;
     message.estimatedHeight = EstimateMessageHeight(text, MeasureWidthForRole(role));
     messages_.push_back(std::move(message));
     ScrollMessagesToBottom();
 }
 
-float ClaudePanel::EstimateMessageHeight(const std::wstring &text, float width) const
+void ClaudePanel::QueueToolMessage(const ClaudeCliBridge::ToolEvent &event)
+{
+    if (streamingMessageIndex_ >= 0 && streamingMessageIndex_ < (int)messages_.size())
+    {
+        ChatMessage &streaming = messages_[(size_t)streamingMessageIndex_];
+        if (streaming.kind == MessageKind::Text && streaming.role == MessageRole::Assistant &&
+            Trim(streaming.content).empty())
+        {
+            messages_.erase(messages_.begin() + streamingMessageIndex_);
+        }
+        streamingMessageIndex_ = -1;
+    }
+
+    ChatMessage message;
+    message.role = MessageRole::Tool;
+    message.kind = MessageKind::Tool;
+    message.title = event.title;
+    message.subtitle = event.success ? L"Success" : L"Failed";
+    message.content = event.details;
+    message.success = event.success;
+
+    const float width = MeasureWidthForRole(message.role);
+    float bodyHeight = EstimateWrappedTextHeight(message.content, width - 24.0f, 7.6f, 16.0f);
+    message.estimatedHeight = 38.0f + bodyHeight;
+    messages_.push_back(std::move(message));
+    ScrollMessagesToBottom();
+}
+
+int ClaudePanel::EnsureStreamingAssistantMessage()
+{
+    if (streamingMessageIndex_ >= 0 && streamingMessageIndex_ < (int)messages_.size())
+    {
+        ChatMessage &message = messages_[(size_t)streamingMessageIndex_];
+        if (message.role == MessageRole::Assistant && message.kind == MessageKind::Text)
+            return streamingMessageIndex_;
+    }
+
+    ChatMessage assistantMessage;
+    assistantMessage.role = MessageRole::Assistant;
+    assistantMessage.kind = MessageKind::Text;
+    assistantMessage.content.clear();
+    assistantMessage.estimatedHeight = EstimateMessageHeight(L"Thinking...",
+        MeasureWidthForRole(assistantMessage.role));
+    messages_.push_back(std::move(assistantMessage));
+    streamingMessageIndex_ = (int)messages_.size() - 1;
+    return streamingMessageIndex_;
+}
+
+std::wstring ClaudePanel::GetDisplayMessageText(size_t index) const
+{
+    if (index >= messages_.size())
+        return {};
+
+    const ChatMessage &message = messages_[index];
+    if (message.role == MessageRole::Assistant &&
+        requestInFlight_ &&
+        (int)index == streamingMessageIndex_ &&
+        message.content.empty())
+    {
+        return BuildThinkingLabel(requestAnimationTick_);
+    }
+
+    return message.content;
+}
+
+bool ClaudePanel::ShouldUseMarkdownPreview(const ChatMessage &message, const std::wstring &displayText) const
+{
+    if (message.kind != MessageKind::Text)
+        return false;
+    if (message.role != MessageRole::Assistant && message.role != MessageRole::System)
+        return false;
+    return !displayText.empty();
+}
+
+void ClaudePanel::RefreshMarkdownPreviews(IDWriteFactory *dwrite)
+{
+    markdownPreviewCache_.resize(messages_.size());
+
+    for (size_t i = 0; i < messages_.size(); ++i)
+    {
+        ChatMessage &message = messages_[i];
+        const float width = MeasureWidthForRole(message.role);
+        const std::wstring displayText = GetDisplayMessageText(i);
+
+        if (message.kind == MessageKind::Tool)
+        {
+            float bodyHeight = EstimateWrappedTextHeight(message.content, width - 24.0f, 7.6f, 16.0f);
+            message.estimatedHeight = 38.0f + bodyHeight;
+            markdownPreviewCache_[i] = {};
+            continue;
+        }
+
+        if (!ShouldUseMarkdownPreview(message, displayText))
+        {
+            message.estimatedHeight = EstimateMessageHeight(displayText, width);
+            markdownPreviewCache_[i] = {};
+            continue;
+        }
+
+        MarkdownPreviewCacheEntry &entry = markdownPreviewCache_[i];
+        if (!entry.editor)
+            entry.editor = std::make_unique<Orion::Editor>();
+
+        if (entry.cachedText != displayText || std::fabs(entry.cachedWidth - width) > 1.0f)
+        {
+            entry.editor->CreateEmpty();
+            entry.editor->SetTextContent(displayText, false);
+            entry.editor->SetMarkdownViewMode(Orion::MarkdownViewMode::Preview);
+            entry.cachedText = displayText;
+            entry.cachedWidth = width;
+            entry.measuredHeight = entry.editor->MeasureMarkdownPreviewHeight(dwrite, width);
+        }
+
+        message.estimatedHeight = (std::max)(54.0f, entry.measuredHeight);
+    }
+}
+
+float ClaudePanel::EstimateWrappedTextHeight(const std::wstring &text, float width, float charsPerLineDivisor, float lineHeight)
 {
     const float usableWidth = (std::max)(80.0f, width);
-    const float charsPerLine = (std::max)(18.0f, usableWidth / 7.2f);
+    const float charsPerLine = (std::max)(16.0f, usableWidth / charsPerLineDivisor);
 
     size_t lineCount = 1;
     size_t currentRun = 0;
@@ -461,7 +590,12 @@ float ClaudePanel::EstimateMessageHeight(const std::wstring &text, float width) 
         }
     }
 
-    return 18.0f + (float)lineCount * 17.0f;
+    return (float)lineCount * lineHeight;
+}
+
+float ClaudePanel::EstimateMessageHeight(const std::wstring &text, float width) const
+{
+    return 18.0f + EstimateWrappedTextHeight(text, width, 7.2f, 17.0f);
 }
 
 float ClaudePanel::MeasureWidthForRole(MessageRole role) const
@@ -469,6 +603,8 @@ float ClaudePanel::MeasureWidthForRole(MessageRole role) const
     const float baseWidth = (std::max)(80.0f, messagesRect_.right - messagesRect_.left - 28.0f);
     if (role == MessageRole::User)
         return (std::max)(80.0f, baseWidth * 0.74f - 20.0f);
+    if (role == MessageRole::Tool)
+        return (std::max)(120.0f, baseWidth - 8.0f);
     return baseWidth;
 }
 
@@ -482,8 +618,20 @@ float ClaudePanel::ComputeMessagesContentHeight() const
 
 void ClaudePanel::RecomputeMessageHeights()
 {
-    for (ChatMessage &message : messages_)
-        message.estimatedHeight = EstimateMessageHeight(message.content, MeasureWidthForRole(message.role));
+    for (size_t i = 0; i < messages_.size(); ++i)
+    {
+        ChatMessage &message = messages_[i];
+        const float width = MeasureWidthForRole(message.role);
+        if (message.kind == MessageKind::Tool)
+        {
+            float bodyHeight = EstimateWrappedTextHeight(message.content, width - 24.0f, 7.6f, 16.0f);
+            message.estimatedHeight = 38.0f + bodyHeight;
+        }
+        else
+        {
+            message.estimatedHeight = EstimateMessageHeight(GetDisplayMessageText(i), width);
+        }
+    }
 }
 
 void ClaudePanel::ScrollMessagesToBottom()
@@ -501,7 +649,10 @@ void ClaudePanel::InvalidatePanel() const
 
 bool ClaudePanel::UpdateUiAnimation()
 {
-    return requestInFlight_;
+    return requestInFlight_ &&
+           streamingMessageIndex_ >= 0 &&
+           streamingMessageIndex_ < (int)messages_.size() &&
+           messages_[(size_t)streamingMessageIndex_].content.empty();
 }
 
 void ClaudePanel::SubmitPrompt()
@@ -515,12 +666,14 @@ void ClaudePanel::SubmitPrompt()
 
     ChatMessage userMessage;
     userMessage.role = MessageRole::User;
+    userMessage.kind = MessageKind::Text;
     userMessage.content = rawPrompt;
     userMessage.estimatedHeight = EstimateMessageHeight(rawPrompt, MeasureWidthForRole(userMessage.role));
     messages_.push_back(std::move(userMessage));
 
     ChatMessage assistantMessage;
     assistantMessage.role = MessageRole::Assistant;
+    assistantMessage.kind = MessageKind::Text;
     assistantMessage.content = L"";
     assistantMessage.estimatedHeight = EstimateMessageHeight(L"Thinking...",
         MeasureWidthForRole(assistantMessage.role));
@@ -637,6 +790,12 @@ void ClaudePanel::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd
         auto &promptStyle = promptInput_.GetStyle();
         promptStyle.paddingRight = (sendButtonRect_.right - sendButtonRect_.left) + 18.0f;
     }
+
+    RefreshMarkdownPreviews(dwrite);
+    messagesScrollbar_.UpdateLayout(messagesRect_.left, messagesRect_.top,
+                                    messagesRect_.right - messagesRect_.left,
+                                    (std::max)(0.0f, messagesRect_.bottom - messagesRect_.top),
+                                    ComputeMessagesContentHeight());
 
     D2D1_RECT_F clipRect = D2D1::RectF(state_.leftEdge, state_.topEdge, state_.rightEdge, state_.bottomEdge);
     ctx->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -772,6 +931,11 @@ void ClaudePanel::DrawMessages(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
     ID2D1SolidColorBrush *errorTextBrush = nullptr;
     ID2D1SolidColorBrush *userTextBrush = nullptr;
     ID2D1SolidColorBrush *mutedBrush = nullptr;
+    ID2D1SolidColorBrush *toolCardBrush = nullptr;
+    ID2D1SolidColorBrush *toolBorderBrush = nullptr;
+    ID2D1SolidColorBrush *toolTitleBrush = nullptr;
+    ID2D1SolidColorBrush *toolBodyBrush = nullptr;
+    ID2D1SolidColorBrush *toolStatusBrush = nullptr;
 
     const auto &palette = UI::Theme::GetPalette();
     ctx->CreateSolidColorBrush(palette.explorerRowActive, &userBrush);
@@ -780,6 +944,31 @@ void ClaudePanel::DrawMessages(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
     ctx->CreateSolidColorBrush(UI::Theme::MutedText(), &systemTextBrush);
     ctx->CreateSolidColorBrush(D2D1::ColorF(0.92f, 0.42f, 0.40f, 1.0f), &errorTextBrush);
     ctx->CreateSolidColorBrush(UI::Theme::MutedText(), &mutedBrush);
+    ctx->CreateSolidColorBrush(palette.inputBackground, &toolCardBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &toolBorderBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::MutedText(), &toolTitleBrush);
+    ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &toolBodyBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.60f, 0.82f, 0.62f, 1.0f), &toolStatusBrush);
+
+    IDWriteTextFormat *toolTitleFormat = nullptr;
+    IDWriteTextFormat *toolBodyFormat = nullptr;
+    IDWriteTextFormat *toolStatusFormat = nullptr;
+    dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                             10.5f, L"en-us", &toolTitleFormat);
+    dwrite->CreateTextFormat(L"Consolas", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                             11.0f, L"en-us", &toolBodyFormat);
+    dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                             10.0f, L"en-us", &toolStatusFormat);
+    for (IDWriteTextFormat *format : {toolTitleFormat, toolBodyFormat, toolStatusFormat})
+    {
+        if (!format)
+            continue;
+        format->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+        format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+    }
 
     ctx->PushAxisAlignedClip(messagesRect_, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
@@ -807,13 +996,53 @@ void ClaudePanel::DrawMessages(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
         if (bubbleRect.top > messagesRect_.bottom)
             break;
 
-        std::wstring content = message.content;
-        if (message.role == MessageRole::Assistant && content.empty() && requestInFlight_ && (int)i == streamingMessageIndex_)
-            content = L"Thinking...";
+        const std::wstring content = GetDisplayMessageText(i);
+
+        if (message.kind == MessageKind::Tool)
+        {
+            D2D1_RECT_F cardRect = D2D1::RectF(contentLeft, y, contentRight, y + height);
+            if (toolCardBrush)
+                ctx->FillRoundedRectangle(D2D1::RoundedRect(cardRect, 8.0f, 8.0f), toolCardBrush);
+            if (toolBorderBrush)
+                ctx->DrawRoundedRectangle(D2D1::RoundedRect(cardRect, 8.0f, 8.0f), toolBorderBrush, 1.0f);
+
+            D2D1_RECT_F titleRect = D2D1::RectF(cardRect.left + 12.0f, cardRect.top + 8.0f,
+                                                cardRect.right - 72.0f, cardRect.top + 24.0f);
+            D2D1_RECT_F statusRect = D2D1::RectF(cardRect.right - 64.0f, cardRect.top + 8.0f,
+                                                 cardRect.right - 12.0f, cardRect.top + 24.0f);
+            D2D1_RECT_F bodyRect = D2D1::RectF(cardRect.left + 12.0f, cardRect.top + 26.0f,
+                                               cardRect.right - 12.0f, cardRect.bottom - 10.0f);
+
+            if (toolTitleFormat && toolTitleBrush)
+                ctx->DrawTextW(message.title.c_str(), (UINT32)message.title.size(), toolTitleFormat, titleRect, toolTitleBrush);
+            if (toolStatusFormat && toolStatusBrush && !message.subtitle.empty())
+                ctx->DrawTextW(message.subtitle.c_str(), (UINT32)message.subtitle.size(), toolStatusFormat, statusRect, toolStatusBrush);
+            if (toolBodyFormat && toolBodyBrush && !content.empty())
+                ctx->DrawTextW(content.c_str(), (UINT32)content.size(), toolBodyFormat, bodyRect, toolBodyBrush);
+
+            y += height + 12.0f;
+            continue;
+        }
 
         if (message.role == MessageRole::User && userBrush)
         {
             ctx->FillRoundedRectangle(D2D1::RoundedRect(bubbleRect, 8.0f, 8.0f), userBrush);
+        }
+
+        if (ShouldUseMarkdownPreview(message, content) &&
+            i < markdownPreviewCache_.size() &&
+            markdownPreviewCache_[i].editor)
+        {
+            markdownPreviewCache_[i].editor->UpdateLayout(
+                hwnd_,
+                contentLeft,
+                y,
+                contentRight,
+                y + height);
+            markdownPreviewCache_[i].editor->Draw(ctx, dwrite);
+
+            y += height + 12.0f;
+            continue;
         }
 
         D2D1_RECT_F bodyRect = D2D1::RectF(bubbleRect.left + 10.0f, bubbleRect.top + 9.0f,
@@ -829,33 +1058,6 @@ void ClaudePanel::DrawMessages(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
         else if (message.role == MessageRole::Error)
             bodyBrush = errorTextBrush;
 
-        if (message.role == MessageRole::Assistant && requestInFlight_ && (int)i == streamingMessageIndex_)
-        {
-            const DWORD now = GetTickCount();
-            const float elapsed = requestAnimationTick_ > 0 ? (float)(now - requestAnimationTick_) : 0.0f;
-            const float pulse = 0.5f + 0.5f * std::sinf(elapsed * 0.0105f);
-            D2D1_COLOR_F animated = UI::Theme::PrimaryText();
-            if (message.content.empty())
-            {
-                D2D1_COLOR_F thinkingBase = UI::Theme::MutedText();
-                D2D1_COLOR_F thinkingAccent = UI::Theme::Accent();
-                thinkingAccent.a = 0.95f;
-                animated = LerpColor(thinkingBase, thinkingAccent, 0.28f + pulse * 0.60f);
-            }
-            else
-            {
-                D2D1_COLOR_F liveAccent = UI::Theme::Accent();
-                liveAccent.a = 0.90f;
-                animated = LerpColor(animated, liveAccent, 0.10f + pulse * 0.18f);
-            }
-
-            if (assistantTextBrush)
-            {
-                assistantTextBrush->SetColor(animated);
-                bodyBrush = assistantTextBrush;
-            }
-        }
-
         if (bodyFormat && bodyBrush)
             ctx->DrawTextW(content.c_str(), (UINT32)content.size(), bodyFormat, bodyRect, bodyBrush);
 
@@ -867,6 +1069,16 @@ void ClaudePanel::DrawMessages(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
 
     if (mutedBrush)
         mutedBrush->Release();
+    if (toolStatusBrush)
+        toolStatusBrush->Release();
+    if (toolBodyBrush)
+        toolBodyBrush->Release();
+    if (toolTitleBrush)
+        toolTitleBrush->Release();
+    if (toolBorderBrush)
+        toolBorderBrush->Release();
+    if (toolCardBrush)
+        toolCardBrush->Release();
     if (userTextBrush)
         userTextBrush->Release();
     if (errorTextBrush)
@@ -879,6 +1091,12 @@ void ClaudePanel::DrawMessages(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
         userBrush->Release();
     if (bodyFormat)
         bodyFormat->Release();
+    if (toolStatusFormat)
+        toolStatusFormat->Release();
+    if (toolBodyFormat)
+        toolBodyFormat->Release();
+    if (toolTitleFormat)
+        toolTitleFormat->Release();
 }
 
 void ClaudePanel::DrawComposer(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)

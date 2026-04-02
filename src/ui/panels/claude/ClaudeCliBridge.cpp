@@ -2,11 +2,39 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <unordered_map>
 #include <sstream>
 #include <vector>
 
 namespace
 {
+    std::wstring TrimWideLocal(const std::wstring &text)
+    {
+        size_t start = 0;
+        while (start < text.size() && iswspace(text[start]))
+            ++start;
+        size_t end = text.size();
+        while (end > start && iswspace(text[end - 1]))
+            --end;
+        return text.substr(start, end - start);
+    }
+
+    std::wstring Utf8ToWideLocal(const std::string &text)
+    {
+        if (text.empty())
+            return {};
+
+        int len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), (int)text.size(), nullptr, 0);
+        if (len <= 0)
+            len = MultiByteToWideChar(CP_UTF8, 0, text.data(), (int)text.size(), nullptr, 0);
+        if (len <= 0)
+            return {};
+
+        std::wstring out((size_t)len, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, text.data(), (int)text.size(), out.data(), len);
+        return out;
+    }
+
     std::string ExtractJsonStringValue(const std::string &json, const std::string &key)
     {
         const std::string needle = "\"" + key + "\"";
@@ -71,6 +99,115 @@ namespace
     std::string ExtractTopLevelType(const std::string &json)
     {
         return ExtractJsonStringValue(json, "type");
+    }
+
+    int ExtractJsonIntValue(const std::string &json, const std::string &key, int fallback = -1)
+    {
+        const std::string needle = "\"" + key + "\"";
+        size_t pos = json.find(needle);
+        if (pos == std::string::npos)
+            return fallback;
+
+        pos = json.find(':', pos + needle.size());
+        if (pos == std::string::npos)
+            return fallback;
+
+        ++pos;
+        while (pos < json.size() && isspace((unsigned char)json[pos]))
+            ++pos;
+
+        bool negative = false;
+        if (pos < json.size() && json[pos] == '-')
+        {
+            negative = true;
+            ++pos;
+        }
+
+        size_t start = pos;
+        while (pos < json.size() && isdigit((unsigned char)json[pos]))
+            ++pos;
+        if (start == pos)
+            return fallback;
+
+        int value = atoi(json.substr(start, pos - start).c_str());
+        return negative ? -value : value;
+    }
+
+    std::wstring ExtractPreferredPath(const std::string &inputJson)
+    {
+        for (const char *key : {"file_path", "path", "directory_path", "cwd"})
+        {
+            std::string value = ExtractJsonStringValue(inputJson, key);
+            if (!value.empty())
+                return Utf8ToWideLocal(value);
+        }
+        return {};
+    }
+
+    std::wstring SummarizeToolInput(const std::wstring &toolName, const std::string &inputJson)
+    {
+        const std::wstring name = TrimWideLocal(toolName);
+        if (name.empty())
+            return Utf8ToWideLocal(inputJson);
+
+        if (_wcsicmp(name.c_str(), L"Bash") == 0)
+        {
+            std::string command = ExtractJsonStringValue(inputJson, "command");
+            if (!command.empty())
+                return Utf8ToWideLocal(command);
+        }
+
+        if (_wcsicmp(name.c_str(), L"Read") == 0 ||
+            _wcsicmp(name.c_str(), L"Edit") == 0 ||
+            _wcsicmp(name.c_str(), L"Write") == 0 ||
+            _wcsicmp(name.c_str(), L"MultiEdit") == 0 ||
+            _wcsicmp(name.c_str(), L"LS") == 0)
+        {
+            std::wstring path = ExtractPreferredPath(inputJson);
+            if (!path.empty())
+                return path;
+        }
+
+        if (_wcsicmp(name.c_str(), L"Glob") == 0 || _wcsicmp(name.c_str(), L"Grep") == 0)
+        {
+            std::wstring pattern = Utf8ToWideLocal(ExtractJsonStringValue(inputJson, "pattern"));
+            std::wstring path = ExtractPreferredPath(inputJson);
+            if (!pattern.empty() && !path.empty())
+                return pattern + L"  in  " + path;
+            if (!pattern.empty())
+                return pattern;
+            if (!path.empty())
+                return path;
+        }
+
+        std::wstring path = ExtractPreferredPath(inputJson);
+        if (!path.empty())
+            return path;
+
+        std::wstring fallback = Utf8ToWideLocal(inputJson);
+        if (fallback.size() > 220)
+            fallback = fallback.substr(0, 220) + L"...";
+        return fallback;
+    }
+
+    std::wstring ToolTitleFromName(const std::wstring &toolName)
+    {
+        const std::wstring name = TrimWideLocal(toolName);
+        if (_wcsicmp(name.c_str(), L"Bash") == 0)
+            return L"Ran command";
+        if (_wcsicmp(name.c_str(), L"Read") == 0)
+            return L"Read file";
+        if (_wcsicmp(name.c_str(), L"Edit") == 0 ||
+            _wcsicmp(name.c_str(), L"Write") == 0 ||
+            _wcsicmp(name.c_str(), L"MultiEdit") == 0)
+            return L"Edited file";
+        if (_wcsicmp(name.c_str(), L"Glob") == 0)
+            return L"Matched files";
+        if (_wcsicmp(name.c_str(), L"Grep") == 0)
+            return L"Searched text";
+        if (_wcsicmp(name.c_str(), L"LS") == 0)
+            return L"Listed directory";
+        return L"Used " + name;
     }
 
     bool FileExists(const std::wstring &path)
@@ -528,8 +665,8 @@ void ClaudeCliBridge::RequestWorkerMain(RequestOptions options)
         L"--verbose",
         L"--include-partial-messages",
         L"--max-turns", L"6",
-        L"--tools", L"Read",
-        L"--allowedTools", L"Read"
+        L"--tools", L"Read,Bash,Edit,Write,MultiEdit,Glob,Grep,LS",
+        L"--allowedTools", L"Read,Bash,Edit,Write,MultiEdit,Glob,Grep,LS"
     };
 
     if (!Trim(options.resumeSessionId).empty())
@@ -549,13 +686,58 @@ void ClaudeCliBridge::RequestWorkerMain(RequestOptions options)
     std::wstring sessionId;
     std::wstring fallbackResult;
     std::string pendingLine;
-    auto processJsonLine = [this, &sessionId, &fallbackResult](const std::string &line) {
+    struct PendingToolBlock
+    {
+        std::wstring id;
+        std::wstring name;
+        std::string inputJson;
+    };
+    std::unordered_map<int, PendingToolBlock> pendingToolBlocks;
+
+    auto processJsonLine = [this, &sessionId, &fallbackResult, &pendingToolBlocks](const std::string &line) {
         if (line.empty())
             return;
 
         std::string type = ExtractTopLevelType(line);
         if (type == "stream_event")
         {
+            if (line.find("\"content_block_start\"") != std::string::npos &&
+                (line.find("\"content_block\":{\"type\":\"tool_use\"") != std::string::npos ||
+                 line.find("\"content_block\":{\"type\":\"server_tool_use\"") != std::string::npos))
+            {
+                PendingToolBlock block;
+                block.id = Utf8ToWide(ExtractJsonStringValue(line, "id"));
+                block.name = Utf8ToWide(ExtractJsonStringValue(line, "name"));
+                int index = ExtractJsonIntValue(line, "index");
+                if (index >= 0)
+                    pendingToolBlocks[index] = std::move(block);
+            }
+            else if (line.find("\"content_block_delta\"") != std::string::npos &&
+                     line.find("\"input_json_delta\"") != std::string::npos)
+            {
+                int index = ExtractJsonIntValue(line, "index");
+                auto it = pendingToolBlocks.find(index);
+                if (it != pendingToolBlocks.end())
+                    it->second.inputJson += ExtractJsonStringValue(line, "partial_json");
+            }
+            else if (line.find("\"content_block_stop\"") != std::string::npos)
+            {
+                int index = ExtractJsonIntValue(line, "index");
+                auto it = pendingToolBlocks.find(index);
+                if (it != pendingToolBlocks.end())
+                {
+                    ToolEvent event;
+                    event.toolId = it->second.id;
+                    event.toolName = it->second.name;
+                    event.title = ToolTitleFromName(it->second.name);
+                    event.details = SummarizeToolInput(it->second.name, it->second.inputJson);
+                    event.success = true;
+                    if (onToolEvent)
+                        onToolEvent(event);
+                    pendingToolBlocks.erase(it);
+                }
+            }
+
             if (line.find("\"text_delta\"") != std::string::npos)
             {
                 std::string delta = ExtractJsonStringValue(line, "text");
