@@ -153,6 +153,8 @@ private:
     D2D1_RECT_F toolbarRect_ = D2D1::RectF(0, 0, 0, 0);
     D2D1_RECT_F historyButtonRect_ = D2D1::RectF(0, 0, 0, 0);
     D2D1_RECT_F usageButtonRect_ = D2D1::RectF(0, 0, 0, 0);
+    D2D1_RECT_F usageOverlayRect_ = D2D1::RectF(0, 0, 0, 0);
+    D2D1_RECT_F usageCloseButtonRect_ = D2D1::RectF(0, 0, 0, 0);
     D2D1_RECT_F usageLinkRect_ = D2D1::RectF(0, 0, 0, 0);
     D2D1_RECT_F sendButtonRect_ = D2D1::RectF(0, 0, 0, 0);
     D2D1_RECT_F messagesRect_ = D2D1::RectF(0, 0, 0, 0);
@@ -162,6 +164,7 @@ private:
     bool pathButtonHovered_ = false;
     bool historyButtonHovered_ = false;
     bool usageButtonHovered_ = false;
+    bool usageCloseButtonHovered_ = false;
     bool usageLinkHovered_ = false;
     bool sendButtonHovered_ = false;
     bool initialAuthRefreshPending_ = true;
@@ -175,8 +178,10 @@ private:
     DWORD requestAnimationTick_ = 0;
 
     ClaudeCliBridge::AuthInfo accountInfo_;
+    ClaudeCliBridge::RateLimitInfo rateLimits_;
     ConversationUsageStats currentConversationUsage_;
     std::vector<ConversationHistoryEntry> historyEntries_;
     std::vector<D2D1_RECT_F> historyRowRects_;
     std::wstring historyProjectDirectory_;
+    std::wstring lastKnownRateLimitResetText_;
 };

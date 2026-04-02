@@ -155,6 +155,102 @@ namespace
         return fallback;
     }
 
+    long long ExtractJsonInt64Value(const std::string &json, const std::string &key, long long fallback = 0)
+    {
+        const std::string needle = "\"" + key + "\"";
+        size_t pos = json.find(needle);
+        if (pos == std::string::npos)
+            return fallback;
+
+        pos = json.find(':', pos + needle.size());
+        if (pos == std::string::npos)
+            return fallback;
+
+        ++pos;
+        while (pos < json.size() && isspace((unsigned char)json[pos]))
+            ++pos;
+
+        bool negative = false;
+        if (pos < json.size() && json[pos] == '-')
+        {
+            negative = true;
+            ++pos;
+        }
+
+        size_t start = pos;
+        while (pos < json.size() && isdigit((unsigned char)json[pos]))
+            ++pos;
+        if (start == pos)
+            return fallback;
+
+        long long value = _atoi64(json.substr(start, pos - start).c_str());
+        return negative ? -value : value;
+    }
+
+    std::string ExtractJsonObjectValue(const std::string &json, const std::string &key)
+    {
+        const std::string needle = "\"" + key + "\"";
+        size_t pos = json.find(needle);
+        if (pos == std::string::npos)
+            return {};
+
+        pos = json.find(':', pos + needle.size());
+        if (pos == std::string::npos)
+            return {};
+
+        ++pos;
+        while (pos < json.size() && isspace((unsigned char)json[pos]))
+            ++pos;
+        if (pos >= json.size() || json[pos] != '{')
+            return {};
+
+        size_t start = pos;
+        int depth = 0;
+        bool inString = false;
+        bool escape = false;
+        for (; pos < json.size(); ++pos)
+        {
+            char ch = json[pos];
+            if (inString)
+            {
+                if (escape)
+                {
+                    escape = false;
+                    continue;
+                }
+                if (ch == '\\')
+                {
+                    escape = true;
+                    continue;
+                }
+                if (ch == '"')
+                    inString = false;
+                continue;
+            }
+
+            if (ch == '"')
+            {
+                inString = true;
+                continue;
+            }
+
+            if (ch == '{')
+            {
+                ++depth;
+                continue;
+            }
+
+            if (ch == '}')
+            {
+                --depth;
+                if (depth == 0)
+                    return json.substr(start, pos - start + 1);
+            }
+        }
+
+        return {};
+    }
+
     std::wstring ExtractPreferredPath(const std::string &inputJson)
     {
         for (const char *key : {"file_path", "path", "directory_path", "cwd"})
@@ -723,6 +819,7 @@ void ClaudeCliBridge::RequestWorkerMain(RequestOptions options)
     HANDLE processHandle = nullptr;
     std::wstring sessionId;
     std::wstring fallbackResult;
+    RateLimitInfo latestRateLimits;
     std::string pendingLine;
     struct PendingToolBlock
     {
@@ -732,9 +829,37 @@ void ClaudeCliBridge::RequestWorkerMain(RequestOptions options)
     };
     std::unordered_map<int, PendingToolBlock> pendingToolBlocks;
 
-    auto processJsonLine = [this, &sessionId, &fallbackResult, &pendingToolBlocks](const std::string &line) {
+    auto processJsonLine = [this, &sessionId, &fallbackResult, &pendingToolBlocks, &latestRateLimits](const std::string &line) {
         if (line.empty())
             return;
+
+        if (line.find("\"rate_limits\"") != std::string::npos)
+        {
+            std::string rateLimitsJson = ExtractJsonObjectValue(line, "rate_limits");
+            if (!rateLimitsJson.empty())
+            {
+                RateLimitInfo info;
+                auto parseWindow = [&](const char *key, RateLimitWindow &window) {
+                    std::string windowJson = ExtractJsonObjectValue(rateLimitsJson, key);
+                    if (windowJson.empty())
+                        return;
+                    window.available = true;
+                    window.usedPercentage = ExtractJsonIntValue(windowJson, "used_percentage", -1);
+                    window.resetsAtUnix = ExtractJsonInt64Value(windowJson, "resets_at", 0);
+                };
+
+                parseWindow("five_hour", info.fiveHour);
+                parseWindow("seven_day", info.sevenDay);
+                info.available = info.fiveHour.available || info.sevenDay.available;
+
+                if (info.available)
+                {
+                    latestRateLimits = info;
+                    if (onRateLimitInfo)
+                        onRateLimitInfo(info);
+                }
+            }
+        }
 
         std::string type = ExtractTopLevelType(line);
         if (type == "stream_event")

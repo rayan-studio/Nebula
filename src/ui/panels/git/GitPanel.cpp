@@ -8,6 +8,7 @@
 #include "utils/auth/GitHubAuth.h"
 
 #include <git2.h>
+#include <shlobj.h>
 
 #include <algorithm>
 #include <cmath>
@@ -16,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -257,6 +259,61 @@ void SortUnique(std::vector<int> &values)
     std::sort(values.begin(), values.end());
     values.erase(std::unique(values.begin(), values.end()), values.end());
 }
+
+std::wstring ExpandEnvPath(const wchar_t *envName, const wchar_t *suffix)
+{
+    if (!envName || !suffix)
+        return {};
+
+    wchar_t base[MAX_PATH] = {};
+    DWORD len = GetEnvironmentVariableW(envName, base, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH)
+        return {};
+
+    std::filesystem::path path(base);
+    path /= suffix;
+    std::error_code ec;
+    if (std::filesystem::exists(path, ec) && !ec)
+        return path.wstring();
+    return {};
+}
+
+std::wstring DetectClaudeExecutable()
+{
+    static const struct
+    {
+        const wchar_t *envName;
+        const wchar_t *suffix;
+    } kKnownPaths[] = {
+        {L"USERPROFILE", L".local\\bin\\claude.exe"},
+        {L"APPDATA", L"npm\\claude.cmd"},
+        {L"APPDATA", L"npm\\claude.exe"},
+    };
+
+    for (const auto &candidate : kKnownPaths)
+    {
+        std::wstring resolved = ExpandEnvPath(candidate.envName, candidate.suffix);
+        if (!resolved.empty())
+            return resolved;
+    }
+
+    static const wchar_t *kCandidates[] = {
+        L"claude.exe",
+        L"claude.cmd",
+        L"claude.bat",
+        L"claude"
+    };
+
+    wchar_t resolved[MAX_PATH] = {};
+    for (const wchar_t *candidate : kCandidates)
+    {
+        DWORD len = SearchPathW(nullptr, candidate, nullptr, MAX_PATH, resolved, nullptr);
+        if (len > 0 && len < MAX_PATH)
+            return std::wstring(resolved, resolved + len);
+    }
+
+    return {};
+}
 }
 
 GitPanel::GitPanel()
@@ -272,6 +329,43 @@ GitPanel::GitPanel()
     title_ = L"SOURCE CONTROL";
 
     ApplyInputTheme(commitMessageInput_, L"Commit message");
+
+    claudeBridge_.onRequestStarted = [this]() {
+        commitGenerationInFlight_ = true;
+        commitGenerationBuffer_.clear();
+        lastError_.clear();
+        InvalidatePanel();
+    };
+
+    claudeBridge_.onTextDelta = [this](const std::wstring &delta) {
+        commitGenerationBuffer_ += delta;
+    };
+
+    claudeBridge_.onRequestFinished = [this](const std::wstring & /*sessionId*/, const std::wstring &fallbackResult) {
+        commitGenerationInFlight_ = false;
+        std::wstring response = commitGenerationBuffer_;
+        if (Trim(response).empty())
+            response = fallbackResult;
+
+        std::wstring message = NormalizeCommitMessage(response);
+        if (message.empty())
+            lastError_ = L"Claude did not return a usable commit message.";
+        else
+        {
+            commitMessageInput_.SetText(message);
+            lastError_.clear();
+        }
+
+        commitGenerationBuffer_.clear();
+        InvalidatePanel();
+    };
+
+    claudeBridge_.onError = [this](const std::wstring &message) {
+        commitGenerationInFlight_ = false;
+        commitGenerationBuffer_.clear();
+        lastError_ = Trim(message).empty() ? L"Commit message generation failed." : Trim(message);
+        InvalidatePanel();
+    };
 
     commitMessageInput_.onSubmit = [this]()
     {
@@ -338,6 +432,8 @@ void GitPanel::ApplyInputTheme(TextInput &input, const std::wstring &placeholder
     style.fontFamily = UI::InputTheme::kFontFamily;
     style.fontSize = UI::InputTheme::kFontSize;
     style.padding = UI::InputTheme::kHorizontalPadding;
+    style.paddingLeft = UI::InputTheme::kHorizontalPadding;
+    style.paddingRight = UI::InputTheme::kHorizontalPadding + 34.0f;
 }
 
 void GitPanel::SyncRepoPathFromExplorer()
@@ -348,6 +444,7 @@ void GitPanel::SyncRepoPathFromExplorer()
 
 void GitPanel::UpdateLayout(HWND hwnd)
 {
+    hwnd_ = hwnd;
     UINT dpi = win32_get_dpi_for_window(hwnd);
     int sidebarWidth = win32_dpi_scale(52, dpi);
     UpdateBaseLayout(hwnd, static_cast<float>(sidebarWidth));
@@ -383,6 +480,7 @@ void GitPanel::UpdateLayout(HWND hwnd)
 
     // Commit message input always full-width
     commitMessageInput_.SetRect(D2D1::RectF(x0, y, x1, y + inputH));
+    commitGenerateRect_ = D2D1::RectF(x1 - 30.0f, y + 4.0f, x1 - 4.0f, y + inputH - 4.0f);
     y += inputH + gap;
 
     // Primary "Commit & Push" full-width accent button
@@ -462,6 +560,8 @@ void GitPanel::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
     if (!visible_ || state_.physicalWidth <= 0)
         return;
 
+    hwnd_ = hwnd;
+
     // Keep input visuals synced to runtime theme changes.
     ApplyInputTheme(commitMessageInput_, L"Commit message");
 
@@ -472,6 +572,7 @@ void GitPanel::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
     Panel::DrawTitle(ctx, dwrite);
 
     commitMessageInput_.Draw(ctx, dwrite);
+    DrawCommitGenerateButton(ctx, dwrite);
 
     if (!lastError_.empty() && infoRect_.right > infoRect_.left)
     {
@@ -508,6 +609,7 @@ void GitPanel::Draw(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
 
 void GitPanel::DrawBranchBar(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
 {
+    (void)hwnd;
     if (branchBarRect_.right <= branchBarRect_.left)
         return;
 
@@ -639,8 +741,69 @@ void GitPanel::DrawBranchBar(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWN
     if (countFmt)    countFmt->Release();
 }
 
+void GitPanel::DrawCommitGenerateButton(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
+{
+    if (commitGenerateRect_.right <= commitGenerateRect_.left)
+        return;
+
+    const bool light = (UI::Theme::GetMode() == UI::Theme::Mode::Light);
+    const bool enabled = isGitRepo_ && !changes_.empty() && !claudeBridge_.IsBusy() && !commitGenerationInFlight_;
+    const wchar_t *label = commitGenerationInFlight_ ? L"..." : L"***";
+
+    D2D1_COLOR_F fill = enabled
+        ? (commitGenerateHovered_ ? UI::Theme::Accent() : D2D1::ColorF(UI::Theme::Accent().r, UI::Theme::Accent().g, UI::Theme::Accent().b, 0.16f))
+        : (light ? D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.05f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.05f));
+    D2D1_COLOR_F border = enabled
+        ? D2D1::ColorF(UI::Theme::Accent().r, UI::Theme::Accent().g, UI::Theme::Accent().b, commitGenerateHovered_ ? 0.95f : 0.45f)
+        : (light ? D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.14f) : D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f));
+    D2D1_COLOR_F text = enabled
+        ? (commitGenerateHovered_ ? D2D1::ColorF(1.0f, 1.0f, 1.0f) : UI::Theme::Accent())
+        : (light ? D2D1::ColorF(0.48f, 0.48f, 0.48f, 1.0f) : D2D1::ColorF(0.56f, 0.56f, 0.56f, 1.0f));
+
+    ID2D1SolidColorBrush *fillBrush = nullptr;
+    ID2D1SolidColorBrush *borderBrush = nullptr;
+    ID2D1SolidColorBrush *textBrush = nullptr;
+    IDWriteTextFormat *textFormat = nullptr;
+
+    ctx->CreateSolidColorBrush(fill, &fillBrush);
+    ctx->CreateSolidColorBrush(border, &borderBrush);
+    ctx->CreateSolidColorBrush(text, &textBrush);
+    dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                             10.5f, L"en-us", &textFormat);
+
+    if (textFormat)
+    {
+        textFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+        textFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        textFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    }
+
+    D2D1_ANTIALIAS_MODE oldAA = ctx->GetAntialiasMode();
+    ctx->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+    D2D1_RECT_F snapped = D2D1::RectF(std::round(commitGenerateRect_.left), std::round(commitGenerateRect_.top),
+                                      std::round(commitGenerateRect_.right), std::round(commitGenerateRect_.bottom));
+    D2D1_ROUNDED_RECT rounded = D2D1::RoundedRect(snapped, 5.0f, 5.0f);
+    if (fillBrush)
+        ctx->FillRoundedRectangle(rounded, fillBrush);
+    if (borderBrush)
+        ctx->DrawRoundedRectangle(rounded, borderBrush, 1.0f);
+
+    ctx->SetAntialiasMode(oldAA);
+
+    if (textFormat && textBrush)
+        ctx->DrawTextW(label, (UINT32)wcslen(label), textFormat, commitGenerateRect_, textBrush);
+
+    if (fillBrush) fillBrush->Release();
+    if (borderBrush) borderBrush->Release();
+    if (textBrush) textBrush->Release();
+    if (textFormat) textFormat->Release();
+}
+
 void GitPanel::DrawQuickActions(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd)
 {
+    (void)hwnd;
     if (quickActionPrimaryRect_.right <= quickActionPrimaryRect_.left)
         return;
 
@@ -1083,12 +1246,14 @@ void GitPanel::DrawChanges(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND 
 
 void GitPanel::OnMouseMove(HWND hwnd, POINT clientPoint)
 {
+    hwnd_ = hwnd;
     bool changed = HandleResizeMouseMove(hwnd, clientPoint);
     if (state_.isResizing)
         return;
     if (state_.isHoveringResizeZone)
         return;
 
+    bool prevGenerateHover = commitGenerateHovered_;
     bool prevPrimaryHover = quickActionPrimaryHovered_;
     bool prevToggleHover  = quickActionToggleHovered_;
     int  prevQuickHover   = quickActionHoveredIndex_;
@@ -1096,6 +1261,7 @@ void GitPanel::OnMouseMove(HWND hwnd, POINT clientPoint)
     bool prevRefresh      = refreshBtnHovered_;
     int  prevSection      = hoveredSectionIndex_;
 
+    commitGenerateHovered_      = IsPointInRect(commitGenerateRect_, clientPoint);
     quickActionPrimaryHovered_ = IsPointInRect(quickActionPrimaryRect_, clientPoint);
     quickActionToggleHovered_  = IsPointInRect(quickActionToggleRect_,  clientPoint);
     quickActionHoveredIndex_   = IsPointInRect(quickActionMenuRect_, clientPoint) ? 2 : -1;
@@ -1103,7 +1269,8 @@ void GitPanel::OnMouseMove(HWND hwnd, POINT clientPoint)
     refreshBtnHovered_         = IsPointInRect(refreshBtnRect_, clientPoint);
     hoveredSectionIndex_       = HitTestSection(clientPoint);
 
-    if (prevPrimaryHover != quickActionPrimaryHovered_ ||
+    if (prevGenerateHover != commitGenerateHovered_      ||
+        prevPrimaryHover != quickActionPrimaryHovered_ ||
         prevToggleHover  != quickActionToggleHovered_  ||
         prevQuickHover   != quickActionHoveredIndex_   ||
         prevPull         != pullBtnHovered_            ||
@@ -1145,6 +1312,7 @@ bool GitPanel::HandleInputClick(HWND hwnd, POINT pt)
 
 void GitPanel::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
 {
+    hwnd_ = hwnd;
     if (HandleResizeLeftButtonDown(hwnd, clientPoint))
         return;
 
@@ -1169,6 +1337,13 @@ void GitPanel::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
         sectionCollapsed_[secHit] = !sectionCollapsed_[secHit];
         // Recompute scroll content size
         UpdateLayout(hwnd);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
+    }
+
+    if (IsPointInRect(commitGenerateRect_, clientPoint))
+    {
+        StartCommitMessageGeneration();
         InvalidateRect(hwnd, nullptr, FALSE);
         return;
     }
@@ -1245,6 +1420,7 @@ void GitPanel::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
 
 void GitPanel::OnLeftButtonUp(HWND hwnd)
 {
+    hwnd_ = hwnd;
     if (HandleResizeLeftButtonUp(hwnd))
         return;
 
@@ -1270,6 +1446,7 @@ void GitPanel::OnLeftButtonUp(HWND hwnd)
 
 void GitPanel::OnMouseWheel(HWND hwnd, int delta)
 {
+    hwnd_ = hwnd;
     POINT pt = {0, 0};
     GetCursorPos(&pt);
     ScreenToClient(hwnd, &pt);
@@ -1610,6 +1787,45 @@ void GitPanel::RefreshBranchInfo()
     }
 
     git_repository_free(repo);
+}
+
+void GitPanel::StartCommitMessageGeneration()
+{
+    if (commitGenerationInFlight_ || claudeBridge_.IsBusy())
+        return;
+
+    if (!isGitRepo_ || repoRoot_.empty())
+    {
+        lastError_ = L"Open a git repository before generating a commit message.";
+        InvalidatePanel();
+        return;
+    }
+
+    if (changes_.empty())
+    {
+        lastError_ = L"No pending changes to summarize.";
+        InvalidatePanel();
+        return;
+    }
+
+    const std::wstring executablePath = ResolveClaudeExecutablePath();
+    if (executablePath.empty())
+    {
+        lastError_ = L"Claude CLI not configured. Configure it from the Claude panel first.";
+        InvalidatePanel();
+        return;
+    }
+
+    ClaudeCliBridge::RequestOptions options;
+    options.executablePath = executablePath;
+    options.workingDirectory = repoRoot_;
+    options.prompt = BuildCommitGenerationPrompt();
+
+    if (!claudeBridge_.StartRequest(options))
+    {
+        lastError_ = L"A Claude request is already running.";
+        InvalidatePanel();
+    }
 }
 
 bool GitPanel::FetchFromRemote()
@@ -2190,6 +2406,54 @@ bool GitPanel::RunCommit(bool pushAfter)
     return pushed;
 }
 
+void GitPanel::InvalidatePanel() const
+{
+    if (hwnd_)
+        InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+std::wstring GitPanel::BuildCommitGenerationPrompt() const
+{
+    std::wstringstream prompt;
+    prompt << L"You are generating a git commit message for the current repository.\n";
+    prompt << L"Output only the commit message subject line.\n";
+    prompt << L"No quotes. No markdown. No explanation. No bullets.\n";
+    prompt << L"Use imperative mood and keep it under 72 characters.\n";
+    prompt << L"Nebula will stage all current changes before creating the commit.\n";
+    prompt << L"You may inspect the repository with the available tools if needed.\n\n";
+
+    if (!repoRoot_.empty())
+        prompt << L"Repository root: " << repoRoot_ << L"\n";
+    if (!currentBranch_.empty())
+        prompt << L"Current branch: " << currentBranch_ << L"\n";
+
+    prompt << L"\nCurrent changes:\n";
+    for (const Panels::GitChange &change : changes_)
+    {
+        if (change.statusFlags & GIT_STATUS_CONFLICTED)
+        {
+            prompt << L"- conflict: " << change.path << L"\n";
+            continue;
+        }
+
+        bool wroteAnyLabel = false;
+        if (change.indexStatus != L' ')
+        {
+            prompt << L"- " << StatusLabel(change.indexStatus, true) << L": " << change.path;
+            wroteAnyLabel = true;
+        }
+        if (change.worktreeStatus != L' ')
+        {
+            prompt << (wroteAnyLabel ? L" | " : L"- ");
+            prompt << StatusLabel(change.worktreeStatus, false) << L": " << change.path;
+        }
+        prompt << L"\n";
+    }
+
+    prompt << L"\nReturn the final commit message only.";
+    return prompt.str();
+}
+
 std::wstring GitPanel::Trim(const std::wstring &s)
 {
     size_t a = 0;
@@ -2199,6 +2463,76 @@ std::wstring GitPanel::Trim(const std::wstring &s)
     while (b > a && iswspace(s[b - 1]))
         --b;
     return s.substr(a, b - a);
+}
+
+std::wstring GitPanel::NormalizeCommitMessage(const std::wstring &text)
+{
+    std::wstring trimmed = Trim(text);
+    if (trimmed.empty())
+        return {};
+
+    std::wstringstream input(trimmed);
+    std::wstring line;
+    while (std::getline(input, line))
+    {
+        line = Trim(line);
+        if (line.empty() || line == L"```")
+            continue;
+
+        if (line.size() >= 2 && ((line.front() == L'"' && line.back() == L'"') ||
+                                 (line.front() == L'\'' && line.back() == L'\'')))
+            line = Trim(line.substr(1, line.size() - 2));
+
+        if (line.rfind(L"```", 0) == 0)
+            continue;
+        if (line.rfind(L"- ", 0) == 0 || line.rfind(L"* ", 0) == 0)
+            line = Trim(line.substr(2));
+        if (line.rfind(L"Commit message:", 0) == 0)
+            line = Trim(line.substr(15));
+
+        if (line.empty())
+            continue;
+
+        trimmed = line;
+        break;
+    }
+
+    std::wstring normalized;
+    normalized.reserve(trimmed.size());
+    bool previousSpace = false;
+    for (wchar_t ch : trimmed)
+    {
+        if (ch == L'\r' || ch == L'\n' || ch == L'\t')
+            ch = L' ';
+        if (iswspace(ch))
+        {
+            if (!previousSpace)
+                normalized.push_back(L' ');
+            previousSpace = true;
+        }
+        else
+        {
+            normalized.push_back(ch);
+            previousSpace = false;
+        }
+    }
+    return Trim(normalized);
+}
+
+std::wstring GitPanel::StatusLabel(wchar_t status, bool staged)
+{
+    switch (status)
+    {
+    case L'A': return staged ? L"staged added" : L"added";
+    case L'M': return staged ? L"staged modified" : L"modified";
+    case L'D': return staged ? L"staged deleted" : L"deleted";
+    case L'R': return staged ? L"staged renamed" : L"renamed";
+    case L'T': return staged ? L"staged type changed" : L"type changed";
+    case L'?': return L"untracked";
+    case L'U': return L"conflict";
+    case L'!': return L"unreadable";
+    default:   return staged ? L"staged changed" : L"changed";
+    }
 }
 
 std::wstring GitPanel::DecodeGitPath(const std::wstring &pathField)
@@ -2285,4 +2619,38 @@ std::wstring GitPanel::GetLastGitError(const std::wstring &fallback)
     if (!err || !err->message || err->message[0] == '\0')
         return fallback;
     return Utf8ToWide(err->message);
+}
+
+std::wstring GitPanel::GetClaudeSettingsPath()
+{
+    PWSTR appDataPath = nullptr;
+    std::filesystem::path out;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appDataPath)) && appDataPath)
+    {
+        out = std::filesystem::path(appDataPath) / L"Nebula";
+        CoTaskMemFree(appDataPath);
+        std::error_code ec;
+        std::filesystem::create_directories(out, ec);
+        out /= L"claude-cli.txt";
+    }
+    return out.wstring();
+}
+
+std::wstring GitPanel::ResolveClaudeExecutablePath()
+{
+    const std::wstring settingsPath = GetClaudeSettingsPath();
+    if (!settingsPath.empty())
+    {
+        std::wifstream in{std::filesystem::path(settingsPath)};
+        if (in.is_open())
+        {
+            std::wstring configured;
+            std::getline(in, configured);
+            configured = Trim(configured);
+            if (!configured.empty())
+                return configured;
+        }
+    }
+
+    return DetectClaudeExecutable();
 }

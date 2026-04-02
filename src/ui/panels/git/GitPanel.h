@@ -4,6 +4,7 @@
 #include "ui/components/input/TextInput.h"
 #include "ui/components/scrollbar/Scrollbar.h"
 #include "ui/panels/git/GitDiffDecorations.h"
+#include "ui/panels/claude/ClaudeCliBridge.h"
 
 #include <string>
 #include <vector>
@@ -43,6 +44,7 @@ private:
     void SyncRepoPathFromExplorer();
     void RefreshStatus();
     void RefreshBranchInfo();
+    void StartCommitMessageGeneration();
     bool FetchFromRemote();
     bool PullFromRemote();
     bool RunCommit();
@@ -60,23 +62,32 @@ private:
     void DrawBranchBar(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd);
     void DrawChanges(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd);
     void DrawQuickActions(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, HWND hwnd);
+    void DrawCommitGenerateButton(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
 
     bool IsPointInRect(const D2D1_RECT_F &rect, POINT pt) const;
     bool HandleInputClick(HWND hwnd, POINT pt);
+    void InvalidatePanel() const;
+    std::wstring BuildCommitGenerationPrompt() const;
 
     static std::wstring Trim(const std::wstring &s);
+    static std::wstring NormalizeCommitMessage(const std::wstring &text);
+    static std::wstring StatusLabel(wchar_t status, bool staged);
     static std::wstring DecodeGitPath(const std::wstring &pathField);
     static std::string WideToUtf8(const std::wstring &text);
     static std::wstring Utf8ToWide(const std::string &text);
     static std::wstring GetLastGitError(const std::wstring &fallback);
+    static std::wstring GetClaudeSettingsPath();
+    static std::wstring ResolveClaudeExecutablePath();
 
     TextInput commitMessageInput_;
     Scrollbar changesScrollbar_;
+    ClaudeCliBridge claudeBridge_;
 
     D2D1_RECT_F changesRect_         = D2D1::RectF(0, 0, 0, 0);
     D2D1_RECT_F branchBarRect_       = D2D1::RectF(0, 0, 0, 0);
     D2D1_RECT_F authStatusRect_      = D2D1::RectF(0, 0, 0, 0);
     D2D1_RECT_F infoRect_            = D2D1::RectF(0, 0, 0, 0);
+    D2D1_RECT_F commitGenerateRect_  = D2D1::RectF(0, 0, 0, 0);
     D2D1_RECT_F quickActionPrimaryRect_ = D2D1::RectF(0, 0, 0, 0);
     D2D1_RECT_F quickActionToggleRect_  = D2D1::RectF(0, 0, 0, 0);
     D2D1_RECT_F quickActionMenuRect_    = D2D1::RectF(0, 0, 0, 0);
@@ -117,6 +128,8 @@ private:
     static constexpr float kBranchBarH     = 36.0f;
 
     bool capturedScrollbar_        = false;
+    bool commitGenerateHovered_    = false;
+    bool commitGenerationInFlight_ = false;
     bool quickActionPrimaryHovered_ = false;
     bool quickActionToggleHovered_  = false;
     bool quickActionMenuOpen_       = false; // kept for layout compat, always false
@@ -124,4 +137,6 @@ private:
     bool wasVisibleLastLayout_  = false;
     bool hasAutoRefreshed_      = false;
     ULONGLONG lastAutoRefreshTick_ = 0;
+    HWND hwnd_ = nullptr;
+    std::wstring commitGenerationBuffer_;
 };

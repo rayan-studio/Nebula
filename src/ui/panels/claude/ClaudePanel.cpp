@@ -15,6 +15,7 @@
 // En-têtes standard pour les fonctionnalités utilisées comme les fichiers, les algorithmes, etc.
 #include <algorithm>
 #include <cmath>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -268,6 +269,101 @@ namespace
         }
         return out;
     }
+
+    std::wstring ToTitleCaseLocal(std::wstring value)
+    {
+        bool upperNext = true;
+        for (wchar_t &ch : value)
+        {
+            if (ch == L' ' || ch == L'-' || ch == L'_')
+            {
+                upperNext = true;
+                if (ch == L'_')
+                    ch = L' ';
+                continue;
+            }
+
+            ch = upperNext ? (wchar_t)towupper(ch) : (wchar_t)towlower(ch);
+            upperNext = false;
+        }
+        return value;
+    }
+
+    std::wstring FormatAccountValue(const std::wstring &value, const std::wstring &fallback, bool uppercaseClaude = false)
+    {
+        std::wstring trimmed = TrimWideLocal(value);
+        if (trimmed.empty())
+            return fallback;
+
+        std::wstring lowered = trimmed;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), towlower);
+        if (lowered == L"claude.ai")
+            return uppercaseClaude ? L"Claude AI" : L"claude.ai";
+        if (lowered == L"pro")
+            return L"Claude Pro";
+        if (lowered == L"max")
+            return L"Claude Max";
+        if (lowered == L"free")
+            return L"Claude Free";
+        return ToTitleCaseLocal(trimmed);
+    }
+
+    std::wstring ExtractRateLimitResetText(const std::wstring &text)
+    {
+        std::wstring cleaned = TrimWideLocal(text);
+        size_t marker = cleaned.find(L"resets ");
+        if (marker == std::wstring::npos)
+            return {};
+
+        std::wstring suffix = TrimWideLocal(cleaned.substr(marker + 7));
+        if (suffix.empty())
+            return {};
+        return L"Resets " + suffix;
+    }
+
+    std::wstring FormatRateLimitPercent(int usedPercentage)
+    {
+        if (usedPercentage < 0)
+            return L"--%";
+
+        usedPercentage = (std::max)(0, (std::min)(100, usedPercentage));
+        return std::to_wstring(usedPercentage) + L"%";
+    }
+
+    std::wstring FormatRateLimitResetLabel(long long resetUnixSeconds)
+    {
+        if (resetUnixSeconds <= 0)
+            return {};
+
+        std::time_t now = std::time(nullptr);
+        long long remaining = resetUnixSeconds - (long long)now;
+        if (remaining > 0)
+        {
+            if (remaining < 3600)
+            {
+                int minutes = (int)((remaining + 59) / 60);
+                return L"Resets in " + std::to_wstring((std::max)(1, minutes)) + L"m";
+            }
+            if (remaining < 86400)
+            {
+                int hours = (int)((remaining + 3599) / 3600);
+                return L"Resets in " + std::to_wstring((std::max)(1, hours)) + L"h";
+            }
+
+            int days = (int)((remaining + 86399) / 86400);
+            return L"Resets in " + std::to_wstring((std::max)(1, days)) + L"d";
+        }
+
+        __time64_t resetTime = (__time64_t)resetUnixSeconds;
+        std::tm tmLocal{};
+        if (_localtime64_s(&tmLocal, &resetTime) != 0)
+            return {};
+
+        wchar_t buffer[64] = {};
+        if (wcsftime(buffer, sizeof(buffer) / sizeof(buffer[0]), L"Resets %a %H:%M", &tmLocal) == 0)
+            return {};
+        return buffer;
+    }
 }
 
 ClaudePanel::ClaudePanel()
@@ -316,6 +412,11 @@ ClaudePanel::ClaudePanel()
 
     bridge_.onToolEvent = [this](const ClaudeCliBridge::ToolEvent &event) {
         QueueToolMessage(event);
+        InvalidatePanel();
+    };
+
+    bridge_.onRateLimitInfo = [this](const ClaudeCliBridge::RateLimitInfo &info) {
+        rateLimits_ = info;
         InvalidatePanel();
     };
 
@@ -796,10 +897,13 @@ void ClaudePanel::RefreshConversationHistory(bool force)
     {
         selectedHistoryIndex_ = -1;
         currentConversationUsage_ = {};
+        lastKnownRateLimitResetText_.clear();
         return;
     }
 
     std::error_code ec;
+    std::wstring latestRateLimitResetText;
+    std::string latestRateLimitTimestamp;
     for (const auto &entry : std::filesystem::directory_iterator(projectDir, ec))
     {
         if (ec || !entry.is_regular_file())
@@ -825,6 +929,16 @@ void ClaudePanel::RefreshConversationHistory(bool force)
                 std::string timestamp = ExtractJsonStringField(line, "timestamp");
                 if (!timestamp.empty() && timestamp > latestTimestamp)
                     latestTimestamp = timestamp;
+
+                if (line.find("\"error\":\"rate_limit\"") != std::string::npos)
+                {
+                    std::wstring resetText = ExtractRateLimitResetText(Utf8ToWideLocal(ExtractJsonStringField(line, "text")));
+                    if (!resetText.empty() && timestamp >= latestRateLimitTimestamp)
+                    {
+                        latestRateLimitTimestamp = timestamp;
+                        latestRateLimitResetText = resetText;
+                    }
+                }
             }
 
             if (line.find("\"type\":\"ai-title\"") != std::string::npos)
@@ -877,6 +991,8 @@ void ClaudePanel::RefreshConversationHistory(bool force)
 
         historyEntries_.push_back(std::move(historyEntry));
     }
+
+    lastKnownRateLimitResetText_ = latestRateLimitResetText;
 
     std::sort(historyEntries_.begin(), historyEntries_.end(),
               [](const ConversationHistoryEntry &a, const ConversationHistoryEntry &b) {
@@ -1523,100 +1639,204 @@ void ClaudePanel::DrawHistoryList(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite
 
 void ClaudePanel::DrawUsageOverlay(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
 {
-    const float cardWidth = (std::min)(messagesRect_.right - messagesRect_.left - 12.0f, 420.0f);
+    const float availableWidth = (std::max)(280.0f, messagesRect_.right - messagesRect_.left);
+    const float availableHeight = (std::max)(220.0f, messagesRect_.bottom - messagesRect_.top);
+    const float cardWidth = (std::min)(432.0f, availableWidth - 32.0f);
+    const float cardHeight = (std::min)(398.0f, availableHeight - 32.0f);
+    const float cardLeft = messagesRect_.left + ((availableWidth - cardWidth) * 0.5f);
+    const float cardTop = messagesRect_.top + ((availableHeight - cardHeight) * 0.5f);
+    const D2D1_RECT_F shadowRect = D2D1::RectF(
+        cardLeft,
+        cardTop + 8.0f,
+        cardLeft + cardWidth,
+        cardTop + cardHeight + 8.0f);
     const D2D1_RECT_F cardRect = D2D1::RectF(
-        messagesRect_.left + 6.0f,
-        messagesRect_.top + 12.0f,
-        messagesRect_.left + 6.0f + cardWidth,
-        messagesRect_.top + 260.0f);
+        cardLeft,
+        cardTop,
+        cardLeft + cardWidth,
+        cardTop + cardHeight);
+    usageOverlayRect_ = cardRect;
 
+    const auto &palette = UI::Theme::GetPalette();
+    const D2D1_COLOR_F accent = UI::Theme::Accent();
     ID2D1SolidColorBrush *bgBrush = nullptr;
     ID2D1SolidColorBrush *borderBrush = nullptr;
     ID2D1SolidColorBrush *titleBrush = nullptr;
     ID2D1SolidColorBrush *mutedBrush = nullptr;
     ID2D1SolidColorBrush *accentBrush = nullptr;
     ID2D1SolidColorBrush *barBgBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.07f, 0.09f, 0.12f, 0.98f), &bgBrush);
-    ctx->CreateSolidColorBrush(UI::Theme::Accent(), &borderBrush);
+    ID2D1SolidColorBrush *shadowBrush = nullptr;
+    ID2D1SolidColorBrush *closeBrush = nullptr;
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.f, 0.f, 0.f, 0.18f), &shadowBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(palette.inputBackground.r, palette.inputBackground.g, palette.inputBackground.b, 0.985f), &bgBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(palette.inputBorder.r, palette.inputBorder.g, palette.inputBorder.b, 0.95f), &borderBrush);
     ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &titleBrush);
     ctx->CreateSolidColorBrush(UI::Theme::MutedText(), &mutedBrush);
-    ctx->CreateSolidColorBrush(UI::Theme::Accent(), &accentBrush);
-    ctx->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, 0.18f), &barBgBrush);
+    ctx->CreateSolidColorBrush(accent, &accentBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, 0.14f), &barBgBrush);
+    ctx->CreateSolidColorBrush(usageCloseButtonHovered_ ? UI::Theme::PrimaryText() : UI::Theme::MutedText(), &closeBrush);
 
     IDWriteTextFormat *titleFormat = nullptr;
+    IDWriteTextFormat *bodyFormat = nullptr;
     IDWriteTextFormat *labelFormat = nullptr;
     IDWriteTextFormat *valueFormat = nullptr;
+    IDWriteTextFormat *trailingValueFormat = nullptr;
+    IDWriteTextFormat *percentFormat = nullptr;
+    IDWriteTextFormat *closeFormat = nullptr;
     dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                             12.5f, L"en-us", &titleFormat);
+                             14.5f, L"en-us", &titleFormat);
+    dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                             11.0f, L"en-us", &bodyFormat);
     dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                             10.5f, L"en-us", &labelFormat);
+                             11.0f, L"en-us", &labelFormat);
     dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
                              11.0f, L"en-us", &valueFormat);
+    dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                             11.0f, L"en-us", &trailingValueFormat);
+    dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                             11.5f, L"en-us", &percentFormat);
+    dwrite->CreateTextFormat(L"Segoe Fluent Icons", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                             12.0f, L"en-us", &closeFormat);
 
+    if (valueFormat)
+        valueFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    if (trailingValueFormat)
+    {
+        trailingValueFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        trailingValueFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+    }
+    if (percentFormat)
+    {
+        percentFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        percentFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+    }
+
+    if (shadowBrush)
+        ctx->FillRoundedRectangle(D2D1::RoundedRect(shadowRect, 12.0f, 12.0f), shadowBrush);
     if (bgBrush)
         ctx->FillRoundedRectangle(D2D1::RoundedRect(cardRect, 10.0f, 10.0f), bgBrush);
     if (borderBrush)
         ctx->DrawRoundedRectangle(D2D1::RoundedRect(cardRect, 10.0f, 10.0f), borderBrush, 1.0f);
 
-    const float left = cardRect.left + 14.0f;
-    const float right = cardRect.right - 14.0f;
-    float y = cardRect.top + 14.0f;
+    const float left = cardRect.left + 16.0f;
+    const float right = cardRect.right - 16.0f;
+    const float rowSplit = left + 110.0f;
+    float y = cardRect.top + 18.0f;
+    usageCloseButtonRect_ = D2D1::RectF(cardRect.right - 30.0f, cardRect.top + 14.0f, cardRect.right - 12.0f, cardRect.top + 30.0f);
+
     if (titleFormat && titleBrush)
         ctx->DrawTextW(L"Account & Usage", 15, titleFormat,
-                       D2D1::RectF(left, y, right, y + 18.0f), titleBrush);
-    y += 26.0f;
+                       D2D1::RectF(left, y, right - 28.0f, y + 20.0f), titleBrush);
+    if (closeFormat && closeBrush)
+        ctx->DrawTextW(L"\uE711", 1, closeFormat, usageCloseButtonRect_, closeBrush);
+    y += 34.0f;
 
-    auto drawRow = [&](const wchar_t *label, const std::wstring &value) {
+    auto drawSectionLabel = [&](const wchar_t *label) {
         if (labelFormat && mutedBrush)
             ctx->DrawTextW(label, (UINT32)wcslen(label), labelFormat,
-                           D2D1::RectF(left, y, left + 132.0f, y + 16.0f), mutedBrush);
-        if (valueFormat && titleBrush)
-            ctx->DrawTextW(value.c_str(), (UINT32)value.size(), valueFormat,
-                           D2D1::RectF(left + 132.0f, y, right, y + 16.0f), titleBrush);
-        y += 24.0f;
+                           D2D1::RectF(left, y, right, y + 16.0f), mutedBrush);
+        y += 22.0f;
     };
 
-    if (labelFormat && mutedBrush)
-        ctx->DrawTextW(L"ACCOUNT", 7, labelFormat, D2D1::RectF(left, y, right, y + 16.0f), mutedBrush);
-    y += 22.0f;
-    drawRow(L"Auth method", accountInfo_.authMethod.empty() ? L"Unavailable" : accountInfo_.authMethod);
+    auto drawRow = [&](const wchar_t *label, const std::wstring &value) {
+        const std::wstring clippedValue = TruncateText(value, 44);
+        if (bodyFormat && mutedBrush)
+            ctx->DrawTextW(label, (UINT32)wcslen(label), bodyFormat,
+                           D2D1::RectF(left, y, rowSplit - 12.0f, y + 18.0f), mutedBrush);
+        if (trailingValueFormat && titleBrush)
+            ctx->DrawTextW(clippedValue.c_str(), (UINT32)clippedValue.size(), trailingValueFormat,
+                           D2D1::RectF(rowSplit, y, right, y + 18.0f), titleBrush);
+        y += 30.0f;
+    };
+
+    drawSectionLabel(L"ACCOUNT");
+    drawRow(L"Auth method", FormatAccountValue(accountInfo_.authMethod, L"Unavailable", true));
     drawRow(L"Email", accountInfo_.email.empty() ? L"Unavailable" : accountInfo_.email);
     drawRow(L"Organization", accountInfo_.orgName.empty() ? L"Unavailable" : accountInfo_.orgName);
-    drawRow(L"Plan", accountInfo_.subscriptionType.empty() ? L"Unavailable" : accountInfo_.subscriptionType);
+    drawRow(L"Plan", FormatAccountValue(accountInfo_.subscriptionType, L"Unavailable"));
 
-    y += 4.0f;
-    if (labelFormat && mutedBrush)
-        ctx->DrawTextW(L"SESSION", 7, labelFormat, D2D1::RectF(left, y, right, y + 16.0f), mutedBrush);
-    y += 22.0f;
+    y += 8.0f;
+    drawSectionLabel(L"USAGE");
 
+    const int totalMessages = currentConversationUsage_.userMessages + currentConversationUsage_.assistantMessages;
     const int totalTokens = currentConversationUsage_.inputTokens + currentConversationUsage_.outputTokens;
-    drawRow(L"Conversation", CurrentConversationTitle());
-    drawRow(L"Messages", std::to_wstring(currentConversationUsage_.userMessages + currentConversationUsage_.assistantMessages));
-    drawRow(L"Tool calls", std::to_wstring(currentConversationUsage_.toolCalls));
-    drawRow(L"Tokens", std::to_wstring(totalTokens));
+    const std::wstring sessionStats = std::to_wstring(totalMessages) + L" msg  " +
+                                      std::to_wstring(currentConversationUsage_.toolCalls) + L" tools  " +
+                                      std::to_wstring(totalTokens) + L" tokens";
 
-    const float barWidth = right - left;
-    const float fillWidth = totalTokens <= 0 ? 0.0f : (std::min)(barWidth, barWidth * (float)(std::min)(totalTokens, 20000) / 20000.0f);
-    const D2D1_RECT_F barRect = D2D1::RectF(left, cardRect.bottom - 42.0f, right, cardRect.bottom - 36.0f);
-    if (barBgBrush)
-        ctx->FillRoundedRectangle(D2D1::RoundedRect(barRect, 3.0f, 3.0f), barBgBrush);
-    if (accentBrush && fillWidth > 0.0f)
-        ctx->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(barRect.left, barRect.top, barRect.left + fillWidth, barRect.bottom), 3.0f, 3.0f), accentBrush);
+    auto drawUsageBar = [&](const std::wstring &label, const ClaudeCliBridge::RateLimitWindow &window,
+                            const std::wstring &fallbackResetText) {
+        std::wstring percent = FormatRateLimitPercent(window.usedPercentage);
+        std::wstring resetText = FormatRateLimitResetLabel(window.resetsAtUnix);
+        if (resetText.empty())
+            resetText = fallbackResetText;
+        if (resetText.empty())
+            resetText = L"Available after Claude reports usage";
 
-    usageLinkRect_ = D2D1::RectF(left, cardRect.bottom - 24.0f, left + 170.0f, cardRect.bottom - 8.0f);
-    if (valueFormat && (usageLinkHovered_ ? accentBrush : mutedBrush))
-        ctx->DrawTextW(L"Manage usage on claude.ai", 25, valueFormat, usageLinkRect_,
+        const float top = y;
+        if (bodyFormat && titleBrush)
+            ctx->DrawTextW(label.c_str(), (UINT32)label.size(), bodyFormat,
+                           D2D1::RectF(left, top, right - 64.0f, top + 18.0f), titleBrush);
+        if (percentFormat && titleBrush)
+            ctx->DrawTextW(percent.c_str(), (UINT32)percent.size(), percentFormat,
+                           D2D1::RectF(right - 64.0f, top, right, top + 18.0f), titleBrush);
+
+        const float progressTop = top + 24.0f;
+        const D2D1_RECT_F barRect = D2D1::RectF(left, progressTop, right, progressTop + 7.0f);
+        if (barBgBrush)
+            ctx->FillRoundedRectangle(D2D1::RoundedRect(barRect, 3.5f, 3.5f), barBgBrush);
+
+        const float fillRatio = window.usedPercentage < 0 ? 0.0f : ((std::max)(0, (std::min)(100, window.usedPercentage)) / 100.0f);
+        const float fillWidth = (barRect.right - barRect.left) * fillRatio;
+        if (accentBrush && fillWidth > 0.0f)
+            ctx->FillRoundedRectangle(D2D1::RoundedRect(
+                D2D1::RectF(barRect.left, barRect.top, barRect.left + fillWidth, barRect.bottom), 3.5f, 3.5f), accentBrush);
+
+        if (bodyFormat && mutedBrush)
+            ctx->DrawTextW(resetText.c_str(), (UINT32)resetText.size(), bodyFormat,
+                           D2D1::RectF(left, progressTop + 11.0f, right, progressTop + 28.0f), mutedBrush);
+        y += 62.0f;
+    };
+
+    const std::wstring sessionResetFallback = !rateLimits_.fiveHour.available ? lastKnownRateLimitResetText_ : std::wstring();
+    drawUsageBar(L"Session (5hr)", rateLimits_.fiveHour, sessionResetFallback);
+    drawUsageBar(L"Weekly (7 day)", rateLimits_.sevenDay, L"Reported by Claude Code when available");
+
+    const float footerTop = cardRect.bottom - 54.0f;
+    if (bodyFormat && mutedBrush)
+        ctx->DrawTextW(sessionStats.c_str(), (UINT32)sessionStats.size(), bodyFormat,
+                       D2D1::RectF(left, footerTop, right, footerTop + 16.0f), mutedBrush);
+
+    usageLinkRect_ = D2D1::RectF(left, cardRect.bottom - 28.0f, left + 176.0f, cardRect.bottom - 10.0f);
+    if (bodyFormat && (usageLinkHovered_ ? accentBrush : mutedBrush))
+        ctx->DrawTextW(L"Manage usage on claude.ai", 25, bodyFormat, usageLinkRect_,
                        usageLinkHovered_ ? accentBrush : mutedBrush);
 
+    if (closeFormat)
+        closeFormat->Release();
+    if (percentFormat)
+        percentFormat->Release();
+    if (trailingValueFormat)
+        trailingValueFormat->Release();
     if (valueFormat)
         valueFormat->Release();
     if (labelFormat)
         labelFormat->Release();
+    if (bodyFormat)
+        bodyFormat->Release();
     if (titleFormat)
         titleFormat->Release();
+    if (closeBrush)
+        closeBrush->Release();
+    if (shadowBrush)
+        shadowBrush->Release();
     if (barBgBrush)
         barBgBrush->Release();
     if (accentBrush)
@@ -1909,6 +2129,12 @@ void ClaudePanel::OnMouseMove(HWND hwnd, POINT clientPoint)
         usageLinkHovered_ = usageLinkHovered;
         changed = true;
     }
+    bool usageCloseHovered = showUsageOverlay_ && IsPointInRect(usageCloseButtonRect_, clientPoint);
+    if (usageCloseHovered != usageCloseButtonHovered_)
+    {
+        usageCloseButtonHovered_ = usageCloseHovered;
+        changed = true;
+    }
     int hoveredHistory = -1;
     if (showHistory_)
     {
@@ -1970,9 +2196,23 @@ void ClaudePanel::OnLeftButtonDown(HWND hwnd, POINT clientPoint)
         return;
     }
 
+    if (showUsageOverlay_ && IsPointInRect(usageCloseButtonRect_, clientPoint))
+    {
+        showUsageOverlay_ = false;
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
+    }
+
     if (showUsageOverlay_ && IsPointInRect(usageLinkRect_, clientPoint))
     {
         ShellExecuteW(hwnd, L"open", L"https://claude.ai/settings", nullptr, nullptr, SW_SHOWNORMAL);
+        return;
+    }
+
+    if (showUsageOverlay_ && !IsPointInRect(usageOverlayRect_, clientPoint))
+    {
+        showUsageOverlay_ = false;
+        InvalidateRect(hwnd, nullptr, FALSE);
         return;
     }
 

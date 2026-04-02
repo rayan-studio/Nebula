@@ -31,6 +31,20 @@ public:
         bool success = true;
     };
 
+    struct RateLimitWindow
+    {
+        bool available = false;
+        int usedPercentage = -1;
+        long long resetsAtUnix = 0;
+    };
+
+    struct RateLimitInfo
+    {
+        bool available = false;
+        RateLimitWindow fiveHour;
+        RateLimitWindow sevenDay;
+    };
+
     enum class AuthState
     {
         NotConfigured,
@@ -64,6 +78,7 @@ public:
     std::function<void()> onRequestStarted;
     std::function<void(const std::wstring &)> onTextDelta;
     std::function<void(const ToolEvent &)> onToolEvent;
+    std::function<void(const RateLimitInfo &)> onRateLimitInfo;
     std::function<void(const std::wstring &, const std::wstring &)> onRequestFinished;
     std::function<void(const std::wstring &)> onError;
 
