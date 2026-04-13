@@ -122,6 +122,14 @@ public:
     int GetLogicalWidth() const { return state_.logicalWidth; }
     int GetPhysicalWidth() const { return state_.physicalWidth; }
     float GetPhysicalRightEdge() const { return state_.rightEdge; }
+    virtual void SetLogicalWidth(int width)
+    {
+        if (width < state_.minWidth)
+            width = state_.minWidth;
+        if (width > state_.maxWidth)
+            width = state_.maxWidth;
+        state_.logicalWidth = width;
+    }
     
     // Hit testing and resize
     virtual bool IsPointInPanel(POINT clientPoint) const;

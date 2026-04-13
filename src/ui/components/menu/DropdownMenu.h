@@ -41,6 +41,7 @@ void ShowMenuDropdown(HWND hwnd, int menuIndex, D2D1_RECT_F menuRect);
 void HideMenuDropdown(HWND hwnd);
 bool IsMenuDropdownVisible();
 void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite);
+void DrawDropdownPanel(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, MenuDropdown &dd);
 int GetDropdownHoveredItem(POINT pt);
 void SetDropdownHoveredItem(int index);
 bool IsPointInDropdown(POINT pt);

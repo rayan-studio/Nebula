@@ -2,6 +2,122 @@
 #include "helpers/window_helpers.h"
 #include <algorithm>
 
+namespace
+{
+int ClampWidth(int value, int minValue, int maxValue)
+{
+    if (value < minValue)
+        return minValue;
+    if (value > maxValue)
+        return maxValue;
+    return value;
+}
+
+int GetStoredPreferredWidth(const std::unordered_map<PanelId, int> &preferredWidths, Panel *panel)
+{
+    if (!panel)
+        return 0;
+
+    auto it = preferredWidths.find(panel->GetId());
+    if (it != preferredWidths.end())
+        return ClampWidth(it->second, panel->GetState().minWidth, panel->GetState().maxWidth);
+
+    return ClampWidth(panel->GetLogicalWidth(), panel->GetState().minWidth, panel->GetState().maxWidth);
+}
+
+void RememberPreferredWidth(std::unordered_map<PanelId, int> &preferredWidths, Panel *panel)
+{
+    if (!panel)
+        return;
+
+    preferredWidths[panel->GetId()] =
+        ClampWidth(panel->GetLogicalWidth(), panel->GetState().minWidth, panel->GetState().maxWidth);
+}
+
+struct ResponsiveWidthTargets
+{
+    int left = 0;
+    int right = 0;
+    bool adjusted = false;
+};
+
+ResponsiveWidthTargets ComputeResponsiveTargets(
+    int preferredLeft,
+    int preferredRight,
+    int leftMin,
+    int rightMin,
+    int totalAvailableLogical,
+    int preferredAvailableLogical)
+{
+    ResponsiveWidthTargets targets;
+    targets.left = preferredLeft;
+    targets.right = preferredRight;
+
+    if (preferredLeft <= 0 || preferredRight <= 0)
+        return targets;
+
+    if (preferredLeft + preferredRight <= preferredAvailableLogical)
+        return targets;
+
+    const int responsiveLeftFloor = ClampWidth((leftMin * 2) / 3, 120, preferredLeft);
+    const int responsiveRightFloor = ClampWidth((rightMin * 2) / 3, 120, preferredRight);
+    const int floorTotal = responsiveLeftFloor + responsiveRightFloor;
+
+    int targetTotal = preferredAvailableLogical;
+    if (targetTotal < floorTotal)
+        targetTotal = floorTotal;
+    if (targetTotal > totalAvailableLogical)
+        targetTotal = totalAvailableLogical;
+    if (targetTotal < 0)
+        targetTotal = 0;
+
+    if (targetTotal >= preferredLeft + preferredRight)
+        return targets;
+
+    int overflow = (preferredLeft + preferredRight) - targetTotal;
+    int leftShrinkable = preferredLeft - responsiveLeftFloor;
+    if (leftShrinkable < 0)
+        leftShrinkable = 0;
+    int rightShrinkable = preferredRight - responsiveRightFloor;
+    if (rightShrinkable < 0)
+        rightShrinkable = 0;
+    int shrinkableTotal = leftShrinkable + rightShrinkable;
+
+    if (shrinkableTotal <= 0)
+    {
+        targets.left = responsiveLeftFloor;
+        targets.right = responsiveRightFloor;
+        targets.adjusted = true;
+        return targets;
+    }
+
+    int leftShrink = (overflow * leftShrinkable + (shrinkableTotal / 2)) / shrinkableTotal;
+    int rightShrink = overflow - leftShrink;
+
+    targets.left = ClampWidth(preferredLeft - leftShrink, responsiveLeftFloor, preferredLeft);
+    targets.right = ClampWidth(preferredRight - rightShrink, responsiveRightFloor, preferredRight);
+
+    int currentTotal = targets.left + targets.right;
+    while (currentTotal > targetTotal)
+    {
+        int leftSlack = targets.left - responsiveLeftFloor;
+        int rightSlack = targets.right - responsiveRightFloor;
+        if (leftSlack <= 0 && rightSlack <= 0)
+            break;
+
+        if (leftSlack >= rightSlack && leftSlack > 0)
+            --targets.left;
+        else if (rightSlack > 0)
+            --targets.right;
+
+        currentTotal = targets.left + targets.right;
+    }
+
+    targets.adjusted = (targets.left != preferredLeft || targets.right != preferredRight);
+    return targets;
+}
+}
+
 PanelManager& PanelManager::Instance()
 {
     static PanelManager instance;
@@ -22,6 +138,7 @@ void PanelManager::RegisterPanel(std::unique_ptr<Panel> panel)
     panelList_.push_back(rawPtr);
     
     rawPtr->Initialize();
+    preferredLogicalWidths_[id] = rawPtr->GetLogicalWidth();
     
     if (!activePanel_)
     {
@@ -168,6 +285,75 @@ void PanelManager::UpdateLayout(HWND hwnd)
 {
     for (Panel* p : panelList_)
         p->UpdateLayout(hwnd);
+
+    Panel* leftPanel = GetVisiblePanel(false);
+    Panel* rightPanel = GetVisiblePanel(true);
+
+    if (leftPanel && leftPanel->IsResizing())
+        RememberPreferredWidth(preferredLogicalWidths_, leftPanel);
+    if (rightPanel && rightPanel->IsResizing())
+        RememberPreferredWidth(preferredLogicalWidths_, rightPanel);
+
+    if (!leftPanel && !rightPanel)
+        return;
+
+    RECT clientRect = {};
+    GetClientRect(hwnd, &clientRect);
+    UINT dpi = win32_get_dpi_for_window(hwnd);
+
+    const int clientPhysicalWidth = clientRect.right - clientRect.left;
+    const int clientLogicalWidth = MulDiv(clientPhysicalWidth, 96, (int)dpi);
+    const int sidebarPhysicalWidth = win32_dpi_scale(52, dpi);
+    const int sidebarLogicalWidth = MulDiv(sidebarPhysicalWidth, 96, (int)dpi);
+    const int minCenterLogicalWidth = 320;
+    int preferredAvailableLogical = clientLogicalWidth - sidebarLogicalWidth - minCenterLogicalWidth;
+    if (preferredAvailableLogical < 0)
+        preferredAvailableLogical = 0;
+    int totalAvailableLogical = clientLogicalWidth - sidebarLogicalWidth - 1;
+    if (totalAvailableLogical < 0)
+        totalAvailableLogical = 0;
+
+    if (leftPanel && rightPanel)
+    {
+        const int preferredLeft = GetStoredPreferredWidth(preferredLogicalWidths_, leftPanel);
+        const int preferredRight = GetStoredPreferredWidth(preferredLogicalWidths_, rightPanel);
+        const auto targets = ComputeResponsiveTargets(
+            preferredLeft,
+            preferredRight,
+            leftPanel->GetState().minWidth,
+            rightPanel->GetState().minWidth,
+            totalAvailableLogical,
+            preferredAvailableLogical);
+
+        bool widthChanged = false;
+        if (leftPanel->GetLogicalWidth() != targets.left)
+        {
+            leftPanel->SetLogicalWidth(targets.left);
+            widthChanged = true;
+        }
+        if (rightPanel->GetLogicalWidth() != targets.right)
+        {
+            rightPanel->SetLogicalWidth(targets.right);
+            widthChanged = true;
+        }
+
+        if (widthChanged)
+        {
+            leftPanel->UpdateLayout(hwnd);
+            rightPanel->UpdateLayout(hwnd);
+        }
+    }
+    else
+    {
+        Panel* singlePanel = leftPanel ? leftPanel : rightPanel;
+        const int preferredWidth = GetStoredPreferredWidth(preferredLogicalWidths_, singlePanel);
+
+        if (singlePanel->GetLogicalWidth() != preferredWidth)
+        {
+            singlePanel->SetLogicalWidth(preferredWidth);
+            singlePanel->UpdateLayout(hwnd);
+        }
+    }
 }
 
 void PanelManager::OnMouseMove(HWND hwnd, POINT clientPoint)

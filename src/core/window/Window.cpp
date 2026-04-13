@@ -205,6 +205,8 @@ static constexpr UINT DIAG_TIMER_INTERVAL_MS = 80;
 static constexpr DWORD DIAG_DISPATCH_DELAY_MS = 120;
 static constexpr UINT EDITOR_DRAG_TIMER_ID = 4;
 static constexpr UINT EDITOR_DRAG_TIMER_INTERVAL_MS = 16;
+static constexpr int RUN_POPUP_BASE_ID = 8100;
+static constexpr int TITLEBAR_SYSTEM_POPUP_BASE_ID = 8200;
 
 struct KeyMods
 {
@@ -2575,6 +2577,53 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     {
         int id = LOWORD(wParam);
 
+        if (id >= RUN_POPUP_BASE_ID && id < RUN_POPUP_BASE_ID + 10)
+        {
+            switch (id - RUN_POPUP_BASE_ID)
+            {
+            case 0:
+                RunActiveProject();
+                return 0;
+            case 1:
+                RunActiveProjectDebug();
+                return 0;
+            default:
+                break;
+            }
+        }
+
+        if (id >= TITLEBAR_SYSTEM_POPUP_BASE_ID && id < TITLEBAR_SYSTEM_POPUP_BASE_ID + 10)
+        {
+            const BOOL isMaximized = IsZoomed(hwnd_);
+            switch (id - TITLEBAR_SYSTEM_POPUP_BASE_ID)
+            {
+            case 0:
+                if (isMaximized)
+                    PostMessageW(hwnd_, WM_SYSCOMMAND, SC_RESTORE, 0);
+                return 0;
+            case 1:
+                if (!isMaximized)
+                    PostMessageW(hwnd_, WM_SYSCOMMAND, SC_MOVE, 0);
+                return 0;
+            case 2:
+                if (!isMaximized)
+                    PostMessageW(hwnd_, WM_SYSCOMMAND, SC_SIZE, 0);
+                return 0;
+            case 3:
+                PostMessageW(hwnd_, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+                return 0;
+            case 4:
+                if (!isMaximized)
+                    PostMessageW(hwnd_, WM_SYSCOMMAND, SC_MAXIMIZE, 0);
+                return 0;
+            case 5:
+                PostMessageW(hwnd_, WM_SYSCOMMAND, SC_CLOSE, 0);
+                return 0;
+            default:
+                break;
+            }
+        }
+
         // Editor context menu commands (7000..7999)
         if (id >= 7000 && id < 8000)
         {
@@ -3012,30 +3061,13 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 
                 if (openRunMenu)
                 {
-                    HMENU runMenu = CreatePopupMenu();
-                    if (runMenu)
-                    {
-                        AppendMenuW(runMenu, MF_STRING, 1, L"Run (Release)");
-                        AppendMenuW(runMenu, MF_STRING, 2, L"Run with Debug Reports");
-
-                        POINT menuPos = {buttonRects.run.left, buttonRects.run.bottom};
-                        ClientToScreen(hwnd_, &menuPos);
-
-                        UINT cmd = TrackPopupMenu(
-                            runMenu,
-                            TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN,
-                            menuPos.x,
-                            menuPos.y,
-                            0,
-                            hwnd_,
-                            nullptr);
-                        DestroyMenu(runMenu);
-
-                        if (cmd == 1)
-                            RunActiveProject();
-                        else if (cmd == 2)
-                            RunActiveProjectDebug();
-                    }
+                    std::vector<std::wstring> items = {
+                        L"Run (Release)",
+                        L"Run with Debug Reports"
+                    };
+                    POINT menuPos = {buttonRects.run.left, buttonRects.run.bottom};
+                    ClientToScreen(hwnd_, &menuPos);
+                    ShowCustomPopup(hwnd_, items, menuPos, RUN_POPUP_BASE_ID);
                 }
                 else
                 {
@@ -3104,22 +3136,31 @@ LRESULT Window::HandleMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
     {
         if (wParam == HTCAPTION)
         {
-            BOOL const isMaximized = IsZoomed(hwnd_);
-            MENUITEMINFO menu_item_info = {};
-            menu_item_info.cbSize = sizeof(menu_item_info);
-            menu_item_info.fMask = MIIM_STATE;
-            HMENU const sys_menu = GetSystemMenu(hwnd_, false);
-            set_menu_item_state(sys_menu, &menu_item_info, SC_RESTORE, isMaximized);
-            set_menu_item_state(sys_menu, &menu_item_info, SC_MOVE, !isMaximized);
-            set_menu_item_state(sys_menu, &menu_item_info, SC_SIZE, !isMaximized);
-            set_menu_item_state(sys_menu, &menu_item_info, SC_MINIMIZE, true);
-            set_menu_item_state(sys_menu, &menu_item_info, SC_MAXIMIZE, !isMaximized);
-            set_menu_item_state(sys_menu, &menu_item_info, SC_CLOSE, true);
-            BOOL const result = TrackPopupMenu(sys_menu, TPM_RETURNCMD, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), 0, hwnd_, NULL);
-            if (result != 0)
-            {
-                PostMessage(hwnd_, WM_SYSCOMMAND, result, 0);
-            }
+            const BOOL isMaximized = IsZoomed(hwnd_);
+            std::vector<std::wstring> items = {
+                L"Restore",
+                L"Move",
+                L"Size",
+                L"Minimize",
+                L"Maximize",
+                L"Close"
+            };
+            std::vector<bool> separators(items.size(), false);
+            std::vector<std::wstring> shortcuts(items.size(), L"");
+            std::vector<bool> enabled = {
+                isMaximized != FALSE,
+                isMaximized == FALSE,
+                isMaximized == FALSE,
+                true,
+                isMaximized == FALSE,
+                true
+            };
+            separators[5] = true;
+            shortcuts[5] = L"Alt+F4";
+
+            POINT menuPos = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            ShowCustomPopup(hwnd_, items, menuPos, TITLEBAR_SYSTEM_POPUP_BASE_ID, separators, shortcuts, enabled);
+            return 0;
         }
         return DefWindowProc(hwnd_, uMsg, wParam, lParam);
     }

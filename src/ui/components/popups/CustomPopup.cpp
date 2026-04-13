@@ -3,6 +3,7 @@
 // Hover + selection handled in its own WndProc; sends WM_COMMAND to parent on selection.
 
 #include "CustomPopup.h"
+#include "ui/components/menu/DropdownMenu.h"
 #include "ui/theme/Theme.h"
 #include "utils/logger/Logger.h"
 
@@ -14,37 +15,12 @@
 #include <sstream>
 
 static const wchar_t *POPUP_MENU_CLASS = L"NebulaContextMenuV2";
+static constexpr int kPopupCornerRadius = 6;
 
-// Layout (mirror DropdownMenu constants)
-static constexpr float kItemH    = 32.0f;
-static constexpr float kSepH     = 10.0f;
-static constexpr float kInnerPad =  5.0f;
-
-// ---------------------------------------------------------------------------
-// Icon glyph mapping — Segoe MDL2 Assets codepoints
-// ---------------------------------------------------------------------------
-static std::wstring ContextIconGlyph(const std::wstring &label)
-{
-    if (label.find(L"Ouvrir le dossier")  != std::wstring::npos) return L"\uE8DA";
-    if (label.find(L"Ouvrir le fichier")  != std::wstring::npos) return L"\uE7C3";
-    if (label.find(L"Ouvrir dans")        != std::wstring::npos) return L"\uEC50";
-    if (label.find(L"Copier le chemin")   != std::wstring::npos) return L"\uE71B";
-    if (label.find(L"Ajouter")            != std::wstring::npos) return L"\uE710";
-    if (label.find(L"Nouveau fichier")    != std::wstring::npos) return L"\uE7C3";
-    if (label.find(L"Nouveau dossier")    != std::wstring::npos) return L"\uE8F4";
-    if (label.find(L"Class Header")       != std::wstring::npos) return L"\uE943";
-    if (label.find(L"Class Source")       != std::wstring::npos) return L"\uE943";
-    if (label.find(L"Duplicate")          != std::wstring::npos) return L"\uE8C8";
-    if (label.find(L"Rename")             != std::wstring::npos) return L"\uE8D6";
-    if (label.find(L"Delete")             != std::wstring::npos) return L"\uE74D";
-    if (label.find(L"Couper")             != std::wstring::npos) return L"\uE8C6";
-    if (label.find(L"Copier")             != std::wstring::npos) return L"\uE8C8";
-    if (label.find(L"Coller")             != std::wstring::npos) return L"\uE77F";
-    if (label.find(L"Aller")              != std::wstring::npos) return L"\uE8A7";
-    if (label.find(L"ggwave")             != std::wstring::npos) return L"\uE720";
-    if (label.find(L"Deplacer")           != std::wstring::npos) return L"\uE8DE";
-    return L"";
-}
+// Layout aligned with the in-window titlebar dropdowns.
+static constexpr float kItemH    = kDropdownItemH;
+static constexpr float kSepH     = kDropdownSepH;
+static constexpr float kInnerPad = kDropdownInnerPad;
 
 // ---------------------------------------------------------------------------
 // D2D factories — created once, shared across popups
@@ -77,19 +53,7 @@ struct PopupMenuState
     int                       winW     = 0;
     int                       winH     = 0;
 
-    // D2D resources
     ID2D1HwndRenderTarget  *rt         = nullptr;
-    ID2D1SolidColorBrush   *brBg       = nullptr;
-    ID2D1SolidColorBrush   *brBorder   = nullptr;
-    ID2D1SolidColorBrush   *brHover    = nullptr;
-    ID2D1SolidColorBrush   *brText     = nullptr;
-    ID2D1SolidColorBrush   *brDisabled = nullptr;
-    ID2D1SolidColorBrush   *brSep      = nullptr;
-    ID2D1SolidColorBrush   *brIcon     = nullptr;
-    ID2D1SolidColorBrush   *brDanger   = nullptr;
-    IDWriteTextFormat      *tfLabel    = nullptr;
-    IDWriteTextFormat      *tfShortcut = nullptr;
-    IDWriteTextFormat      *tfIcon     = nullptr;
 
     bool CreateD2D(HWND hwnd)
     {
@@ -101,71 +65,16 @@ struct PopupMenuState
         D2D1_HWND_RENDER_TARGET_PROPERTIES hwndProps = D2D1::HwndRenderTargetProperties(
             hwnd, D2D1::SizeU((UINT)winW, (UINT)winH), D2D1_PRESENT_OPTIONS_NONE);
         HRESULT hr = g_d2d->CreateHwndRenderTarget(rtProps, hwndProps, &rt);
-        if (FAILED(hr) || !rt) return false;
-
-        const UI::Theme::Palette &p = UI::Theme::GetPalette();
-
-        rt->CreateSolidColorBrush(p.inputBackground, &brBg);
-        rt->CreateSolidColorBrush(p.inputBorder,     &brBorder);
-
-        D2D1_COLOR_F hov = p.explorerToolbarHover;
-        hov.a = (UI::Theme::GetMode() == UI::Theme::Mode::Light) ? 0.90f : 1.0f;
-        rt->CreateSolidColorBrush(hov, &brHover);
-
-        rt->CreateSolidColorBrush(UI::Theme::PrimaryText(),  &brText);
-        rt->CreateSolidColorBrush(UI::Theme::MutedText(),    &brDisabled);
-        rt->CreateSolidColorBrush(UI::Theme::ChromeBorder(), &brSep);
-
-        D2D1_COLOR_F ic = UI::Theme::PrimaryText();
-        ic.a *= 0.55f;
-        rt->CreateSolidColorBrush(ic, &brIcon);
-        rt->CreateSolidColorBrush(D2D1::ColorF(0.90f, 0.35f, 0.35f, 0.85f), &brDanger);
-
-        // Label format
-        g_dw->CreateTextFormat(L"Segoe UI Variable Text", nullptr,
-            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL, 13.5f, L"en-us", &tfLabel);
-        if (!tfLabel)
-            g_dw->CreateTextFormat(L"Segoe UI", nullptr,
-                DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL, 13.5f, L"en-us", &tfLabel);
-        if (tfLabel) {
-            tfLabel->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-            tfLabel->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        }
-
-        // Shortcut format (slightly smaller, right-aligned)
-        g_dw->CreateTextFormat(L"Segoe UI Variable Text", nullptr,
-            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"en-us", &tfShortcut);
-        if (!tfShortcut)
-            g_dw->CreateTextFormat(L"Segoe UI", nullptr,
-                DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL, 12.0f, L"en-us", &tfShortcut);
-        if (tfShortcut) {
-            tfShortcut->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
-            tfShortcut->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        }
-
-        // Icon format (Segoe MDL2 Assets)
-        g_dw->CreateTextFormat(L"Segoe MDL2 Assets", nullptr,
-            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL, 14.0f, L"en-us", &tfIcon);
-        if (tfIcon) {
-            tfIcon->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            tfIcon->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-        }
-
-        return true;
+        return SUCCEEDED(hr) && rt;
     }
 
     void ReleaseD2D()
     {
-        auto r = [](auto *&p) { if (p) { p->Release(); p = nullptr; } };
-        r(tfLabel); r(tfShortcut); r(tfIcon);
-        r(brBg); r(brBorder); r(brHover); r(brText);
-        r(brDisabled); r(brSep); r(brIcon); r(brDanger);
-        r(rt);
+        if (rt)
+        {
+            rt->Release();
+            rt = nullptr;
+        }
     }
 
     ~PopupMenuState() { ReleaseD2D(); }
@@ -206,6 +115,28 @@ static int ComputeHeight(const PopupMenuState *s)
     return (int)std::ceil(h);
 }
 
+static int ComputeWidth(const PopupMenuState *s)
+{
+    const bool hasShortcuts = !s->shortcuts.empty() &&
+        std::any_of(s->shortcuts.begin(), s->shortcuts.end(),
+                    [](const std::wstring &shortcut) { return !shortcut.empty(); });
+
+    size_t maxLabelLen = 0;
+    size_t maxShortcutLen = 0;
+    for (const auto &item : s->items)
+        maxLabelLen = (std::max)(maxLabelLen, item.size());
+    for (const auto &shortcut : s->shortcuts)
+        maxShortcutLen = (std::max)(maxShortcutLen, shortcut.size());
+
+    float width = 28.0f + (float)maxLabelLen * 7.1f;
+    if (hasShortcuts)
+        width += 18.0f + (float)maxShortcutLen * 6.3f;
+
+    width = (std::max)(width, hasShortcuts ? 220.0f : 176.0f);
+    width = (std::min)(width, hasShortcuts ? 320.0f : 280.0f);
+    return (int)std::ceil(width);
+}
+
 // ---------------------------------------------------------------------------
 // Drawing
 // ---------------------------------------------------------------------------
@@ -215,112 +146,23 @@ static void DrawPopup(PopupMenuState *s)
 
     const float W = (float)s->winW;
     const float H = (float)s->winH;
-
     s->rt->BeginDraw();
     s->rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     s->rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
 
-    // Background
-    if (s->brBg)
-        s->rt->FillRoundedRectangle(
-            D2D1::RoundedRect(D2D1::RectF(0.f, 0.f, W, H), 6.f, 6.f), s->brBg);
-
-    // Border
-    if (s->brBorder)
-        s->rt->DrawRoundedRectangle(
-            D2D1::RoundedRect(D2D1::RectF(0.5f, 0.5f, W - 0.5f, H - 0.5f), 5.5f, 5.5f),
-            s->brBorder, 1.f);
-
-    // Layout constants
-    const float panelPad      =  5.f;
-    const float iconPad       = 12.f;
-    const float iconColW      = 22.f;
-    const float textGap       =  8.f;
-    const float rightPad      = 14.f;
-    const float shortcutColW  = 80.f;
-
-    bool hasShortcuts = false;
-    for (const auto &sc : s->shortcuts) if (!sc.empty()) { hasShortcuts = true; break; }
-
-    float y = kInnerPad;
-
-    for (int i = 0; i < (int)s->items.size(); ++i)
-    {
-        // Separator line before this item
-        bool hasSep = !s->separators.empty() && i < (int)s->separators.size() && s->separators[i];
-        if (hasSep && s->brSep)
-        {
-            float sy = std::floor(y + kSepH * 0.5f) + 0.5f;
-            s->rt->DrawLine(D2D1::Point2F(panelPad + 8.f, sy),
-                            D2D1::Point2F(W - panelPad - 8.f, sy),
-                            s->brSep, 1.f);
-            y += kSepH;
-        }
-
-        D2D1_RECT_F itemRect = D2D1::RectF(panelPad, y, W - panelPad, y + kItemH);
-        bool isEnabled = s->enabled.empty() || i >= (int)s->enabled.size() || s->enabled[i];
-
-        // Hover highlight
-        if (isEnabled && i == s->hover && s->brHover)
-            s->rt->FillRoundedRectangle(
-                D2D1::RoundedRect(D2D1::RectF(itemRect.left  + 2.f, itemRect.top    + 2.f,
-                                               itemRect.right - 2.f, itemRect.bottom - 2.f),
-                                  5.f, 5.f),
-                s->brHover);
-
-        ID2D1SolidColorBrush *textBrush = isEnabled ? s->brText : s->brDisabled;
-        if (!s->tfLabel || !textBrush) { y += kItemH; continue; }
-
-        const std::wstring &label = s->items[i];
-
-        // Icon glyph
-        std::wstring glyph = ContextIconGlyph(label);
-        if (!glyph.empty() && s->tfIcon)
-        {
-            bool isDanger = (label.find(L"Delete")     != std::wstring::npos ||
-                             label.find(L"Supprimer")  != std::wstring::npos);
-            ID2D1SolidColorBrush *iconBrush = isEnabled
-                ? (isDanger ? s->brDanger : s->brIcon)
-                : s->brDisabled;
-            D2D1_RECT_F iconRect = D2D1::RectF(
-                itemRect.left + iconPad,
-                itemRect.top,
-                itemRect.left + iconPad + iconColW,
-                itemRect.bottom);
-            s->rt->DrawTextW(glyph.c_str(), (UINT32)glyph.size(),
-                             s->tfIcon, iconRect, iconBrush,
-                             D2D1_DRAW_TEXT_OPTIONS_NONE);
-        }
-
-        // Label
-        float textLeft  = itemRect.left + iconPad + iconColW + textGap;
-        float textRight = hasShortcuts ? (W - rightPad - shortcutColW) : (W - rightPad);
-        D2D1_RECT_F textRect = D2D1::RectF(textLeft, itemRect.top, textRight, itemRect.bottom);
-        s->rt->DrawTextW(label.c_str(), (UINT32)label.size(),
-                         s->tfLabel, textRect, textBrush,
-                         D2D1_DRAW_TEXT_OPTIONS_CLIP);
-
-        // Shortcut
-        if (hasShortcuts && s->tfShortcut && s->brDisabled &&
-            !s->shortcuts.empty() && i < (int)s->shortcuts.size() &&
-            !s->shortcuts[i].empty())
-        {
-            const std::wstring &sc = s->shortcuts[i];
-            D2D1_RECT_F scRect = D2D1::RectF(textRight, itemRect.top, W - rightPad, itemRect.bottom);
-            s->rt->DrawTextW(sc.c_str(), (UINT32)sc.size(),
-                             s->tfShortcut, scRect, s->brDisabled,
-                             D2D1_DRAW_TEXT_OPTIONS_CLIP);
-        }
-
-        y += kItemH;
-    }
+    MenuDropdown dd = {};
+    dd.items = s->items;
+    dd.shortcuts = s->shortcuts;
+    dd.separators = s->separators;
+    dd.enabled = s->enabled;
+    dd.hoveredItem = s->hover;
+    dd.visible = true;
+    dd.rect = D2D1::RectF(0.0f, 0.0f, W, H);
+    DrawDropdownPanel(s->rt, g_dw, dd);
 
     HRESULT hr = s->rt->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET)
-    {
-        // Render target lost — recreate on next paint
         s->ReleaseD2D();
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -338,6 +180,10 @@ static LRESULT CALLBACK PopupMenuWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LP
         auto *cs = reinterpret_cast<CREATESTRUCTW *>(lParam);
         s = reinterpret_cast<PopupMenuState *>(cs->lpCreateParams);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(s));
+        HRGN region = CreateRoundRectRgn(0, 0, s->winW + 1, s->winH + 1,
+                                         kPopupCornerRadius * 2, kPopupCornerRadius * 2);
+        if (region)
+            SetWindowRgn(hwnd, region, FALSE);
         EnsureFactories();
         s->CreateD2D(hwnd);
 
@@ -430,10 +276,6 @@ void ShowCustomPopup(HWND parent,
     CloseCustomPopup();     // Dismiss any currently open popup
     EnsureFactories();
 
-    bool hasShortcuts = !shortcuts.empty() &&
-        std::any_of(shortcuts.begin(), shortcuts.end(),
-                    [](const std::wstring &s){ return !s.empty(); });
-
     auto *s      = new PopupMenuState;
     s->items     = items;
     s->shortcuts = shortcuts;
@@ -445,7 +287,7 @@ void ShowCustomPopup(HWND parent,
     s->baseId  = baseId;
     s->hover   = -1;
     s->parent  = parent;
-    s->winW    = hasShortcuts ? 310 : 268;
+    s->winW    = ComputeWidth(s);
     s->winH    = ComputeHeight(s);
 
     // Screen edge clipping
@@ -467,7 +309,7 @@ void ShowCustomPopup(HWND parent,
         wc.lpszClassName = POPUP_MENU_CLASS;
         wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
         wc.hbrBackground = nullptr;
-        wc.style         = CS_DROPSHADOW;   // OS-level drop shadow — free!
+        wc.style         = 0;
         RegisterClassExW(&wc);
     }
 

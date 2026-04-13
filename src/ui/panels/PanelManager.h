@@ -68,6 +68,7 @@ private:
     PanelManager& operator=(const PanelManager&) = delete;
     
     std::unordered_map<PanelId, std::unique_ptr<Panel>> panels_;
+    std::unordered_map<PanelId, int> preferredLogicalWidths_;
     std::vector<Panel*> panelList_;
     Panel* activePanel_ = nullptr;
 };

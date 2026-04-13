@@ -146,7 +146,7 @@ static float ComputeDropdownHeight(const MenuDropdown &dd)
     return h;
 }
 
-void DrawDropdownPanel(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, MenuDropdown &dd)
+void DrawDropdownPanelImpl(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, MenuDropdown &dd)
 {
     if (!ctx) return;
 
@@ -263,6 +263,11 @@ void DrawDropdownPanel(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, MenuDropd
         }
     }
 }
+}
+
+void DrawDropdownPanel(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite, MenuDropdown &dd)
+{
+    DrawDropdownPanelImpl(ctx, dwrite, dd);
 }
 
 int GetHoveredMenuItem([[maybe_unused]] HWND hwnd, POINT pt)
@@ -402,7 +407,7 @@ void DrawMenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
 {
     if (!g_activeDropdown.visible)
         return;
-    DrawDropdownPanel(ctx, dwrite, g_activeDropdown);
+    DrawDropdownPanelImpl(ctx, dwrite, g_activeDropdown);
 }
 
 int GetDropdownHoveredItem(POINT pt)
@@ -519,7 +524,7 @@ void DrawSubmenuDropdown(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
 {
     if (!g_subDropdown.visible)
         return;
-    DrawDropdownPanel(ctx, dwrite, g_subDropdown);
+    DrawDropdownPanelImpl(ctx, dwrite, g_subDropdown);
 }
 
 int GetSubmenuHoveredItem(POINT pt)

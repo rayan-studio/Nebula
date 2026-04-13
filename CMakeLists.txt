@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-set(NEBULA_APP_VERSION "2.7.0" CACHE STRING "Nebula application version")
+set(NEBULA_APP_VERSION "2.8.0" CACHE STRING "Nebula application version")
 
 # ========================================
 # Configuration libvterm (neovim version)
@@ -155,10 +155,6 @@ if (MSVC)
   target_compile_definitions(Nebula PRIVATE "WIN32_LEAN_AND_MEAN")
 endif()
 
-# ── External library: GLFWPP (added by Nebula) ──
-add_subdirectory("external/glfwpp")
-target_include_directories(Nebula PRIVATE "external/glfwpp/include")
-target_link_libraries(Nebula PRIVATE GLFWPP)
 if (WIN32)
   target_link_libraries(Nebula PRIVATE opengl32)
 endif()

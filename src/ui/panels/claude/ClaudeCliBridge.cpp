@@ -861,6 +861,37 @@ void ClaudeCliBridge::RequestWorkerMain(RequestOptions options)
             }
         }
 
+        if (line.find("\"rate_limit_info\"") != std::string::npos)
+        {
+            std::string rateLimitInfoJson = ExtractJsonObjectValue(line, "rate_limit_info");
+            if (!rateLimitInfoJson.empty())
+            {
+                std::string rateLimitType = ExtractJsonStringValue(rateLimitInfoJson, "rateLimitType");
+                long long resetsAt = ExtractJsonInt64Value(rateLimitInfoJson, "resetsAt", 0);
+                bool updated = false;
+
+                auto applyWindow = [&](RateLimitWindow &window) {
+                    window.available = true;
+                    if (resetsAt > 0)
+                        window.resetsAtUnix = resetsAt;
+                    updated = true;
+                };
+
+                if (rateLimitType == "five_hour")
+                    applyWindow(latestRateLimits.fiveHour);
+                else if (rateLimitType == "seven_day")
+                    applyWindow(latestRateLimits.sevenDay);
+
+                if (updated)
+                {
+                    latestRateLimits.available = latestRateLimits.fiveHour.available ||
+                                                 latestRateLimits.sevenDay.available;
+                    if (onRateLimitInfo)
+                        onRateLimitInfo(latestRateLimits);
+                }
+            }
+        }
+
         std::string type = ExtractTopLevelType(line);
         if (type == "stream_event")
         {

@@ -324,7 +324,16 @@ namespace
     std::wstring FormatRateLimitPercent(int usedPercentage)
     {
         if (usedPercentage < 0)
-            return L"--%";
+            return L"Not reported";
+
+        usedPercentage = (std::max)(0, (std::min)(100, usedPercentage));
+        return std::to_wstring(usedPercentage) + L"%";
+    }
+
+    std::wstring FormatRateLimitPercentCompact(int usedPercentage)
+    {
+        if (usedPercentage < 0)
+            return L"N/A";
 
         usedPercentage = (std::max)(0, (std::min)(100, usedPercentage));
         return std::to_wstring(usedPercentage) + L"%";
@@ -364,6 +373,7 @@ namespace
             return {};
         return buffer;
     }
+
 }
 
 ClaudePanel::ClaudePanel()
@@ -503,10 +513,12 @@ void ClaudePanel::ApplyInputTheme(TextInput &input, const std::wstring &placehol
     style.cursorColor = UI::InputTheme::Caret();
     style.cornerRadius = UI::InputTheme::kCornerRadius;
     style.fontFamily = UI::InputTheme::kFontFamily;
-    style.fontSize = UI::InputTheme::kFontSize;
-    style.padding = UI::InputTheme::kHorizontalPadding;
-    style.paddingLeft = UI::InputTheme::kHorizontalPadding;
-    style.paddingRight = UI::InputTheme::kHorizontalPadding;
+    style.fontSize = multiline ? 12.4f : UI::InputTheme::kFontSize;
+    style.padding = multiline ? 5.0f : UI::InputTheme::kHorizontalPadding;
+    style.paddingLeft = multiline ? 8.0f : UI::InputTheme::kHorizontalPadding;
+    style.paddingRight = multiline ? 8.0f : UI::InputTheme::kHorizontalPadding;
+    if (multiline)
+        style.cornerRadius = 5.0f;
     style.multiline = multiline;
 }
 
@@ -1118,32 +1130,32 @@ float ClaudePanel::EstimateWrappedTextHeight(const std::wstring &text, float wid
 
 float ClaudePanel::EstimateMessageHeight(const std::wstring &text, float width) const
 {
-    return 18.0f + EstimateWrappedTextHeight(text, width, 7.2f, 17.0f);
+    return 10.0f + EstimateWrappedTextHeight(text, width, 7.8f, 15.5f);
 }
 
 float ClaudePanel::MeasureWidthForRole(MessageRole role) const
 {
-    const float baseWidth = (std::max)(80.0f, messagesRect_.right - messagesRect_.left - 28.0f);
+    const float baseWidth = (std::max)(80.0f, messagesRect_.right - messagesRect_.left - 12.0f);
     if (role == MessageRole::User)
-        return (std::max)(80.0f, baseWidth * 0.74f - 20.0f);
+        return (std::max)(92.0f, baseWidth * 0.64f - 12.0f);
     if (role == MessageRole::Tool)
-        return (std::max)(120.0f, baseWidth - 8.0f);
-    return baseWidth;
+        return (std::max)(120.0f, baseWidth - 6.0f);
+    return (std::max)(140.0f, baseWidth * 0.86f);
 }
 
 float ClaudePanel::ComputeMessagesContentHeight() const
 {
     float total = 0.0f;
     for (const ChatMessage &message : messages_)
-        total += message.estimatedHeight + 12.0f;
-    return total + 16.0f;
+        total += message.estimatedHeight + 4.0f;
+    return total + 8.0f;
 }
 
 float ClaudePanel::ComputeHistoryContentHeight() const
 {
     if (historyEntries_.empty())
-        return 108.0f;
-    return 16.0f + (float)historyEntries_.size() * 72.0f;
+        return 92.0f;
+    return 12.0f + (float)historyEntries_.size() * 64.0f;
 }
 
 float ClaudePanel::ComputeScrollContentHeight() const
@@ -1159,8 +1171,8 @@ void ClaudePanel::RecomputeMessageHeights()
         const float width = MeasureWidthForRole(message.role);
         if (message.kind == MessageKind::Tool)
         {
-            float bodyHeight = EstimateWrappedTextHeight(message.content, width - 24.0f, 7.6f, 16.0f);
-            message.estimatedHeight = 38.0f + bodyHeight;
+            float bodyHeight = EstimateWrappedTextHeight(message.content, width - 18.0f, 7.8f, 14.5f);
+            message.estimatedHeight = 28.0f + bodyHeight;
         }
         else
         {
@@ -1268,7 +1280,7 @@ void ClaudePanel::UpdateLayout(HWND hwnd)
 
     const float left = state_.leftEdge + state_.leftPadding;
     const float right = state_.rightEdge - state_.leftPadding;
-    float y = state_.topEdge + state_.titleHeight + 10.0f;
+    float y = state_.topEdge + state_.titleHeight + 6.0f;
 
     headerRect_ = D2D1::RectF(0, 0, 0, 0);
     detectButtonRect_ = D2D1::RectF(0, 0, 0, 0);
@@ -1281,7 +1293,7 @@ void ClaudePanel::UpdateLayout(HWND hwnd)
     if (ShouldShowExecutableInput())
     {
         executableInput_.SetRect(D2D1::RectF(left, y, right, y + 30.0f));
-        y += 38.0f;
+        y += 34.0f;
     }
     else
     {
@@ -1289,20 +1301,20 @@ void ClaudePanel::UpdateLayout(HWND hwnd)
         executableInput_.SetFocused(false);
     }
 
-    const float toolbarHeight = 30.0f;
-    const float toolbarButtonSize = 28.0f;
+    const float toolbarHeight = 24.0f;
+    const float toolbarButtonSize = 22.0f;
     toolbarRect_ = D2D1::RectF(left, y, right, y + toolbarHeight);
     usageButtonRect_ = D2D1::RectF(right - toolbarButtonSize, y + 1.0f, right, y + 1.0f + toolbarButtonSize);
     historyButtonRect_ = D2D1::RectF(usageButtonRect_.left - 6.0f - toolbarButtonSize, y + 1.0f,
                                      usageButtonRect_.left - 6.0f, y + 1.0f + toolbarButtonSize);
-    y += toolbarHeight + 10.0f;
+    y += toolbarHeight + 6.0f;
 
-    const float composerHeight = 94.0f;
-    const float composerBottom = state_.bottomEdge - 10.0f;
+    const float composerHeight = 54.0f;
+    const float composerBottom = state_.bottomEdge - 6.0f;
     const float composerTop = composerBottom - composerHeight;
-    const float sendButtonSize = 28.0f;
-    const float sendInset = 10.0f;
-    const float sendGap = 8.0f;
+    const float sendButtonSize = 22.0f;
+    const float sendInset = 6.0f;
+    const float sendGap = 4.0f;
 
     promptInput_.SetRect(D2D1::RectF(left, composerTop, right, composerBottom));
     auto &promptStyle = promptInput_.GetStyle();
@@ -1311,7 +1323,7 @@ void ClaudePanel::UpdateLayout(HWND hwnd)
                                   composerBottom - sendInset - sendButtonSize,
                                   right - sendInset,
                                   composerBottom - sendInset);
-    messagesRect_ = D2D1::RectF(left, y, right, composerTop - 10.0f);
+    messagesRect_ = D2D1::RectF(left, y, right, composerTop - 6.0f);
     historyRowRects_.assign(historyEntries_.size(), D2D1::RectF(0, 0, 0, 0));
     usageLinkRect_ = D2D1::RectF(0, 0, 0, 0);
 
@@ -1478,28 +1490,39 @@ void ClaudePanel::DrawToolbar(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
                              11.5f, L"en-us", &titleFormat);
     dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                             10.5f, L"en-us", &metaFormat);
+                             9.5f, L"en-us", &metaFormat);
 
-    std::wstring title = TruncateText(CurrentConversationTitle(), 40);
-    std::wstring meta = sessionId_.empty()
-                            ? L"No saved session selected"
-                            : currentConversationUsage_.lastUpdated.empty()
-                                  ? sessionId_
-                                  : currentConversationUsage_.lastUpdated + L"  " + sessionId_;
+    const int totalMessages = currentConversationUsage_.userMessages + currentConversationUsage_.assistantMessages;
+    std::wstring title = TruncateText(CurrentConversationTitle(), 38);
+    std::wstring meta = sessionId_.empty() ? L"Current session"
+                                           : (currentConversationUsage_.lastUpdated.empty()
+                                                  ? sessionId_
+                                                  : currentConversationUsage_.lastUpdated);
+    if (totalMessages > 0 || currentConversationUsage_.toolCalls > 0)
+    {
+        meta += L"  •  ";
+        meta += std::to_wstring(totalMessages) + L" msg";
+        if (currentConversationUsage_.toolCalls > 0)
+            meta += L"  •  " + std::to_wstring(currentConversationUsage_.toolCalls) + L" tools";
+    }
+    else if (meta == L"Current session" && !Trim(authDetail_).empty())
+    {
+        meta = TruncateText(authDetail_, 42);
+    }
 
     if (titleFormat && textBrush)
         ctx->DrawTextW(title.c_str(), (UINT32)title.size(), titleFormat,
-                       D2D1::RectF(toolbarRect_.left, toolbarRect_.top + 1.0f,
-                                   historyButtonRect_.left - 12.0f, toolbarRect_.top + 16.0f),
+                       D2D1::RectF(toolbarRect_.left, toolbarRect_.top,
+                                   historyButtonRect_.left - 10.0f, toolbarRect_.top + 14.0f),
                        textBrush);
     if (metaFormat && mutedBrush)
         ctx->DrawTextW(meta.c_str(), (UINT32)meta.size(), metaFormat,
-                       D2D1::RectF(toolbarRect_.left, toolbarRect_.top + 14.0f,
+                       D2D1::RectF(toolbarRect_.left, toolbarRect_.top + 11.0f,
                                    historyButtonRect_.left - 12.0f, toolbarRect_.bottom),
                        mutedBrush);
     if (lineBrush)
-        ctx->DrawLine(D2D1::Point2F(toolbarRect_.left, toolbarRect_.bottom + 4.0f),
-                      D2D1::Point2F(toolbarRect_.right, toolbarRect_.bottom + 4.0f),
+        ctx->DrawLine(D2D1::Point2F(toolbarRect_.left, toolbarRect_.bottom + 2.0f),
+                      D2D1::Point2F(toolbarRect_.right, toolbarRect_.bottom + 2.0f),
                       lineBrush, 0.8f);
 
     DrawButton(ctx, dwrite, historyButtonRect_, L"\uE81C", historyButtonHovered_, showHistory_, true);
@@ -1554,13 +1577,13 @@ void ClaudePanel::DrawHistoryList(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite
     historyRowRects_.assign(historyEntries_.size(), D2D1::RectF(0, 0, 0, 0));
 
     ctx->PushAxisAlignedClip(messagesRect_, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    float y = messagesRect_.top + 8.0f - messagesScrollbar_.GetScrollOffset();
+    float y = messagesRect_.top + 6.0f - messagesScrollbar_.GetScrollOffset();
 
     if (historyEntries_.empty())
     {
         if (emptyFormat && mutedBrush)
             ctx->DrawTextW(L"No conversation history found for this project.", 45, emptyFormat,
-                           D2D1::RectF(messagesRect_.left + 4.0f, y + 12.0f, messagesRect_.right - 8.0f, y + 72.0f),
+                           D2D1::RectF(messagesRect_.left + 4.0f, y + 8.0f, messagesRect_.right - 8.0f, y + 56.0f),
                            mutedBrush);
         ctx->PopAxisAlignedClip();
     }
@@ -1569,7 +1592,7 @@ void ClaudePanel::DrawHistoryList(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite
         for (size_t i = 0; i < historyEntries_.size(); ++i)
         {
             const ConversationHistoryEntry &entry = historyEntries_[i];
-            D2D1_RECT_F rowRect = D2D1::RectF(messagesRect_.left + 2.0f, y, messagesRect_.right - 16.0f, y + 60.0f);
+            D2D1_RECT_F rowRect = D2D1::RectF(messagesRect_.left + 2.0f, y, messagesRect_.right - 12.0f, y + 56.0f);
             historyRowRects_[i] = rowRect;
 
             if (rowRect.bottom >= messagesRect_.top && rowRect.top <= messagesRect_.bottom)
@@ -1590,29 +1613,31 @@ void ClaudePanel::DrawHistoryList(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite
                 if (borderBrush)
                     ctx->DrawRoundedRectangle(D2D1::RoundedRect(rowRect, 8.0f, 8.0f), borderBrush, 1.0f);
 
-                std::wstring rightMeta = entry.usage.lastUpdated.empty() ? entry.sessionId : entry.usage.lastUpdated;
-                std::wstring stats = std::to_wstring(entry.usage.userMessages) + L" msg  " +
-                                     std::to_wstring(entry.usage.toolCalls) + L" tools";
+                const int totalMessages = entry.usage.userMessages + entry.usage.assistantMessages;
+                std::wstring stats = entry.usage.lastUpdated.empty() ? entry.sessionId : entry.usage.lastUpdated;
+                if (totalMessages > 0 || entry.usage.toolCalls > 0)
+                {
+                    stats += L"  •  ";
+                    stats += std::to_wstring(totalMessages) + L" msg";
+                    if (entry.usage.toolCalls > 0)
+                        stats += L"  •  " + std::to_wstring(entry.usage.toolCalls) + L" tools";
+                }
 
                 if (titleFormat && textBrush)
                     ctx->DrawTextW(entry.title.c_str(), (UINT32)entry.title.size(), titleFormat,
-                                   D2D1::RectF(rowRect.left + 12.0f, rowRect.top + 8.0f, rowRect.right - 110.0f, rowRect.top + 24.0f),
+                                   D2D1::RectF(rowRect.left + 12.0f, rowRect.top + 7.0f, rowRect.right - 12.0f, rowRect.top + 23.0f),
                                    textBrush);
                 if (metaFormat && mutedBrush)
                     ctx->DrawTextW(entry.subtitle.c_str(), (UINT32)entry.subtitle.size(), metaFormat,
-                                   D2D1::RectF(rowRect.left + 12.0f, rowRect.top + 28.0f, rowRect.right - 12.0f, rowRect.bottom - 8.0f),
+                                   D2D1::RectF(rowRect.left + 12.0f, rowRect.top + 25.0f, rowRect.right - 12.0f, rowRect.top + 39.0f),
                                    mutedBrush);
-                if (metaFormat && accentBrush)
-                    ctx->DrawTextW(rightMeta.c_str(), (UINT32)rightMeta.size(), metaFormat,
-                                   D2D1::RectF(rowRect.right - 98.0f, rowRect.top + 8.0f, rowRect.right - 12.0f, rowRect.top + 24.0f),
-                                   accentBrush);
                 if (metaFormat && mutedBrush)
                     ctx->DrawTextW(stats.c_str(), (UINT32)stats.size(), metaFormat,
-                                   D2D1::RectF(rowRect.right - 98.0f, rowRect.top + 28.0f, rowRect.right - 12.0f, rowRect.bottom - 8.0f),
+                                   D2D1::RectF(rowRect.left + 12.0f, rowRect.bottom - 19.0f, rowRect.right - 12.0f, rowRect.bottom - 4.0f),
                                    mutedBrush);
             }
 
-            y += 72.0f;
+            y += 64.0f;
         }
         ctx->PopAxisAlignedClip();
     }
@@ -1641,15 +1666,17 @@ void ClaudePanel::DrawUsageOverlay(ID2D1RenderTarget *ctx, IDWriteFactory *dwrit
 {
     const float availableWidth = (std::max)(280.0f, messagesRect_.right - messagesRect_.left);
     const float availableHeight = (std::max)(220.0f, messagesRect_.bottom - messagesRect_.top);
-    const float cardWidth = (std::min)(432.0f, availableWidth - 32.0f);
-    const float cardHeight = (std::min)(398.0f, availableHeight - 32.0f);
-    const float cardLeft = messagesRect_.left + ((availableWidth - cardWidth) * 0.5f);
-    const float cardTop = messagesRect_.top + ((availableHeight - cardHeight) * 0.5f);
+    const float cardWidth = (std::min)(360.0f, availableWidth - 20.0f);
+    const float cardHeight = (std::min)(292.0f, availableHeight - 18.0f);
+    const float cardLeft = (availableWidth >= 340.0f)
+                               ? (messagesRect_.right - cardWidth - 8.0f)
+                               : (messagesRect_.left + ((availableWidth - cardWidth) * 0.5f));
+    const float cardTop = messagesRect_.top + 8.0f;
     const D2D1_RECT_F shadowRect = D2D1::RectF(
-        cardLeft,
-        cardTop + 8.0f,
-        cardLeft + cardWidth,
-        cardTop + cardHeight + 8.0f);
+        cardLeft + 2.0f,
+        cardTop + 5.0f,
+        cardLeft + cardWidth + 2.0f,
+        cardTop + cardHeight + 5.0f);
     const D2D1_RECT_F cardRect = D2D1::RectF(
         cardLeft,
         cardTop,
@@ -1667,7 +1694,7 @@ void ClaudePanel::DrawUsageOverlay(ID2D1RenderTarget *ctx, IDWriteFactory *dwrit
     ID2D1SolidColorBrush *barBgBrush = nullptr;
     ID2D1SolidColorBrush *shadowBrush = nullptr;
     ID2D1SolidColorBrush *closeBrush = nullptr;
-    ctx->CreateSolidColorBrush(D2D1::ColorF(0.f, 0.f, 0.f, 0.18f), &shadowBrush);
+    ctx->CreateSolidColorBrush(D2D1::ColorF(0.f, 0.f, 0.f, 0.10f), &shadowBrush);
     ctx->CreateSolidColorBrush(D2D1::ColorF(palette.inputBackground.r, palette.inputBackground.g, palette.inputBackground.b, 0.985f), &bgBrush);
     ctx->CreateSolidColorBrush(D2D1::ColorF(palette.inputBorder.r, palette.inputBorder.g, palette.inputBorder.b, 0.95f), &borderBrush);
     ctx->CreateSolidColorBrush(UI::Theme::PrimaryText(), &titleBrush);
@@ -1685,22 +1712,22 @@ void ClaudePanel::DrawUsageOverlay(ID2D1RenderTarget *ctx, IDWriteFactory *dwrit
     IDWriteTextFormat *closeFormat = nullptr;
     dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                             14.5f, L"en-us", &titleFormat);
+                             13.5f, L"en-us", &titleFormat);
     dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                             11.0f, L"en-us", &bodyFormat);
+                             10.5f, L"en-us", &bodyFormat);
     dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                             11.0f, L"en-us", &labelFormat);
+                             10.0f, L"en-us", &labelFormat);
     dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                             11.0f, L"en-us", &valueFormat);
+                             10.5f, L"en-us", &valueFormat);
     dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                             11.0f, L"en-us", &trailingValueFormat);
+                             10.5f, L"en-us", &trailingValueFormat);
     dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                             11.5f, L"en-us", &percentFormat);
+                             11.0f, L"en-us", &percentFormat);
     dwrite->CreateTextFormat(L"Segoe Fluent Icons", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
                              12.0f, L"en-us", &closeFormat);
@@ -1719,17 +1746,17 @@ void ClaudePanel::DrawUsageOverlay(ID2D1RenderTarget *ctx, IDWriteFactory *dwrit
     }
 
     if (shadowBrush)
-        ctx->FillRoundedRectangle(D2D1::RoundedRect(shadowRect, 12.0f, 12.0f), shadowBrush);
+        ctx->FillRoundedRectangle(D2D1::RoundedRect(shadowRect, 9.0f, 9.0f), shadowBrush);
     if (bgBrush)
-        ctx->FillRoundedRectangle(D2D1::RoundedRect(cardRect, 10.0f, 10.0f), bgBrush);
+        ctx->FillRoundedRectangle(D2D1::RoundedRect(cardRect, 8.0f, 8.0f), bgBrush);
     if (borderBrush)
-        ctx->DrawRoundedRectangle(D2D1::RoundedRect(cardRect, 10.0f, 10.0f), borderBrush, 1.0f);
+        ctx->DrawRoundedRectangle(D2D1::RoundedRect(cardRect, 8.0f, 8.0f), borderBrush, 1.0f);
 
-    const float left = cardRect.left + 16.0f;
-    const float right = cardRect.right - 16.0f;
-    const float rowSplit = left + 110.0f;
-    float y = cardRect.top + 18.0f;
-    usageCloseButtonRect_ = D2D1::RectF(cardRect.right - 30.0f, cardRect.top + 14.0f, cardRect.right - 12.0f, cardRect.top + 30.0f);
+    const float left = cardRect.left + 14.0f;
+    const float right = cardRect.right - 14.0f;
+    const float rowSplit = left + 108.0f;
+    float y = cardRect.top + 14.0f;
+    usageCloseButtonRect_ = D2D1::RectF(cardRect.right - 28.0f, cardRect.top + 10.0f, cardRect.right - 10.0f, cardRect.top + 26.0f);
 
     if (titleFormat && titleBrush)
         ctx->DrawTextW(L"Account & Usage", 15, titleFormat,
@@ -1742,18 +1769,18 @@ void ClaudePanel::DrawUsageOverlay(ID2D1RenderTarget *ctx, IDWriteFactory *dwrit
         if (labelFormat && mutedBrush)
             ctx->DrawTextW(label, (UINT32)wcslen(label), labelFormat,
                            D2D1::RectF(left, y, right, y + 16.0f), mutedBrush);
-        y += 22.0f;
+        y += 18.0f;
     };
 
     auto drawRow = [&](const wchar_t *label, const std::wstring &value) {
-        const std::wstring clippedValue = TruncateText(value, 44);
+        const std::wstring clippedValue = TruncateText(value, 40);
         if (bodyFormat && mutedBrush)
             ctx->DrawTextW(label, (UINT32)wcslen(label), bodyFormat,
                            D2D1::RectF(left, y, rowSplit - 12.0f, y + 18.0f), mutedBrush);
         if (trailingValueFormat && titleBrush)
             ctx->DrawTextW(clippedValue.c_str(), (UINT32)clippedValue.size(), trailingValueFormat,
                            D2D1::RectF(rowSplit, y, right, y + 18.0f), titleBrush);
-        y += 30.0f;
+        y += 22.0f;
     };
 
     drawSectionLabel(L"ACCOUNT");
@@ -1762,7 +1789,7 @@ void ClaudePanel::DrawUsageOverlay(ID2D1RenderTarget *ctx, IDWriteFactory *dwrit
     drawRow(L"Organization", accountInfo_.orgName.empty() ? L"Unavailable" : accountInfo_.orgName);
     drawRow(L"Plan", FormatAccountValue(accountInfo_.subscriptionType, L"Unavailable"));
 
-    y += 8.0f;
+    y += 4.0f;
     drawSectionLabel(L"USAGE");
 
     const int totalMessages = currentConversationUsage_.userMessages + currentConversationUsage_.assistantMessages;
@@ -1773,12 +1800,14 @@ void ClaudePanel::DrawUsageOverlay(ID2D1RenderTarget *ctx, IDWriteFactory *dwrit
 
     auto drawUsageBar = [&](const std::wstring &label, const ClaudeCliBridge::RateLimitWindow &window,
                             const std::wstring &fallbackResetText) {
-        std::wstring percent = FormatRateLimitPercent(window.usedPercentage);
+        std::wstring percent = FormatRateLimitPercentCompact(window.usedPercentage);
         std::wstring resetText = FormatRateLimitResetLabel(window.resetsAtUnix);
         if (resetText.empty())
             resetText = fallbackResetText;
         if (resetText.empty())
-            resetText = L"Available after Claude reports usage";
+            resetText = window.available ? L"Waiting for Claude usage data" : L"No live data yet";
+        if (window.usedPercentage < 0 && window.available)
+            resetText += L"  •  Percent tracked on claude.ai";
 
         const float top = y;
         if (bodyFormat && titleBrush)
@@ -1788,7 +1817,7 @@ void ClaudePanel::DrawUsageOverlay(ID2D1RenderTarget *ctx, IDWriteFactory *dwrit
             ctx->DrawTextW(percent.c_str(), (UINT32)percent.size(), percentFormat,
                            D2D1::RectF(right - 64.0f, top, right, top + 18.0f), titleBrush);
 
-        const float progressTop = top + 24.0f;
+        const float progressTop = top + 21.0f;
         const D2D1_RECT_F barRect = D2D1::RectF(left, progressTop, right, progressTop + 7.0f);
         if (barBgBrush)
             ctx->FillRoundedRectangle(D2D1::RoundedRect(barRect, 3.5f, 3.5f), barBgBrush);
@@ -1802,19 +1831,19 @@ void ClaudePanel::DrawUsageOverlay(ID2D1RenderTarget *ctx, IDWriteFactory *dwrit
         if (bodyFormat && mutedBrush)
             ctx->DrawTextW(resetText.c_str(), (UINT32)resetText.size(), bodyFormat,
                            D2D1::RectF(left, progressTop + 11.0f, right, progressTop + 28.0f), mutedBrush);
-        y += 62.0f;
+        y += 50.0f;
     };
 
     const std::wstring sessionResetFallback = !rateLimits_.fiveHour.available ? lastKnownRateLimitResetText_ : std::wstring();
     drawUsageBar(L"Session (5hr)", rateLimits_.fiveHour, sessionResetFallback);
     drawUsageBar(L"Weekly (7 day)", rateLimits_.sevenDay, L"Reported by Claude Code when available");
 
-    const float footerTop = cardRect.bottom - 54.0f;
+    const float footerTop = cardRect.bottom - 46.0f;
     if (bodyFormat && mutedBrush)
         ctx->DrawTextW(sessionStats.c_str(), (UINT32)sessionStats.size(), bodyFormat,
                        D2D1::RectF(left, footerTop, right, footerTop + 16.0f), mutedBrush);
 
-    usageLinkRect_ = D2D1::RectF(left, cardRect.bottom - 28.0f, left + 176.0f, cardRect.bottom - 10.0f);
+    usageLinkRect_ = D2D1::RectF(left, cardRect.bottom - 24.0f, left + 176.0f, cardRect.bottom - 8.0f);
     if (bodyFormat && (usageLinkHovered_ ? accentBrush : mutedBrush))
         ctx->DrawTextW(L"Manage usage on claude.ai", 25, bodyFormat, usageLinkRect_,
                        usageLinkHovered_ ? accentBrush : mutedBrush);
@@ -1864,7 +1893,7 @@ void ClaudePanel::DrawMessages(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
     IDWriteTextFormat *bodyFormat = nullptr;
     dwrite->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
                              DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                             12.5f, L"en-us", &bodyFormat);
+                             11.5f, L"en-us", &bodyFormat);
 
     if (bodyFormat)
     {
@@ -1883,7 +1912,6 @@ void ClaudePanel::DrawMessages(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
     ID2D1SolidColorBrush *toolTitleBrush = nullptr;
     ID2D1SolidColorBrush *toolBodyBrush = nullptr;
     ID2D1SolidColorBrush *toolStatusBrush = nullptr;
-
     const auto &palette = UI::Theme::GetPalette();
     ctx->CreateSolidColorBrush(palette.explorerRowActive, &userBrush);
     ctx->CreateSolidColorBrush(D2D1::ColorF(1.f, 1.f, 1.f, 0.98f), &userTextBrush);
@@ -1919,10 +1947,11 @@ void ClaudePanel::DrawMessages(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
 
     ctx->PushAxisAlignedClip(messagesRect_, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 
-    float y = messagesRect_.top + 8.0f - messagesScrollbar_.GetScrollOffset();
-    const float contentLeft = messagesRect_.left + 4.0f;
-    const float contentRight = messagesRect_.right - 16.0f;
-    const float userMaxWidth = (std::max)(180.0f, (messagesRect_.right - messagesRect_.left) * 0.74f);
+    float y = messagesRect_.top + 2.0f - messagesScrollbar_.GetScrollOffset();
+    const float contentLeft = messagesRect_.left;
+    const float contentRight = messagesRect_.right - 10.0f;
+    const float userMaxWidth = (std::max)(170.0f, (messagesRect_.right - messagesRect_.left) * 0.64f);
+    const float assistantMaxWidth = (std::max)(220.0f, (messagesRect_.right - messagesRect_.left) * 0.86f);
 
     for (size_t i = 0; i < messages_.size(); ++i)
     {
@@ -1932,12 +1961,16 @@ void ClaudePanel::DrawMessages(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
 
         if (message.role == MessageRole::User)
         {
-            bubbleRect.left = (std::max)(contentLeft + 28.0f, contentRight - userMaxWidth);
+            bubbleRect.left = (std::max)(contentLeft + 16.0f, contentRight - userMaxWidth);
+        }
+        else if (message.kind != MessageKind::Tool)
+        {
+            bubbleRect.right = (std::min)(contentRight, contentLeft + assistantMaxWidth);
         }
 
         if (bubbleRect.bottom < messagesRect_.top)
         {
-            y += height + 12.0f;
+            y += height + 4.0f;
             continue;
         }
         if (bubbleRect.top > messagesRect_.bottom)
@@ -1967,35 +2000,36 @@ void ClaudePanel::DrawMessages(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
             if (toolBodyFormat && toolBodyBrush && !content.empty())
                 ctx->DrawTextW(content.c_str(), (UINT32)content.size(), toolBodyFormat, bodyRect, toolBodyBrush);
 
-            y += height + 12.0f;
+            y += height + 4.0f;
             continue;
         }
 
         if (message.role == MessageRole::User && userBrush)
         {
-            ctx->FillRoundedRectangle(D2D1::RoundedRect(bubbleRect, 8.0f, 8.0f), userBrush);
+            ctx->FillRoundedRectangle(D2D1::RoundedRect(bubbleRect, 6.0f, 6.0f), userBrush);
         }
 
         if (ShouldUseMarkdownPreview(message, content) &&
             i < markdownPreviewCache_.size() &&
             markdownPreviewCache_[i].editor)
         {
+            const float previewInset = message.role == MessageRole::User ? 8.0f : 2.0f;
             markdownPreviewCache_[i].editor->UpdateLayout(
                 hwnd_,
-                contentLeft,
-                y,
-                contentRight,
-                y + height);
+                bubbleRect.left + previewInset,
+                bubbleRect.top + 2.0f,
+                bubbleRect.right - previewInset,
+                bubbleRect.bottom - 2.0f);
             markdownPreviewCache_[i].editor->Draw(ctx, dwrite);
 
-            y += height + 12.0f;
+            y += height + 4.0f;
             continue;
         }
 
-        D2D1_RECT_F bodyRect = D2D1::RectF(bubbleRect.left + 10.0f, bubbleRect.top + 9.0f,
-                                           bubbleRect.right - 10.0f, bubbleRect.bottom - 8.0f);
+        D2D1_RECT_F bodyRect = D2D1::RectF(bubbleRect.left + 8.0f, bubbleRect.top + 4.0f,
+                                           bubbleRect.right - 8.0f, bubbleRect.bottom - 4.0f);
         if (message.role != MessageRole::User)
-            bodyRect.left = contentLeft + 2.0f;
+            bodyRect.left = bubbleRect.left + 1.0f;
 
         ID2D1SolidColorBrush *bodyBrush = assistantTextBrush;
         if (message.role == MessageRole::User)
@@ -2008,7 +2042,7 @@ void ClaudePanel::DrawMessages(ID2D1RenderTarget *ctx, IDWriteFactory *dwrite)
         if (bodyFormat && bodyBrush)
             ctx->DrawTextW(content.c_str(), (UINT32)content.size(), bodyFormat, bodyRect, bodyBrush);
 
-        y += height + 12.0f;
+        y += height + 4.0f;
     }
 
     ctx->PopAxisAlignedClip();

@@ -230,6 +230,17 @@ bool ExplorerPanel::IsDockedRight() const
     return GetExplorerLayoutState().placement == ExplorerPlacement::Right;
 }
 
+void ExplorerPanel::SetLogicalWidth(int width)
+{
+    if (width < state_.minWidth)
+        width = state_.minWidth;
+    if (width > state_.maxWidth)
+        width = state_.maxWidth;
+
+    state_.logicalWidth = width;
+    GetExplorerManager().SetLogicalWidth(width);
+}
+
 void ExplorerPanel::ClearResizeHover(HWND hwnd)
 {
     // Clear Panel's resize hover state
