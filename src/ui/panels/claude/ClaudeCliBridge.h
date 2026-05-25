@@ -36,6 +36,9 @@ public:
         bool available = false;
         int usedPercentage = -1;
         long long resetsAtUnix = 0;
+        std::wstring status;
+        std::wstring overageStatus;
+        bool isUsingOverage = false;
     };
 
     struct RateLimitInfo

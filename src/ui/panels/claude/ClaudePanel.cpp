@@ -339,6 +339,72 @@ namespace
         return std::to_wstring(usedPercentage) + L"%";
     }
 
+    std::wstring FormatRateLimitStatusCompact(const ClaudeCliBridge::RateLimitWindow &window)
+    {
+        if (window.usedPercentage >= 0)
+            return FormatRateLimitPercentCompact(window.usedPercentage);
+
+        if (!window.available)
+            return L"N/A";
+
+        std::wstring status = TrimWideLocal(window.status);
+        std::transform(status.begin(), status.end(), status.begin(), towlower);
+
+        std::wstring overageStatus = TrimWideLocal(window.overageStatus);
+        std::transform(overageStatus.begin(), overageStatus.end(), overageStatus.begin(), towlower);
+
+        if (window.isUsingOverage)
+            return L"Overage";
+        if (status == L"allowed")
+            return L"Allowed";
+        if (status == L"warning")
+            return L"Warning";
+        if (status == L"limited")
+            return L"Limited";
+        if (status == L"blocked" || status == L"rejected" || status == L"denied")
+            return L"Blocked";
+        if (overageStatus == L"available")
+            return L"Overage OK";
+        if (overageStatus == L"rejected" || overageStatus == L"disabled")
+            return L"No overage";
+
+        return L"Live";
+    }
+
+    std::wstring BuildRateLimitDetailText(const ClaudeCliBridge::RateLimitWindow &window,
+                                          const std::wstring &baseResetText)
+    {
+        std::wstring detail = baseResetText;
+
+        std::wstring status = TrimWideLocal(window.status);
+        std::transform(status.begin(), status.end(), status.begin(), towlower);
+
+        std::wstring overageStatus = TrimWideLocal(window.overageStatus);
+        std::transform(overageStatus.begin(), overageStatus.end(), overageStatus.begin(), towlower);
+
+        std::wstring suffix;
+        if (window.isUsingOverage)
+            suffix = L"Using overage credits";
+        else if (status == L"allowed")
+            suffix = L"Usage currently allowed";
+        else if (status == L"warning")
+            suffix = L"Approaching limit";
+        else if (status == L"limited")
+            suffix = L"Usage limited";
+        else if (status == L"blocked" || status == L"rejected" || status == L"denied")
+            suffix = L"Usage blocked";
+        else if (overageStatus == L"available")
+            suffix = L"Overage available";
+        else if (overageStatus == L"rejected" || overageStatus == L"disabled")
+            suffix = L"Overage unavailable";
+
+        if (suffix.empty())
+            return detail;
+        if (detail.empty())
+            return suffix;
+        return detail + L"  •  " + suffix;
+    }
+
     std::wstring FormatRateLimitResetLabel(long long resetUnixSeconds)
     {
         if (resetUnixSeconds <= 0)
@@ -1800,7 +1866,7 @@ void ClaudePanel::DrawUsageOverlay(ID2D1RenderTarget *ctx, IDWriteFactory *dwrit
 
     auto drawUsageBar = [&](const std::wstring &label, const ClaudeCliBridge::RateLimitWindow &window,
                             const std::wstring &fallbackResetText) {
-        std::wstring percent = FormatRateLimitPercentCompact(window.usedPercentage);
+        std::wstring percent = FormatRateLimitStatusCompact(window);
         std::wstring resetText = FormatRateLimitResetLabel(window.resetsAtUnix);
         if (resetText.empty())
             resetText = fallbackResetText;

@@ -846,6 +846,9 @@ void ClaudeCliBridge::RequestWorkerMain(RequestOptions options)
                     window.available = true;
                     window.usedPercentage = ExtractJsonIntValue(windowJson, "used_percentage", -1);
                     window.resetsAtUnix = ExtractJsonInt64Value(windowJson, "resets_at", 0);
+                    window.status = Trim(Utf8ToWide(ExtractJsonStringValue(windowJson, "status")));
+                    window.overageStatus = Trim(Utf8ToWide(ExtractJsonStringValue(windowJson, "overage_status")));
+                    window.isUsingOverage = ExtractJsonBoolValue(windowJson, "is_using_overage", false);
                 };
 
                 parseWindow("five_hour", info.fiveHour);
@@ -874,6 +877,13 @@ void ClaudeCliBridge::RequestWorkerMain(RequestOptions options)
                     window.available = true;
                     if (resetsAt > 0)
                         window.resetsAtUnix = resetsAt;
+                    const std::wstring status = Trim(Utf8ToWide(ExtractJsonStringValue(rateLimitInfoJson, "status")));
+                    if (!status.empty())
+                        window.status = status;
+                    const std::wstring overageStatus = Trim(Utf8ToWide(ExtractJsonStringValue(rateLimitInfoJson, "overageStatus")));
+                    if (!overageStatus.empty())
+                        window.overageStatus = overageStatus;
+                    window.isUsingOverage = ExtractJsonBoolValue(rateLimitInfoJson, "isUsingOverage", window.isUsingOverage);
                     updated = true;
                 };
 
