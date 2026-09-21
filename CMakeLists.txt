@@ -128,9 +128,10 @@ target_link_libraries(Nebula PRIVATE libvterm)
 target_link_libraries(Nebula PRIVATE ggwave)
 
 # Lier libgit2
-target_link_libraries(Nebula PRIVATE libgit2package)
+target_link_libraries(Nebula PRIVATE libgit2package ${LIBGIT2_SYSTEM_LIBS})
 target_include_directories(Nebula PRIVATE ${LIBGIT2_DIR}/include)
 target_include_directories(Nebula PRIVATE ${CMAKE_BINARY_DIR}/external/libgit2/include)
+target_compile_definitions(Nebula PRIVATE GIT_STATIC)
 
 # Bibliothèques Windows
 target_link_libraries(Nebula PRIVATE 

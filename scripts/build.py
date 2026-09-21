@@ -220,6 +220,11 @@ def cmake_generators_text():
     return r.stdout
 
 
+def default_cmake_generator(help_text: str) -> str:
+    m = re.search(r"^\*\s*(.+?)\s*=", help_text, re.MULTILINE)
+    return m.group(1).strip() if m else ""
+
+
 def has_generator(help_text: str, name: str) -> bool:
     return name.lower() in help_text.lower()
 
@@ -433,12 +438,13 @@ def pick_generator(force_ninja=False):
     if force_ninja and not ninja_available:
         log("  warning: --ninja requested but ninja not found, using Visual Studio", C.Y)
 
-    if has_generator(help_text, "Visual Studio 18 2026"):
-        return ("Visual Studio 18 2026", ["-G", "Visual Studio 18 2026", "-A", "x64"], True)
-    if has_generator(help_text, "Visual Studio 17 2022"):
-        return ("Visual Studio 17 2022", ["-G", "Visual Studio 17 2022", "-A", "x64"], True)
+    default_gen = default_cmake_generator(help_text)
+    if default_gen and "visual studio" in default_gen.lower():
+        return (default_gen, ["-G", default_gen, "-A", "x64"], True)
     if ninja_available:
         return ("Ninja", ["-G", "Ninja"], False)
+    if default_gen:
+        return (default_gen, ["-G", default_gen], is_multi_config_generator(default_gen))
     return ("(default)", [], False)
 
 
@@ -591,7 +597,12 @@ def main():
         if r.returncode != 0:
             print()
             log("error: cmake configuration failed", C.RED)
-            for ln in (r.stdout or "").splitlines()[-20:]:
+            output_lines = []
+            if r.stdout:
+                output_lines.extend(r.stdout.splitlines())
+            if r.stderr:
+                output_lines.extend(r.stderr.splitlines())
+            for ln in [x for x in output_lines if x.strip()][-20:]:
                 log(f"  {ln}", C.D)
             return r.returncode
 
